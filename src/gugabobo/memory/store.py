@@ -55,6 +55,22 @@ class MemoryStore:
                 "UPDATE messages SET conversation_id = source || ':local' "
                 "WHERE conversation_id = '' AND role = 'assistant'"
             )
+            assistant_rows = conn.execute(
+                "SELECT id, source FROM messages "
+                "WHERE role = 'assistant' AND conversation_id = source || ':local'"
+            ).fetchall()
+            for row in assistant_rows:
+                previous_user = conn.execute(
+                    "SELECT conversation_id FROM messages "
+                    "WHERE role = 'user' AND source = ? AND id < ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (row["source"], row["id"]),
+                ).fetchone()
+                if previous_user:
+                    conn.execute(
+                        "UPDATE messages SET conversation_id = ? WHERE id = ?",
+                        (previous_user["conversation_id"], row["id"]),
+                    )
 
     def add_message(
         self,
