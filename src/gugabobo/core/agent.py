@@ -19,14 +19,42 @@ class CoreAgent:
         self.chat_skill = ChatSkill(self.persona)
         self.feedback_skill = FeedbackSkill(store)
 
-    def handle_message(self, text: str, source: str = "cli", user_id: str = "local") -> str:
-        self.store.add_message(source=source, user_id=user_id, role="user", content=text)
+    def handle_message(
+        self,
+        text: str,
+        source: str = "cli",
+        user_id: str = "local",
+        conversation_id: str | None = None,
+    ) -> str:
+        resolved_conversation_id = conversation_id or f"{source}:{user_id}"
+        history = self.store.list_conversation_messages(
+            resolved_conversation_id,
+            limit=get_settings().llm_context_messages,
+        )
+        llm_history = [
+            {"role": str(item["role"]), "content": str(item["content"])}
+            for item in history
+            if item["role"] in {"user", "assistant"}
+        ]
+        self.store.add_message(
+            source=source,
+            user_id=user_id,
+            role="user",
+            content=text,
+            conversation_id=resolved_conversation_id,
+        )
         route = self.router.route(text)
         if route.skill == "feedback":
             response = self.feedback_skill.record(text, source=source, user_id=user_id)
         else:
-            response = self.chat_skill.reply(text)
-        self.store.add_message(source=source, user_id="gugabobo", role="assistant", content=response)
+            response = self.chat_skill.reply(text, history=llm_history)
+        self.store.add_message(
+            source=source,
+            user_id="gugabobo",
+            role="assistant",
+            content=response,
+            conversation_id=resolved_conversation_id,
+        )
         return response
 
     def status(self) -> dict[str, object]:

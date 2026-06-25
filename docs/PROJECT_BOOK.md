@@ -1027,7 +1027,19 @@ deepseek_base_url: https://api.deepseek.com
 deepseek_model: deepseek-v4-flash
 compatibility: OpenAI-compatible Chat Completions API
 fallback: local placeholder reply when key is missing or the provider fails
+context: recent messages from the same conversation only
 ```
+
+Conversation scoping:
+
+```text
+CLI default: cli:local
+API default: api:<user_id>
+QQ private: qq:user:<user_id>
+QQ group: qq:group:<group_id>
+```
+
+The LLM receives only the latest `GUGABOBO_LLM_CONTEXT_MESSAGES` messages from the same conversation. Different users and different groups do not share short-term context.
 
 ## 21. Logging And Observability
 

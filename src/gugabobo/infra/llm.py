@@ -36,26 +36,36 @@ class OpenAICompatibleClient:
     def model(self) -> str:
         raise NotImplementedError
 
-    def chat(self, text: str, persona: Persona) -> LLMResult:
+    def chat(
+        self,
+        text: str,
+        persona: Persona,
+        history: list[dict[str, str]] | None = None,
+    ) -> LLMResult:
         if not self.configured:
             raise RuntimeError(f"{self.provider_name} API key is not configured")
-        response = self._post_chat_completion(text, persona)
+        response = self._post_chat_completion(text, persona, history or [])
         choice = response["choices"][0]
         content = choice["message"]["content"]
         return LLMResult(content=str(content).strip(), model=str(response.get("model", "")))
 
-    def _post_chat_completion(self, text: str, persona: Persona) -> dict[str, object]:
+    def _post_chat_completion(
+        self,
+        text: str,
+        persona: Persona,
+        history: list[dict[str, str]],
+    ) -> dict[str, object]:
         url = f"{self.base_url.rstrip('/')}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        messages = [{"role": "system", "content": persona.system_summary()}]
+        messages.extend(history)
+        messages.append({"role": "user", "content": text})
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": persona.system_summary()},
-                {"role": "user", "content": text},
-            ],
+            "messages": messages,
             "temperature": 0.7,
         }
         with httpx.Client(timeout=self.settings.llm_timeout_seconds) as client:

@@ -8,6 +8,7 @@ from typing import Any
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL,
     user_id TEXT NOT NULL,
     role TEXT NOT NULL,
@@ -40,28 +41,64 @@ class MemoryStore:
     def init(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(messages)").fetchall()
+            }
+            if "conversation_id" not in columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN conversation_id TEXT NOT NULL DEFAULT ''")
+            conn.execute(
+                "UPDATE messages SET conversation_id = source || ':' || user_id "
+                "WHERE conversation_id = '' AND role = 'user'"
+            )
+            conn.execute(
+                "UPDATE messages SET conversation_id = source || ':local' "
+                "WHERE conversation_id = '' AND role = 'assistant'"
+            )
 
-    def add_message(self, source: str, user_id: str, role: str, content: str) -> int:
+    def add_message(
+        self,
+        source: str,
+        user_id: str,
+        role: str,
+        content: str,
+        conversation_id: str,
+    ) -> int:
         with self.connect() as conn:
             cursor = conn.execute(
-                "INSERT INTO messages (source, user_id, role, content) VALUES (?, ?, ?, ?)",
-                (source, user_id, role, content),
+                "INSERT INTO messages (conversation_id, source, user_id, role, content) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (conversation_id, source, user_id, role, content),
             )
             return int(cursor.lastrowid)
 
     def list_messages(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT id, source, user_id, role, content, created_at "
+                "SELECT id, conversation_id, source, user_id, role, content, created_at "
                 "FROM messages ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_conversation_messages(
+        self,
+        conversation_id: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, conversation_id, source, user_id, role, content, created_at "
+                "FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+                (conversation_id, limit),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
     def get_message(self, message_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT id, source, user_id, role, content, created_at FROM messages WHERE id = ?",
+                "SELECT id, conversation_id, source, user_id, role, content, created_at "
+                "FROM messages WHERE id = ?",
                 (message_id,),
             ).fetchone()
         return dict(row) if row else None

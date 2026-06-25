@@ -19,6 +19,7 @@ app = FastAPI(title="gugabobo API", version="0.1.0", default_response_class=Utf8
 class ChatRequest(BaseModel):
     message: str
     user_id: str = "api"
+    conversation_id: str | None = None
 
 
 class FeedbackCreateRequest(BaseModel):
@@ -74,7 +75,14 @@ def status() -> dict[str, object]:
 @app.post("/chat")
 def chat(request: ChatRequest) -> dict[str, str]:
     agent = build_agent()
-    return {"reply": agent.handle_message(request.message, source="api", user_id=request.user_id)}
+    return {
+        "reply": agent.handle_message(
+            request.message,
+            source="api",
+            user_id=request.user_id,
+            conversation_id=request.conversation_id,
+        )
+    }
 
 
 @app.get("/messages")
@@ -143,7 +151,12 @@ def onebot_event(payload: dict[str, object]) -> dict[str, object]:
             logger.info("onebot feedback recorded id=%s source=%s", feedback_id, event.source)
             return {"status": "recorded", "feedback_id": feedback_id}
         return {"status": "ignored", "reason": "reply not allowed"}
-    reply = agent.handle_message(text, source=event.source, user_id=event.user_id)
+    reply = agent.handle_message(
+        text,
+        source=event.source,
+        user_id=event.user_id,
+        conversation_id=event.conversation_id,
+    )
     if settings.napcat_reply_enabled:
         client = NapCatClient()
         if event.message_type == "private":

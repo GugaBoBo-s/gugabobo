@@ -66,9 +66,12 @@ GUGABOBO_DEEPSEEK_API_KEY=
 GUGABOBO_DEEPSEEK_BASE_URL=https://api.deepseek.com
 GUGABOBO_DEEPSEEK_MODEL=deepseek-v4-flash
 GUGABOBO_LLM_TIMEOUT_SECONDS=60
+GUGABOBO_LLM_CONTEXT_MESSAGES=12
 ```
 
 If the API key is missing or the provider call fails, chat falls back to the local placeholder reply.
+
+LLM context is scoped by conversation. CLI/API users, QQ private chats, and QQ groups keep separate short-term context windows.
 
 ## Configuration
 

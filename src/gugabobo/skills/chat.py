@@ -8,12 +8,12 @@ class ChatSkill:
         self.persona = persona
         self.llm_client = llm_client or build_llm_client()
 
-    def reply(self, text: str) -> str:
+    def reply(self, text: str, history: list[dict[str, str]] | None = None) -> str:
         if not text.strip():
             return "我在。"
         if self.llm_client.configured:
             try:
-                result = self.llm_client.chat(text, self.persona)
+                result = self.llm_client.chat(text, self.persona, history=history)
                 if result.content:
                     return result.content
             except Exception as exc:

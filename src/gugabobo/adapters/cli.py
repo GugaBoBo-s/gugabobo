@@ -45,7 +45,7 @@ def messages_list(limit: int = 20) -> None:
     for item in agent.store.list_messages(limit=limit):
         typer.echo(
             f"#{item['id']} [{item['role']}] {item['content']} "
-            f"({item['source']}:{item['user_id']})"
+            f"({item['conversation_id']})"
         )
 
 
@@ -120,6 +120,7 @@ def config_show() -> None:
             "deepseek_model": settings.deepseek_model,
             "deepseek_api_key": "***" if settings.deepseek_api_key else "",
             "llm_timeout_seconds": settings.llm_timeout_seconds,
+            "llm_context_messages": settings.llm_context_messages,
         }
     )
 

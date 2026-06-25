@@ -12,6 +12,8 @@ def configure_test_env(tmp_path, monkeypatch):
     monkeypatch.setenv("GUGABOBO_DB_PATH", str(tmp_path / "cli.db"))
     monkeypatch.setenv("GUGABOBO_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("GUGABOBO_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
+    monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
     get_settings.cache_clear()
     get_logger.cache_clear()
 
