@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     moonshot_api_key: str = Field(default="", repr=False)
     moonshot_base_url: str = "https://api.moonshot.ai/v1"
     moonshot_model: str = "kimi-k2.6"
+    deepseek_api_key: str = Field(default="", repr=False)
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-v4-flash"
     llm_timeout_seconds: int = 60
 
     def ensure_dirs(self) -> None:

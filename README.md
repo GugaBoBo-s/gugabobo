@@ -55,13 +55,16 @@ Group chats only reply when the bot is mentioned or the message starts with a co
 
 ## Kimi / Moonshot LLM
 
-`gugabobo` uses Moonshot's OpenAI-compatible API when `GUGABOBO_MOONSHOT_API_KEY` is configured.
+`gugabobo` supports OpenAI-compatible providers. Set `GUGABOBO_LLM_PROVIDER` to choose one.
 
 ```env
 GUGABOBO_LLM_PROVIDER=moonshot
 GUGABOBO_MOONSHOT_API_KEY=
 GUGABOBO_MOONSHOT_BASE_URL=https://api.moonshot.ai/v1
 GUGABOBO_MOONSHOT_MODEL=kimi-k2.6
+GUGABOBO_DEEPSEEK_API_KEY=
+GUGABOBO_DEEPSEEK_BASE_URL=https://api.deepseek.com
+GUGABOBO_DEEPSEEK_MODEL=deepseek-v4-flash
 GUGABOBO_LLM_TIMEOUT_SECONDS=60
 ```
 

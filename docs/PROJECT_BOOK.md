@@ -1016,12 +1016,15 @@ dashboard
 
 Secrets must not be committed.
 
-Current LLM provider:
+Current LLM providers:
 
 ```text
 provider: Moonshot / Kimi
-base_url: https://api.moonshot.ai/v1
-model: kimi-k2.6
+moonshot_base_url: https://api.moonshot.ai/v1
+moonshot_model: kimi-k2.6
+provider: DeepSeek
+deepseek_base_url: https://api.deepseek.com
+deepseek_model: deepseek-v4-flash
 compatibility: OpenAI-compatible Chat Completions API
 fallback: local placeholder reply when key is missing or the provider fails
 ```

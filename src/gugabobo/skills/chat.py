@@ -1,12 +1,12 @@
 from gugabobo.core.persona import Persona
 from gugabobo.infra.logs import get_logger
-from gugabobo.infra.llm import MoonshotClient
+from gugabobo.infra.llm import OpenAICompatibleClient, build_llm_client
 
 
 class ChatSkill:
-    def __init__(self, persona: Persona, llm_client: MoonshotClient | None = None) -> None:
+    def __init__(self, persona: Persona, llm_client: OpenAICompatibleClient | None = None) -> None:
         self.persona = persona
-        self.llm_client = llm_client or MoonshotClient()
+        self.llm_client = llm_client or build_llm_client()
 
     def reply(self, text: str) -> str:
         if not text.strip():

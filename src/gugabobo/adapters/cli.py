@@ -116,6 +116,9 @@ def config_show() -> None:
             "moonshot_base_url": settings.moonshot_base_url,
             "moonshot_model": settings.moonshot_model,
             "moonshot_api_key": "***" if settings.moonshot_api_key else "",
+            "deepseek_base_url": settings.deepseek_base_url,
+            "deepseek_model": settings.deepseek_model,
+            "deepseek_api_key": "***" if settings.deepseek_api_key else "",
             "llm_timeout_seconds": settings.llm_timeout_seconds,
         }
     )
