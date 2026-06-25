@@ -96,7 +96,7 @@ Run the API:
 Remote repository:
 
 ```text
-https://github.com/GeYugong/gugabobo
+https://github.com/GugaBoBo-s/gugabobo
 ```
 
 Visibility:
@@ -104,4 +104,3 @@ Visibility:
 ```text
 PRIVATE
 ```
-
