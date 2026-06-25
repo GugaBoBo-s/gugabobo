@@ -2,6 +2,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from gugabobo.adapters.onebot import OneBotMessageEvent, should_reply_to_event
+from gugabobo.config import get_settings
+from gugabobo.infra.logs import get_logger
+from gugabobo.infra.napcat_client import NapCatClient
 from gugabobo.infra.runtime import build_agent
 
 app = FastAPI(title="gugabobo API", version="0.1.0")
@@ -41,7 +45,11 @@ def root() -> HTMLResponse:
         <p>messages: <code>{status_data["messages"]}</code></p>
         <p>feedbacks: <code>{status_data["feedbacks"]}</code></p>
         <p><a href="/docs">API docs</a></p>
-        <p><a href="/status">status</a> | <a href="/feedbacks">feedbacks</a></p>
+        <p>
+          <a href="/status">status</a> |
+          <a href="/messages">messages</a> |
+          <a href="/feedbacks">feedbacks</a>
+        </p>
       </body>
     </html>
     """
@@ -105,3 +113,37 @@ def update_feedback(feedback_id: int, request: FeedbackStatusRequest) -> dict[st
     if not agent.store.update_feedback_status(feedback_id, request.status):
         raise HTTPException(status_code=404, detail="Feedback not found")
     return {"id": feedback_id, "status": request.status}
+
+
+@app.post("/onebot/v11/events")
+def onebot_event(payload: dict[str, object]) -> dict[str, object]:
+    settings = get_settings()
+    logger = get_logger()
+    event = OneBotMessageEvent.from_payload(payload)
+    if event.post_type != "message":
+        return {"status": "ignored", "reason": "non-message event"}
+    text = event.text_content()
+    if not text:
+        return {"status": "ignored", "reason": "empty message"}
+    agent = build_agent()
+    reply_allowed = should_reply_to_event(event, settings.qq_group_wake_word_list)
+    if not reply_allowed:
+        route = agent.router.route(text)
+        if route.skill == "feedback":
+            feedback_id = agent.store.add_feedback(
+                source=event.source,
+                user_id=event.user_id,
+                content=text,
+            )
+            logger.info("onebot feedback recorded id=%s source=%s", feedback_id, event.source)
+            return {"status": "recorded", "feedback_id": feedback_id}
+        return {"status": "ignored", "reason": "reply not allowed"}
+    reply = agent.handle_message(text, source=event.source, user_id=event.user_id)
+    if settings.napcat_reply_enabled:
+        client = NapCatClient()
+        if event.message_type == "private":
+            client.send_private_msg(event.user_id, reply)
+        elif event.message_type == "group" and event.group_id:
+            client.send_group_msg(event.group_id, reply)
+    logger.info("onebot message handled source=%s user_id=%s", event.source, event.user_id)
+    return {"status": "ok", "reply": reply, "sent": settings.napcat_reply_enabled}

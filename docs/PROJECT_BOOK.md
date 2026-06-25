@@ -96,6 +96,7 @@ GET  /messages/{message_id}
 GET  /feedbacks
 POST /feedbacks
 PATCH /feedbacks/{feedback_id}
+POST /onebot/v11/events
 GET  /docs
 ```
 
@@ -919,6 +920,35 @@ Group behavior:
 gugabobo 你怎么看     -> reply if wake word enabled
 普通聊天              -> do not interrupt
 明显 bug 反馈          -> record silently
+```
+
+Current P1 implementation starts with NapCat HTTP integration:
+
+```text
+NapCat HTTP Client -> POST http://127.0.0.1:8765/onebot/v11/events
+gugabobo -> NapCat HTTP Server /send_private_msg or /send_group_msg when replies are enabled
+```
+
+Configuration:
+
+```text
+GUGABOBO_OWNER_QQ_IDS=
+GUGABOBO_NAPCAT_API_URL=http://127.0.0.1:3000
+GUGABOBO_NAPCAT_ACCESS_TOKEN=
+GUGABOBO_NAPCAT_REPLY_ENABLED=false
+GUGABOBO_QQ_GROUP_WAKE_WORDS=gugabobo,咕嘎啵啵
+```
+
+Implemented:
+
+```text
+OneBot message event parsing
+private message reply decision
+group mention reply decision
+group wake-word reply decision
+silent group feedback recording
+NapCat HTTP send client
+FastAPI webhook endpoint
 ```
 
 ## 19. Deployment Design

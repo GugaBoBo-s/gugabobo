@@ -107,6 +107,11 @@ def config_show() -> None:
             "api_host": settings.api_host,
             "api_port": settings.api_port,
             "admin_token": "***" if settings.admin_token else "",
+            "owner_qq_ids": settings.owner_qq_ids,
+            "napcat_api_url": settings.napcat_api_url,
+            "napcat_access_token": "***" if settings.napcat_access_token else "",
+            "napcat_reply_enabled": settings.napcat_reply_enabled,
+            "qq_group_wake_words": settings.qq_group_wake_words,
         }
     )
 
