@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from gugabobo.adapters.onebot import OneBotMessageEvent, should_reply_to_event
@@ -8,7 +8,12 @@ from gugabobo.infra.logs import get_logger
 from gugabobo.infra.napcat_client import NapCatClient
 from gugabobo.infra.runtime import build_agent
 
-app = FastAPI(title="gugabobo API", version="0.1.0")
+
+class Utf8JSONResponse(JSONResponse):
+    media_type = "application/json; charset=utf-8"
+
+
+app = FastAPI(title="gugabobo API", version="0.1.0", default_response_class=Utf8JSONResponse)
 
 
 class ChatRequest(BaseModel):
