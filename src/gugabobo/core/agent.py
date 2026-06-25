@@ -1,5 +1,6 @@
 from gugabobo.core.persona import Persona
 from gugabobo.core.router import Router
+from gugabobo.config import get_settings
 from gugabobo.memory.store import MemoryStore
 from gugabobo.skills.chat import ChatSkill
 from gugabobo.skills.feedback import FeedbackSkill
@@ -29,10 +30,12 @@ class CoreAgent:
         return response
 
     def status(self) -> dict[str, object]:
+        settings = get_settings()
         return {
             "name": self.persona.name,
-            "env": "ready",
+            "status": "ready",
+            "env": settings.env,
             "messages": self.store.count_messages(),
             "feedbacks": self.store.count_feedbacks(),
+            "database": str(settings.db_path),
         }
-

@@ -73,6 +73,13 @@ gugabobo status
 gugabobo chat "你好"
 gugabobo feedback add "回复太长"
 gugabobo feedback list
+gugabobo feedback resolve 1
+gugabobo feedback reopen 1
+gugabobo messages list
+gugabobo messages show 1
+gugabobo config show
+gugabobo db path
+gugabobo db init
 gugabobo daemon
 gugabobo api
 ```
@@ -84,7 +91,11 @@ GET  /
 GET  /health
 GET  /status
 POST /chat
+GET  /messages
+GET  /messages/{message_id}
 GET  /feedbacks
+POST /feedbacks
+PATCH /feedbacks/{feedback_id}
 GET  /docs
 ```
 
@@ -1089,16 +1100,25 @@ Goal:
 Make the current local body easier to inspect and operate.
 ```
 
-Tasks:
+Status:
+
+```text
+complete
+```
+
+Delivered:
 
 ```text
 messages list command
+messages show command
 feedback resolve command
+feedback reopen command
 config show command
 structured status output
 file logging
 basic HTML root page
-database reset/dev utility
+database path command
+database init command
 ```
 
 ### P1: QQ Adapter
@@ -1348,19 +1368,18 @@ reflection recorded after outcome
 Recommended next milestone:
 
 ```text
-P0.5 core usability
+P1 QQ integration
 ```
 
 Recommended tasks:
 
 ```text
-1. Add `gugabobo messages list`.
-2. Add `gugabobo feedback resolve <id>`.
-3. Add `gugabobo config show`.
-4. Add file logging under `.gugabobo/logs`.
-5. Improve `/` into a simple HTML status page.
-6. Add tests for the new CLI behavior.
+1. Select the QQ gateway.
+2. Define the normalized QQ message schema.
+3. Add owner permission configuration.
+4. Implement private message ingestion.
+5. Implement group mention and wake-word behavior.
+6. Add adapter tests.
 ```
 
-After P0.5, proceed to P1 QQ integration.
-
+P0.5 is complete. Proceed to P1 QQ integration when ready.

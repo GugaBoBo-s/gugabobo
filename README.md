@@ -20,10 +20,13 @@ pip install -e ".[dev]"
 gugabobo status
 gugabobo chat "你好"
 gugabobo feedback add "回复太长"
+gugabobo feedback resolve 1
+gugabobo messages list
+gugabobo config show
+gugabobo db path
 gugabobo api
 ```
 
 ## Configuration
 
 Copy `.env.example` to `.env` when you need custom local settings.
-

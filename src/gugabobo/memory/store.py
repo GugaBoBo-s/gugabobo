@@ -49,6 +49,23 @@ class MemoryStore:
             )
             return int(cursor.lastrowid)
 
+    def list_messages(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, source, user_id, role, content, created_at "
+                "FROM messages ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_message(self, message_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id, source, user_id, role, content, created_at FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def add_feedback(self, source: str, user_id: str, content: str) -> int:
         with self.connect() as conn:
             cursor = conn.execute(
@@ -66,6 +83,14 @@ class MemoryStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def update_feedback_status(self, feedback_id: int, status: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE feedbacks SET status = ? WHERE id = ?",
+                (status, feedback_id),
+            )
+            return cursor.rowcount > 0
+
     def count_messages(self) -> int:
         with self.connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
@@ -73,4 +98,3 @@ class MemoryStore:
     def count_feedbacks(self) -> int:
         with self.connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM feedbacks").fetchone()[0])
-
