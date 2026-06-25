@@ -11,6 +11,16 @@ class ChatRequest(BaseModel):
     user_id: str = "api"
 
 
+@app.get("/")
+def root() -> dict[str, object]:
+    return {
+        "name": "gugabobo",
+        "status": "ok",
+        "docs": "/docs",
+        "endpoints": ["/health", "/status", "/chat", "/feedbacks"],
+    }
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -31,4 +41,3 @@ def chat(request: ChatRequest) -> dict[str, str]:
 def feedbacks(limit: int = 20) -> list[dict[str, object]]:
     agent = build_agent()
     return agent.store.list_feedbacks(limit=limit)
-
