@@ -151,4 +151,6 @@ def onebot_event(payload: dict[str, object]) -> dict[str, object]:
         elif event.message_type == "group" and event.group_id:
             client.send_group_msg(event.group_id, reply)
     logger.info("onebot message handled source=%s user_id=%s", event.source, event.user_id)
-    return {"status": "ok", "reply": reply, "sent": settings.napcat_reply_enabled}
+    if settings.napcat_reply_enabled:
+        return {"status": "ok", "sent": True}
+    return {"status": "ok", "sent": False, "reply_available": True}

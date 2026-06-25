@@ -81,8 +81,9 @@ def test_onebot_private_webhook_handles_message(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
-    assert "已收到" in response.json()["reply"]
     assert response.json()["sent"] is False
+    assert response.json()["reply_available"] is True
+    assert "reply" not in response.json()
     get_settings.cache_clear()
     get_logger.cache_clear()
 
