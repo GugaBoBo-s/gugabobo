@@ -86,12 +86,37 @@ Run the API:
 - Use explicit types for public functions and constructors.
 - Keep secrets out of Git. Use `.env` locally and `.env.example` for documented settings.
 
+## Comment Guidelines
+
+- Do not add code comments unless they are strictly necessary, such as explaining a counterintuitive edge case.
+- Prefer meaningful variable names and type declarations over comments.
+- Function docstrings should only describe what the function does and what it returns, not how it works.
+
 ## Git Guidelines
 
 - `main` is the canonical branch.
 - Do not push directly to a different remote unless the user asks.
 - Do not rewrite history unless the user explicitly asks.
 - Keep commits focused and describe the behavior changed.
+
+## Commit Message Format
+
+```text
+<type>(<scope>): <short description>
+
+# Optional: a longer description explaining why the change was made.
+```
+
+Types:
+
+| Type | When to use |
+|------|-------------|
+| `feat` | New feature |
+| `fix` | Bug fix |
+| `refactor` | Refactor without behavior change |
+| `chore` | Configuration, dependencies, tooling |
+| `docs` | Documentation |
+| `release` | Version release |
 
 Remote repository:
 
