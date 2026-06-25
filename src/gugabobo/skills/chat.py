@@ -1,12 +1,21 @@
 from gugabobo.core.persona import Persona
+from gugabobo.infra.logs import get_logger
+from gugabobo.infra.llm import MoonshotClient
 
 
 class ChatSkill:
-    def __init__(self, persona: Persona) -> None:
+    def __init__(self, persona: Persona, llm_client: MoonshotClient | None = None) -> None:
         self.persona = persona
+        self.llm_client = llm_client or MoonshotClient()
 
     def reply(self, text: str) -> str:
         if not text.strip():
             return "我在。"
+        if self.llm_client.configured:
+            try:
+                result = self.llm_client.chat(text, self.persona)
+                if result.content:
+                    return result.content
+            except Exception as exc:
+                get_logger().warning("llm chat failed: %s", exc)
         return f"我是 {self.persona.name}，已收到：{text}"
-

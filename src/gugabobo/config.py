@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     napcat_access_token: str = Field(default="", repr=False)
     napcat_reply_enabled: bool = False
     qq_group_wake_words: str = "gugabobo,咕嘎啵啵"
+    llm_provider: str = "moonshot"
+    moonshot_api_key: str = Field(default="", repr=False)
+    moonshot_base_url: str = "https://api.moonshot.ai/v1"
+    moonshot_model: str = "kimi-k2.6"
+    llm_timeout_seconds: int = 60
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)

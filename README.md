@@ -53,6 +53,20 @@ GUGABOBO_NAPCAT_ACCESS_TOKEN=
 
 Group chats only reply when the bot is mentioned or the message starts with a configured wake word.
 
+## Kimi / Moonshot LLM
+
+`gugabobo` uses Moonshot's OpenAI-compatible API when `GUGABOBO_MOONSHOT_API_KEY` is configured.
+
+```env
+GUGABOBO_LLM_PROVIDER=moonshot
+GUGABOBO_MOONSHOT_API_KEY=
+GUGABOBO_MOONSHOT_BASE_URL=https://api.moonshot.ai/v1
+GUGABOBO_MOONSHOT_MODEL=kimi-k2.6
+GUGABOBO_LLM_TIMEOUT_SECONDS=60
+```
+
+If the API key is missing or the provider call fails, chat falls back to the local placeholder reply.
+
 ## Configuration
 
 Copy `.env.example` to `.env` when you need custom local settings.

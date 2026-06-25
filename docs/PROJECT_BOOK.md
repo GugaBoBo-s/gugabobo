@@ -1016,6 +1016,16 @@ dashboard
 
 Secrets must not be committed.
 
+Current LLM provider:
+
+```text
+provider: Moonshot / Kimi
+base_url: https://api.moonshot.ai/v1
+model: kimi-k2.6
+compatibility: OpenAI-compatible Chat Completions API
+fallback: local placeholder reply when key is missing or the provider fails
+```
+
 ## 21. Logging And Observability
 
 Target log categories:
