@@ -115,6 +115,17 @@ class MemoryStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_conversations(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT conversation_id, COUNT(*) AS message_count, "
+                "MAX(created_at) AS last_message_at "
+                "FROM messages GROUP BY conversation_id "
+                "ORDER BY last_message_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_conversation_messages(
         self,
         conversation_id: str,
@@ -244,3 +255,11 @@ class MemoryStore:
     def count_feedbacks(self) -> int:
         with self.connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM feedbacks").fetchone()[0])
+
+    def count_memory_items(self) -> int:
+        with self.connect() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0])
+
+    def count_conversation_summaries(self) -> int:
+        with self.connect() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM conversation_summaries").fetchone()[0])

@@ -90,6 +90,9 @@ Current API endpoints:
 GET  /
 GET  /health
 GET  /status
+GET  /dashboard
+GET  /dashboard-data
+GET  /logs
 POST /chat
 GET  /messages
 GET  /messages/{message_id}
@@ -873,6 +876,14 @@ Deployment
 ```
 
 Dashboard should call the server management API. It should not directly read production files or databases from the browser.
+
+Current local dashboard:
+
+```text
+URL: http://127.0.0.1:8765/dashboard
+Refresh: polls /dashboard-data every 3 seconds
+Displays: status, LLM config, reply mode, conversations, recent messages, feedbacks, memories, logs
+```
 
 ## 18. QQ Integration Plan
 

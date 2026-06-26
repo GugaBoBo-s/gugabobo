@@ -3,8 +3,9 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from gugabobo.adapters.onebot import OneBotMessageEvent, should_reply_to_event
+from gugabobo.api.dashboard import dashboard_html
 from gugabobo.config import get_settings
-from gugabobo.infra.logs import get_logger
+from gugabobo.infra.logs import get_logger, read_log_lines
 from gugabobo.infra.napcat_client import NapCatClient
 from gugabobo.infra.runtime import build_agent
 
@@ -51,6 +52,7 @@ def root() -> HTMLResponse:
         <p>messages: <code>{status_data["messages"]}</code></p>
         <p>feedbacks: <code>{status_data["feedbacks"]}</code></p>
         <p><a href="/docs">API docs</a></p>
+        <p><a href="/dashboard">Dashboard</a></p>
         <p>
           <a href="/status">status</a> |
           <a href="/messages">messages</a> |
@@ -60,6 +62,41 @@ def root() -> HTMLResponse:
     </html>
     """
     return HTMLResponse(html)
+
+
+@app.get("/dashboard")
+def dashboard() -> HTMLResponse:
+    return HTMLResponse(dashboard_html())
+
+
+@app.get("/dashboard-data")
+def dashboard_data() -> dict[str, object]:
+    settings = get_settings()
+    agent = build_agent()
+    status_data = agent.status()
+    status_data["memory_items"] = agent.store.count_memory_items()
+    status_data["conversation_summaries"] = agent.store.count_conversation_summaries()
+    return {
+        "status": status_data,
+        "config": {
+            "llm_provider": settings.llm_provider,
+            "llm_context_messages": settings.llm_context_messages,
+            "llm_memory_items": settings.llm_memory_items,
+            "napcat_reply_enabled": settings.napcat_reply_enabled,
+            "napcat_passive_reply_enabled": settings.napcat_passive_reply_enabled,
+        },
+        "conversations": agent.store.list_conversations(limit=20),
+        "messages": agent.store.list_messages(limit=20),
+        "feedbacks": agent.store.list_feedbacks(limit=20),
+        "memories": agent.store.list_memory_items(limit=20),
+        "summaries": agent.store.list_conversation_summaries(limit=20),
+        "logs": read_log_lines(limit=80),
+    }
+
+
+@app.get("/logs")
+def logs(limit: int = 100) -> dict[str, object]:
+    return {"lines": read_log_lines(limit=limit)}
 
 
 @app.get("/health")

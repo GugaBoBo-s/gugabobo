@@ -49,6 +49,21 @@ def test_root_endpoint_returns_html(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
+def test_dashboard_endpoints(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    page_response = client.get("/dashboard")
+    data_response = client.get("/dashboard-data")
+
+    assert page_response.status_code == 200
+    assert "咕嘎BoBo Dashboard" in page_response.text
+    assert data_response.status_code == 200
+    assert "status" in data_response.json()
+    assert "messages" in data_response.json()
+    get_settings.cache_clear()
+
+
 def test_message_endpoints(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     client = TestClient(app)

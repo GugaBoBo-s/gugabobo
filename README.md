@@ -27,6 +27,12 @@ gugabobo db path
 gugabobo api
 ```
 
+Open the local monitoring dashboard:
+
+```text
+http://127.0.0.1:8765/dashboard
+```
+
 ## NapCat / OneBot v11
 
 P1 starts with a OneBot v11 HTTP webhook for NapCat.
