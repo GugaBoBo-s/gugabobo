@@ -3,8 +3,10 @@ import time
 import typer
 import uvicorn
 
+from gugabobo.adapters.telegram_runtime import handle_telegram_update
 from gugabobo.config import get_settings
 from gugabobo.core.channel import ChannelContext
+from gugabobo.infra.telegram_client import TelegramClient
 from gugabobo.infra.logs import get_logger
 from gugabobo.infra.runtime import build_agent
 
@@ -15,12 +17,14 @@ config_app = typer.Typer(help="Configuration commands")
 db_app = typer.Typer(help="Database commands")
 memory_app = typer.Typer(help="Long-term memory commands")
 summary_app = typer.Typer(help="Conversation summary commands")
+telegram_app = typer.Typer(help="Telegram adapter commands")
 app.add_typer(feedback_app, name="feedback")
 app.add_typer(messages_app, name="messages")
 app.add_typer(config_app, name="config")
 app.add_typer(db_app, name="db")
 app.add_typer(memory_app, name="memory")
 app.add_typer(summary_app, name="summary")
+app.add_typer(telegram_app, name="telegram")
 
 
 def echo_mapping(data: dict[str, object]) -> None:
@@ -151,6 +155,37 @@ def summary_list(limit: int = 20) -> None:
     """List conversation summaries."""
     for item in build_agent().store.list_conversation_summaries(limit=limit):
         typer.echo(f"{item['conversation_id']}: {item['summary']}")
+
+
+@telegram_app.command("poll")
+def telegram_poll(
+    send: bool = typer.Option(False, "--send", help="Send replies through Telegram."),
+    timeout: int = typer.Option(30, help="Long polling timeout in seconds."),
+) -> None:
+    """Run Telegram local polling."""
+    settings = get_settings()
+    client = TelegramClient()
+    if not client.configured:
+        raise typer.BadParameter("GUGABOBO_TELEGRAM_BOT_TOKEN is not configured")
+    effective_send = send or settings.telegram_reply_enabled
+    offset: int | None = None
+    typer.echo(
+        "telegram polling started "
+        f"(send={effective_send}, timeout={timeout}, bot={settings.telegram_bot_username or 'unknown'})"
+    )
+    while True:
+        updates = client.get_updates(offset=offset, timeout=timeout)
+        for update in updates:
+            update_id = int(update.get("update_id", 0))
+            offset = update_id + 1
+            result = handle_telegram_update(
+                update,
+                agent=build_agent(),
+                settings=settings,
+                send_reply=effective_send,
+                client=client,
+            )
+            typer.echo(f"telegram update {update_id}: {result}")
 
 
 @config_app.command("show")

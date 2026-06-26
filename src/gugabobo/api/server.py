@@ -3,14 +3,13 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from gugabobo.adapters.onebot import OneBotMessageEvent
-from gugabobo.adapters.telegram import TelegramMessageEvent
+from gugabobo.adapters.telegram_runtime import handle_telegram_update
 from gugabobo.api.dashboard import dashboard_html
 from gugabobo.config import get_settings
 from gugabobo.core.channel import ChannelContext
 from gugabobo.infra.logs import get_logger, read_log_lines
 from gugabobo.infra.napcat_client import NapCatClient
 from gugabobo.infra.runtime import build_agent
-from gugabobo.infra.telegram_client import TelegramClient
 
 
 class Utf8JSONResponse(JSONResponse):
@@ -219,34 +218,12 @@ def telegram_event(
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
 ) -> dict[str, object]:
     settings = get_settings()
-    logger = get_logger()
     if settings.telegram_webhook_secret:
         if x_telegram_bot_api_secret_token != settings.telegram_webhook_secret:
             raise HTTPException(status_code=401, detail="Invalid Telegram webhook secret")
-    event = TelegramMessageEvent.from_payload(payload)
-    if not event.text:
-        return {"status": "ignored", "reason": "empty message"}
-    agent = build_agent()
-    context = event.to_channel_context(
-        owner_ids=settings.owner_telegram_id_set,
-        group_wake_words=settings.telegram_group_wake_word_list,
-        bot_username=settings.telegram_bot_username,
+    return handle_telegram_update(
+        payload,
+        agent=build_agent(),
+        settings=settings,
+        send_reply=settings.telegram_reply_enabled,
     )
-    if not context.is_wake_triggered:
-        route = agent.router.route(event.text)
-        if route.skill == "feedback":
-            feedback_id = agent.store.add_feedback(
-                source=context.source,
-                user_id=context.user_id,
-                content=event.text,
-            )
-            logger.info("telegram feedback recorded id=%s source=%s", feedback_id, context.source)
-            return {"status": "recorded", "feedback_id": feedback_id}
-        return {"status": "ignored", "reason": "reply not allowed"}
-    reply = agent.handle_context_message(event.text, context)
-    if settings.telegram_reply_enabled:
-        TelegramClient().send_message(context.chat_id or context.user_id, reply)
-        logger.info("telegram message handled source=%s user_id=%s sent=true", context.source, context.user_id)
-        return {"status": "ok", "sent": True}
-    logger.info("telegram message handled source=%s user_id=%s", context.source, context.user_id)
-    return {"status": "ok", "sent": False, "reply_available": True}

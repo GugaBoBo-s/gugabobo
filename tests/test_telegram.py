@@ -1,9 +1,19 @@
 from fastapi.testclient import TestClient
 
 from gugabobo.adapters.telegram import TelegramMessageEvent
+from gugabobo.adapters.telegram_runtime import handle_telegram_update
 from gugabobo.api.server import app
 from gugabobo.config import get_settings
+from gugabobo.infra.runtime import build_agent
 from gugabobo.infra.logs import get_logger
+
+
+class FakeTelegramClient:
+    def __init__(self):
+        self.sent_messages = []
+
+    def send_message(self, chat_id: str, text: str) -> None:
+        self.sent_messages.append({"chat_id": chat_id, "text": text})
 
 
 def configure_test_env(tmp_path, monkeypatch):
@@ -129,5 +139,26 @@ def test_telegram_webhook_secret_is_checked(tmp_path, monkeypatch):
 
     assert rejected.status_code == 401
     assert accepted.status_code == 200
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
+def test_telegram_runtime_can_send_reply(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    settings = get_settings()
+    client = FakeTelegramClient()
+
+    result = handle_telegram_update(
+        private_payload(),
+        agent=build_agent(),
+        settings=settings,
+        send_reply=True,
+        client=client,
+    )
+
+    assert result["status"] == "ok"
+    assert result["sent"] is True
+    assert client.sent_messages[0]["chat_id"] == "10001"
+    assert "已收到" in client.sent_messages[0]["text"]
     get_settings.cache_clear()
     get_logger.cache_clear()

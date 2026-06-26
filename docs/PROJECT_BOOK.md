@@ -80,6 +80,7 @@ gugabobo messages show 1
 gugabobo config show
 gugabobo db path
 gugabobo db init
+gugabobo telegram poll --send
 gugabobo daemon
 gugabobo api
 ```
@@ -1273,6 +1274,7 @@ group mention/wake-word reply decision
 conversation scoping
 owner id mapping
 Telegram sendMessage client
+Telegram local polling command
 webhook secret validation
 adapter tests
 ```
@@ -1282,7 +1284,7 @@ Implementation notes:
 - Use the same `CoreAgent`, `Persona`, memory store, LLM provider, and dashboard.
 - Keep Telegram-specific parsing and sending in the adapter layer.
 - Do not put Telegram permission logic directly into skills.
-- Prefer webhook on server deployment; polling is acceptable for local development.
+- Prefer webhook on server deployment; use `gugabobo telegram poll --send` for local development.
 
 ## 20. Deployment Design
 
