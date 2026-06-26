@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     napcat_api_url: str = "http://127.0.0.1:3000"
     napcat_access_token: str = Field(default="", repr=False)
     napcat_reply_enabled: bool = False
+    napcat_passive_reply_enabled: bool = False
     qq_group_wake_words: str = "gugabobo,咕嘎啵啵"
     llm_provider: str = "moonshot"
     moonshot_api_key: str = Field(default="", repr=False)

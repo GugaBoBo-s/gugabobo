@@ -11,6 +11,7 @@ def configure_test_env(tmp_path, monkeypatch):
     monkeypatch.setenv("GUGABOBO_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("GUGABOBO_LOG_DIR", str(tmp_path / "logs"))
     monkeypatch.setenv("GUGABOBO_NAPCAT_REPLY_ENABLED", "false")
+    monkeypatch.setenv("GUGABOBO_NAPCAT_PASSIVE_REPLY_ENABLED", "false")
     monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
     monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
     get_settings.cache_clear()
@@ -84,6 +85,31 @@ def test_onebot_private_webhook_handles_message(tmp_path, monkeypatch):
     assert response.json()["sent"] is False
     assert response.json()["reply_available"] is True
     assert "reply" not in response.json()
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
+def test_onebot_private_webhook_can_return_passive_reply(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("GUGABOBO_NAPCAT_PASSIVE_REPLY_ENABLED", "true")
+    get_settings.cache_clear()
+    client = TestClient(app)
+
+    response = client.post(
+        "/onebot/v11/events",
+        json={
+            "post_type": "message",
+            "message_type": "private",
+            "user_id": 10001,
+            "raw_message": "你好",
+            "message": "你好",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert response.json()["passive_reply"] is True
+    assert "已收到" in response.json()["reply"]
     get_settings.cache_clear()
     get_logger.cache_clear()
 

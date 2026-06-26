@@ -111,6 +111,7 @@ def config_show() -> None:
             "napcat_api_url": settings.napcat_api_url,
             "napcat_access_token": "***" if settings.napcat_access_token else "",
             "napcat_reply_enabled": settings.napcat_reply_enabled,
+            "napcat_passive_reply_enabled": settings.napcat_passive_reply_enabled,
             "qq_group_wake_words": settings.qq_group_wake_words,
             "llm_provider": settings.llm_provider,
             "moonshot_base_url": settings.moonshot_base_url,

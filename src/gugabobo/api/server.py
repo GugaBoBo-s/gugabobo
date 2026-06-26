@@ -166,4 +166,6 @@ def onebot_event(payload: dict[str, object]) -> dict[str, object]:
     logger.info("onebot message handled source=%s user_id=%s", event.source, event.user_id)
     if settings.napcat_reply_enabled:
         return {"status": "ok", "sent": True}
+    if settings.napcat_passive_reply_enabled:
+        return {"status": "ok", "reply": reply, "sent": False, "passive_reply": True}
     return {"status": "ok", "sent": False, "reply_available": True}
