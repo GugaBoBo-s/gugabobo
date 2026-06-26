@@ -65,6 +65,7 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     assert "咕嘎BoBo Dashboard" in page_response.text
     assert "控制台" in page_response.text
     assert "编辑长期记忆" in page_response.text
+    assert "会话上下文" in page_response.text
     assert "数据库表状态" in page_response.text
     assert "会话摘要" in page_response.text
     assert '""":' not in page_response.text
@@ -200,6 +201,53 @@ def test_message_endpoints(tmp_path, monkeypatch):
     assert len(messages_response.json()) == 2
     assert message_response.status_code == 200
     assert message_response.json()["content"] == "你好"
+    get_settings.cache_clear()
+
+
+def test_message_endpoint_filters_by_conversation(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    client.post("/chat", json={"message": "A", "user_id": "u1", "conversation_id": "api:a"})
+    client.post("/chat", json={"message": "B", "user_id": "u2", "conversation_id": "api:b"})
+    response = client.get("/messages?conversation_id=api:a")
+
+    contents = [item["content"] for item in response.json()]
+    assert "A" in contents
+    assert "B" not in contents
+    get_settings.cache_clear()
+
+
+def test_dashboard_control_clears_conversation_messages_and_deletes_summary(
+    tmp_path,
+    monkeypatch,
+):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+    client.post(
+        "/dashboard-control/chat",
+        json={"message": "你好", "conversation_id": "dashboard:test"},
+        headers=admin_headers(),
+    )
+    client.post(
+        "/dashboard-control/summaries",
+        json={"conversation_id": "dashboard:test", "summary": "测试摘要"},
+        headers=admin_headers(),
+    )
+
+    clear_response = client.delete(
+        "/dashboard-control/conversations/dashboard:test/messages",
+        headers=admin_headers(),
+    )
+    messages_response = client.get("/messages?conversation_id=dashboard:test")
+    delete_summary_response = client.delete(
+        "/dashboard-control/summaries/dashboard:test",
+        headers=admin_headers(),
+    )
+
+    assert clear_response.json()["deleted"] == 2
+    assert messages_response.json() == []
+    assert delete_summary_response.json()["deleted"] is True
     get_settings.cache_clear()
 
 

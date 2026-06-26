@@ -1133,7 +1133,7 @@ Current local dashboard:
 URL: http://127.0.0.1:8765/dashboard
 Refresh: polls /dashboard-data every 3 seconds
 Displays: status, LLM config, reply mode, conversations, recent messages, feedbacks, memories, logs
-Controls: test chat, long-term memory add/filter/update/delete, conversation summary set, feedback status update
+Controls: test chat, conversation context view/clear, long-term memory add/filter/update/delete, conversation summary set/delete, feedback status update
 Auth: admin actions require GUGABOBO_ADMIN_TOKEN through the X-Gugabobo-Admin-Token header
 ```
 

@@ -139,6 +139,14 @@ class MemoryStore:
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
 
+    def delete_conversation_messages(self, conversation_id: str) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM messages WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            return cursor.rowcount
+
     def get_message(self, message_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
@@ -183,6 +191,14 @@ class MemoryStore:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def delete_conversation_summary(self, conversation_id: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM conversation_summaries WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            return cursor.rowcount > 0
 
     def add_memory_item(
         self,

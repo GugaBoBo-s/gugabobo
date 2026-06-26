@@ -160,8 +160,13 @@ def chat(request: ChatRequest) -> dict[str, str]:
 
 
 @app.get("/messages")
-def messages(limit: int = 20) -> list[dict[str, object]]:
+def messages(
+    limit: int = 20,
+    conversation_id: str | None = None,
+) -> list[dict[str, object]]:
     agent = build_agent()
+    if conversation_id:
+        return agent.store.list_conversation_messages(conversation_id, limit=limit)
     return agent.store.list_messages(limit=limit)
 
 
@@ -281,6 +286,25 @@ def dashboard_control_set_summary(
         updated_until_message_id=request.updated_until_message_id,
     )
     return {"conversation_id": request.conversation_id}
+
+
+@app.delete("/dashboard-control/summaries/{conversation_id}")
+def dashboard_control_delete_summary(
+    conversation_id: str,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    if not build_agent().store.delete_conversation_summary(conversation_id):
+        raise HTTPException(status_code=404, detail="Summary not found")
+    return {"conversation_id": conversation_id, "deleted": True}
+
+
+@app.delete("/dashboard-control/conversations/{conversation_id}/messages")
+def dashboard_control_clear_conversation_messages(
+    conversation_id: str,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    deleted = build_agent().store.delete_conversation_messages(conversation_id)
+    return {"conversation_id": conversation_id, "deleted": deleted}
 
 
 @app.patch("/dashboard-control/feedbacks/{feedback_id}")
