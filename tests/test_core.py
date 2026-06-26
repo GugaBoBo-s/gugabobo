@@ -1,4 +1,5 @@
 from gugabobo.core.agent import CoreAgent
+from gugabobo.core.channel import ChannelContext
 from gugabobo.core.persona import Persona
 from gugabobo.config import get_settings
 from gugabobo.infra.llm import DeepSeekClient, MoonshotClient, build_llm_client
@@ -117,6 +118,32 @@ def test_agent_uses_separate_conversation_contexts(tmp_path, monkeypatch):
     third_history = llm_client.histories[2]
     assert any(item["content"] == "我是用户A" for item in third_history)
     assert not any(item["content"] == "我是用户B" for item in third_history)
+    get_settings.cache_clear()
+
+
+def test_agent_accepts_channel_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
+    monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
+    get_settings.cache_clear()
+    agent = CoreAgent(MemoryStore(tmp_path / "test.db"))
+    context = ChannelContext(
+        platform="telegram",
+        channel_type="private",
+        source="telegram_private",
+        user_id="tg-1",
+        conversation_id="telegram:user:tg-1",
+        chat_id="tg-1",
+        is_owner=True,
+        is_wake_triggered=True,
+    )
+
+    reply = agent.handle_context_message("你好", context)
+    messages = agent.store.list_conversation_messages("telegram:user:tg-1")
+
+    assert "已收到" in reply
+    assert messages[0]["source"] == "telegram_private"
+    assert messages[0]["user_id"] == "tg-1"
+    assert messages[1]["conversation_id"] == "telegram:user:tg-1"
     get_settings.cache_clear()
 
 

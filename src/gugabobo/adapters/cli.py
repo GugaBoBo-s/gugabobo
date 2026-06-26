@@ -4,6 +4,7 @@ import typer
 import uvicorn
 
 from gugabobo.config import get_settings
+from gugabobo.core.channel import ChannelContext
 from gugabobo.infra.logs import get_logger
 from gugabobo.infra.runtime import build_agent
 
@@ -37,7 +38,7 @@ def status() -> None:
 def chat(message: str = typer.Argument("")) -> None:
     """Send one message to gugabobo."""
     agent = build_agent()
-    reply = agent.handle_message(message, source="cli", user_id="local")
+    reply = agent.handle_context_message(message, ChannelContext.local())
     get_logger().info("cli chat user_id=local")
     typer.echo(reply)
 

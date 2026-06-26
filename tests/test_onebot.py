@@ -34,6 +34,27 @@ def test_private_message_event_allows_reply():
     assert event.text_content() == "你好"
 
 
+def test_private_message_event_builds_channel_context():
+    event = OneBotMessageEvent.from_payload(
+        {
+            "post_type": "message",
+            "message_type": "private",
+            "user_id": 10001,
+            "raw_message": "你好",
+            "message": "你好",
+        }
+    )
+
+    context = event.to_channel_context(owner_ids={"10001"}, group_wake_words=["gugabobo"])
+
+    assert context.platform == "qq"
+    assert context.channel_type == "private"
+    assert context.source == "qq_private"
+    assert context.conversation_id == "qq:user:10001"
+    assert context.is_owner is True
+    assert context.is_wake_triggered is True
+
+
 def test_group_message_requires_mention_or_wake_word():
     event = OneBotMessageEvent.from_payload(
         {
@@ -63,6 +84,32 @@ def test_group_message_requires_mention_or_wake_word():
 
     assert not should_reply_to_event(event, ["gugabobo"])
     assert should_reply_to_event(mentioned_event, ["gugabobo"])
+
+
+def test_group_message_event_builds_channel_context():
+    event = OneBotMessageEvent.from_payload(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 999,
+            "group_id": 123,
+            "user_id": 10001,
+            "raw_message": "咕嘎BoBo 你好",
+            "message": [{"type": "text", "data": {"text": "咕嘎BoBo 你好"}}],
+        }
+    )
+
+    context = event.to_channel_context(owner_ids={"20002"}, group_wake_words=["咕嘎BoBo"])
+
+    assert context.platform == "qq"
+    assert context.channel_type == "group"
+    assert context.source == "qq_group"
+    assert context.user_id == "10001"
+    assert context.group_id == "123"
+    assert context.chat_id == "123"
+    assert context.conversation_id == "qq:group:123"
+    assert context.is_owner is False
+    assert context.is_wake_triggered is True
 
 
 def test_onebot_private_webhook_handles_message(tmp_path, monkeypatch):

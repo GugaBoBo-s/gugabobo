@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from gugabobo.core.channel import ChannelContext
+
 
 @dataclass(frozen=True)
 class OneBotMessageEvent:
@@ -62,6 +64,31 @@ class OneBotMessageEvent:
             if str(segment.get("data", {}).get("qq", "")) == self.self_id:
                 return True
         return False
+
+    def to_channel_context(
+        self,
+        owner_ids: set[str] | None = None,
+        group_wake_words: list[str] | None = None,
+    ) -> ChannelContext:
+        owner_id_set = owner_ids or set()
+        wake_words = group_wake_words or []
+        channel_type = "unknown"
+        if self.message_type == "group":
+            channel_type = "group"
+        elif self.message_type == "private":
+            channel_type = "private"
+        return ChannelContext(
+            platform="qq",
+            channel_type=channel_type,
+            source=self.source,
+            user_id=self.user_id,
+            conversation_id=self.conversation_id,
+            group_id=self.group_id,
+            chat_id=self.group_id or self.user_id,
+            is_owner=self.user_id in owner_id_set,
+            is_wake_triggered=should_reply_to_event(self, wake_words),
+            metadata={"self_id": self.self_id, "message_type": self.message_type},
+        )
 
 
 def should_reply_to_event(event: OneBotMessageEvent, group_wake_words: list[str]) -> bool:

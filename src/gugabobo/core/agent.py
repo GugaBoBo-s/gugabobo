@@ -1,3 +1,4 @@
+from gugabobo.core.channel import ChannelContext
 from gugabobo.core.persona import Persona
 from gugabobo.core.router import Router
 from gugabobo.config import get_settings
@@ -28,10 +29,24 @@ class CoreAgent:
         user_id: str = "local",
         conversation_id: str | None = None,
     ) -> str:
+        if source == "api":
+            context = ChannelContext.api(user_id=user_id, conversation_id=conversation_id)
+        elif source == "cli":
+            context = ChannelContext.local(user_id=user_id, conversation_id=conversation_id)
+        else:
+            context = ChannelContext(
+                platform="unknown",
+                channel_type="unknown",
+                source=source,
+                user_id=user_id,
+                conversation_id=conversation_id or f"{source}:{user_id}",
+            )
+        return self.handle_context_message(text, context)
+
+    def handle_context_message(self, text: str, context: ChannelContext) -> str:
         settings = get_settings()
-        resolved_conversation_id = conversation_id or f"{source}:{user_id}"
         history = self.store.list_conversation_messages(
-            resolved_conversation_id,
+            context.conversation_id,
             limit=settings.llm_context_messages,
         )
         llm_history = [
@@ -40,21 +55,25 @@ class CoreAgent:
             if item["role"] in {"user", "assistant"}
         ]
         system_context = self.build_system_context(
-            conversation_id=resolved_conversation_id,
+            conversation_id=context.conversation_id,
             memory_limit=settings.llm_memory_items,
         )
         self.store.add_message(
-            source=source,
-            user_id=user_id,
+            source=context.source,
+            user_id=context.user_id,
             role="user",
             content=text,
-            conversation_id=resolved_conversation_id,
+            conversation_id=context.conversation_id,
         )
         route = self.router.route(text)
         if route.skill == "feedback":
-            response = self.feedback_skill.record(text, source=source, user_id=user_id)
+            response = self.feedback_skill.record(
+                text,
+                source=context.source,
+                user_id=context.user_id,
+            )
         elif route.skill == "memory":
-            response = self.memory_skill.record(text, subject=resolved_conversation_id)
+            response = self.memory_skill.record(text, subject=context.conversation_id)
         else:
             response = self.chat_skill.reply(
                 text,
@@ -62,11 +81,11 @@ class CoreAgent:
                 system_context=system_context,
             )
         self.store.add_message(
-            source=source,
+            source=context.source,
             user_id="gugabobo",
             role="assistant",
             content=response,
-            conversation_id=resolved_conversation_id,
+            conversation_id=context.conversation_id,
         )
         return response
 
