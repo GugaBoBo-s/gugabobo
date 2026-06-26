@@ -58,6 +58,7 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
 
     assert page_response.status_code == 200
     assert "咕嘎BoBo Dashboard" in page_response.text
+    assert '""":' not in page_response.text
     assert data_response.status_code == 200
     assert "status" in data_response.json()
     assert "messages" in data_response.json()

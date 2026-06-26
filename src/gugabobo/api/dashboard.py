@@ -201,9 +201,18 @@ def dashboard_html() -> str:
         </main>
         <script>
           const byId = (id) => document.getElementById(id);
-          const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
-            "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"
-          }[c]));
+          function esc(value) {
+            return String(value ?? "").replace(/[&<>"']/g, (c) => {
+              switch (c) {
+                case "&": return "&amp;";
+                case "<": return "&lt;";
+                case ">": return "&gt;";
+                case '"': return "&quot;";
+                case "'": return "&#39;";
+                default: return c;
+              }
+            });
+          }
           function metric(label, value, className = "") {
             return `<div class="metric"><span>${esc(label)}</span><strong class="${className}">${esc(value)}</strong></div>`;
           }
