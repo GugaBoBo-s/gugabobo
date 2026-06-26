@@ -4,6 +4,7 @@ from typing import Any
 
 from gugabobo.adapters.telegram import TelegramMessageEvent
 from gugabobo.config import Settings
+from gugabobo.core.access import evaluate_access
 from gugabobo.core.agent import CoreAgent
 from gugabobo.infra.logs import get_logger
 from gugabobo.infra.telegram_client import TelegramClient
@@ -25,6 +26,15 @@ def handle_telegram_update(
         group_wake_words=settings.telegram_group_wake_word_list,
         bot_username=settings.telegram_bot_username,
     )
+    access = evaluate_access(context, agent.store)
+    if not access.allowed:
+        logger.info(
+            "telegram message ignored source=%s user_id=%s reason=%s",
+            context.source,
+            context.user_id,
+            access.reason,
+        )
+        return {"status": "ignored", "reason": access.reason}
     if not context.is_wake_triggered:
         route = agent.router.route(event.text)
         if route.skill == "feedback":

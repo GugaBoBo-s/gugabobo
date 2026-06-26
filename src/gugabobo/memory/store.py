@@ -42,6 +42,18 @@ CREATE TABLE IF NOT EXISTS memory_items (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS access_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user',
+    display_name TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(platform, user_id)
+);
 """
 
 
@@ -59,6 +71,7 @@ class MemoryStore:
     def init(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate_access_rules(conn)
             columns = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(messages)").fetchall()
@@ -89,6 +102,20 @@ class MemoryStore:
                         "UPDATE messages SET conversation_id = ? WHERE id = ?",
                         (previous_user["conversation_id"], row["id"]),
                     )
+
+    def _migrate_access_rules(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(access_rules)").fetchall()
+        }
+        expected = {
+            "display_name": "TEXT NOT NULL DEFAULT ''",
+            "notes": "TEXT NOT NULL DEFAULT ''",
+            "updated_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        }
+        for column, definition in expected.items():
+            if column not in columns:
+                conn.execute(f"ALTER TABLE access_rules ADD COLUMN {column} {definition}")
 
     def add_message(
         self,
@@ -269,6 +296,54 @@ class MemoryStore:
             cursor = conn.execute("DELETE FROM memory_items WHERE id = ?", (memory_id,))
             return cursor.rowcount > 0
 
+    def upsert_access_rule(
+        self,
+        platform: str,
+        user_id: str,
+        role: str,
+        display_name: str = "",
+        notes: str = "",
+    ) -> int:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO access_rules (platform, user_id, role, display_name, notes) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(platform, user_id) DO UPDATE SET "
+                "role = excluded.role, "
+                "display_name = excluded.display_name, "
+                "notes = excluded.notes, "
+                "updated_at = CURRENT_TIMESTAMP",
+                (platform, user_id, role, display_name, notes),
+            )
+            row = conn.execute(
+                "SELECT id FROM access_rules WHERE platform = ? AND user_id = ?",
+                (platform, user_id),
+            ).fetchone()
+            return int(row["id"])
+
+    def get_access_rule(self, platform: str, user_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id, platform, user_id, role, display_name, notes, created_at, updated_at "
+                "FROM access_rules WHERE platform = ? AND user_id = ?",
+                (platform, user_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_access_rules(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, platform, user_id, role, display_name, notes, created_at, updated_at "
+                "FROM access_rules ORDER BY updated_at DESC, id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_access_rule(self, rule_id: int) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute("DELETE FROM access_rules WHERE id = ?", (rule_id,))
+            return cursor.rowcount > 0
+
     def add_feedback(self, source: str, user_id: str, content: str) -> int:
         with self.connect() as conn:
             cursor = conn.execute(
@@ -310,8 +385,18 @@ class MemoryStore:
         with self.connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM conversation_summaries").fetchone()[0])
 
+    def count_access_rules(self) -> int:
+        with self.connect() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM access_rules").fetchone()[0])
+
     def table_counts(self) -> list[dict[str, Any]]:
-        table_names = ["messages", "feedbacks", "memory_items", "conversation_summaries"]
+        table_names = [
+            "messages",
+            "feedbacks",
+            "memory_items",
+            "conversation_summaries",
+            "access_rules",
+        ]
         with self.connect() as conn:
             return [
                 {

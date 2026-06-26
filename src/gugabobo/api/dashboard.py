@@ -244,6 +244,24 @@ def dashboard_html() -> str:
                   <button id="feedbackButton" type="button">更新反馈</button>
                 </div>
                 <div class="control-box">
+                  <h3>访问权限</h3>
+                  <select id="accessPlatform">
+                    <option value="telegram">telegram</option>
+                    <option value="qq">qq</option>
+                    <option value="web">web</option>
+                  </select>
+                  <input id="accessUserId" placeholder="user_id">
+                  <select id="accessRole">
+                    <option value="user">user</option>
+                    <option value="trusted">trusted</option>
+                    <option value="owner">owner</option>
+                    <option value="blocked">blocked</option>
+                  </select>
+                  <input id="accessDisplayName" placeholder="display_name">
+                  <textarea id="accessNotes" placeholder="备注"></textarea>
+                  <button id="accessRuleButton" type="button">保存权限</button>
+                </div>
+                <div class="control-box">
                   <h3>操作结果</h3>
                   <pre id="controlResult"></pre>
                 </div>
@@ -274,6 +292,15 @@ def dashboard_html() -> str:
                   <tr><th>表</th><th style="width: 120px;">行数</th></tr>
                 </thead>
                 <tbody id="tableCounts"></tbody>
+              </table>
+            </section>
+            <section>
+              <h2>访问权限</h2>
+              <table>
+                <thead>
+                  <tr><th style="width: 54px;">ID</th><th style="width: 90px;">平台</th><th style="width: 120px;">用户</th><th style="width: 90px;">角色</th><th>备注</th><th style="width: 92px;">操作</th></tr>
+                </thead>
+                <tbody id="accessRules"></tbody>
               </table>
             </section>
           </div>
@@ -382,6 +409,7 @@ def dashboard_html() -> str:
               metric("反馈", data.status.feedbacks),
               metric("记忆", data.status.memory_items),
               metric("摘要", data.status.conversation_summaries),
+              metric("权限", data.status.access_rules),
               metric("LLM", data.config.llm_provider),
               metric("回复", data.config.napcat_passive_reply_enabled ? "被动" : (data.config.napcat_reply_enabled ? "主动" : "关闭"), data.config.napcat_passive_reply_enabled || data.config.napcat_reply_enabled ? "ok" : "warn"),
               metric("窗口", data.config.llm_context_messages)
@@ -401,6 +429,14 @@ def dashboard_html() -> str:
             byId("tableCounts").innerHTML = data.table_counts.map((item) => row([
               esc(item.table),
               esc(item.rows)
+            ])).join("");
+            byId("accessRules").innerHTML = data.access_rules.map((item) => row([
+              esc(item.id),
+              esc(item.platform),
+              esc(item.user_id),
+              esc(item.role),
+              `${esc(item.display_name)} ${esc(item.notes)}`,
+              `<button type="button" data-rule-id="${esc(item.id)}" class="delete-access-rule">删除</button>`
             ])).join("");
             byId("messages").innerHTML = currentMessages.map((item) => row([
               esc(item.id),
@@ -537,6 +573,32 @@ def dashboard_html() -> str:
               method: "PATCH",
               headers: adminHeaders(),
               body: JSON.stringify({ status: byId("feedbackStatus").value })
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("accessRuleButton").addEventListener("click", () => {
+            controlFetch("/dashboard-control/access-rules", {
+              method: "POST",
+              headers: adminHeaders(),
+              body: JSON.stringify({
+                platform: byId("accessPlatform").value,
+                user_id: byId("accessUserId").value,
+                role: byId("accessRole").value,
+                display_name: byId("accessDisplayName").value,
+                notes: byId("accessNotes").value
+              })
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("accessRules").addEventListener("click", (event) => {
+            if (!event.target.classList.contains("delete-access-rule")) {
+              return;
+            }
+            const ruleId = event.target.dataset.ruleId;
+            if (!confirm(`删除权限规则 #${ruleId}?`)) {
+              return;
+            }
+            controlFetch(`/dashboard-control/access-rules/${ruleId}`, {
+              method: "DELETE",
+              headers: adminHeaders()
             }).catch((error) => showControlResult(error.message));
           });
           byId("memoryFilterButton").addEventListener("click", loadDashboard);

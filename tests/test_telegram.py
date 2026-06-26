@@ -124,6 +124,24 @@ def test_telegram_group_wake_word_handles_message(tmp_path, monkeypatch):
     get_logger.cache_clear()
 
 
+def test_telegram_blocked_user_is_ignored(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+    client.post(
+        "/dashboard-control/access-rules",
+        json={"platform": "telegram", "user_id": "10001", "role": "blocked"},
+        headers={"X-Gugabobo-Admin-Token": "change-me"},
+    )
+
+    response = client.post("/telegram/events", json=private_payload())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ignored"
+    assert response.json()["reason"] == "blocked"
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
 def test_telegram_webhook_secret_is_checked(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     monkeypatch.setenv("GUGABOBO_TELEGRAM_WEBHOOK_SECRET", "secret")

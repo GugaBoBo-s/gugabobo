@@ -161,6 +161,33 @@ def test_onebot_private_webhook_can_return_passive_reply(tmp_path, monkeypatch):
     get_logger.cache_clear()
 
 
+def test_onebot_blocked_user_is_ignored(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+    client.post(
+        "/dashboard-control/access-rules",
+        json={"platform": "qq", "user_id": "10001", "role": "blocked"},
+        headers={"X-Gugabobo-Admin-Token": "change-me"},
+    )
+
+    response = client.post(
+        "/onebot/v11/events",
+        json={
+            "post_type": "message",
+            "message_type": "private",
+            "user_id": 10001,
+            "raw_message": "你好",
+            "message": "你好",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ignored"
+    assert response.json()["reason"] == "blocked"
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
 def test_onebot_group_feedback_records_without_reply(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     client = TestClient(app)

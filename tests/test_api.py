@@ -66,6 +66,7 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     assert "控制台" in page_response.text
     assert "编辑长期记忆" in page_response.text
     assert "会话上下文" in page_response.text
+    assert "访问权限" in page_response.text
     assert "数据库表状态" in page_response.text
     assert "会话摘要" in page_response.text
     assert '""":' not in page_response.text
@@ -248,6 +249,34 @@ def test_dashboard_control_clears_conversation_messages_and_deletes_summary(
     assert clear_response.json()["deleted"] == 2
     assert messages_response.json() == []
     assert delete_summary_response.json()["deleted"] is True
+    get_settings.cache_clear()
+
+
+def test_dashboard_control_manages_access_rules(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/dashboard-control/access-rules",
+        json={
+            "platform": "telegram",
+            "user_id": "10001",
+            "role": "blocked",
+            "display_name": "blocked user",
+            "notes": "spam",
+        },
+        headers=admin_headers(),
+    )
+    rules_response = client.get("/access-rules")
+    delete_response = client.delete(
+        f"/dashboard-control/access-rules/{create_response.json()['id']}",
+        headers=admin_headers(),
+    )
+
+    assert create_response.status_code == 200
+    assert rules_response.json()[0]["role"] == "blocked"
+    assert rules_response.json()[0]["notes"] == "spam"
+    assert delete_response.json()["deleted"] is True
     get_settings.cache_clear()
 
 

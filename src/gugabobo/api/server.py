@@ -6,6 +6,7 @@ from gugabobo.adapters.onebot import OneBotMessageEvent
 from gugabobo.adapters.telegram_runtime import handle_telegram_update
 from gugabobo.api.dashboard import dashboard_html
 from gugabobo.config import get_settings
+from gugabobo.core.access import evaluate_access
 from gugabobo.core.channel import ChannelContext
 from gugabobo.infra.logs import get_logger, read_log_lines
 from gugabobo.infra.napcat_client import NapCatClient
@@ -60,6 +61,14 @@ class SummarySetRequest(BaseModel):
     updated_until_message_id: int = 0
 
 
+class AccessRuleRequest(BaseModel):
+    platform: str
+    user_id: str
+    role: str = "user"
+    display_name: str = ""
+    notes: str = ""
+
+
 def require_admin_token(x_gugabobo_admin_token: str | None = Header(default=None)) -> None:
     settings = get_settings()
     if settings.admin_token and x_gugabobo_admin_token != settings.admin_token:
@@ -110,6 +119,7 @@ def dashboard_data() -> dict[str, object]:
     status_data = agent.status()
     status_data["memory_items"] = agent.store.count_memory_items()
     status_data["conversation_summaries"] = agent.store.count_conversation_summaries()
+    status_data["access_rules"] = agent.store.count_access_rules()
     return {
         "status": status_data,
         "config": {
@@ -125,6 +135,7 @@ def dashboard_data() -> dict[str, object]:
         "feedbacks": agent.store.list_feedbacks(limit=20),
         "memories": agent.store.list_memory_items(limit=20),
         "summaries": agent.store.list_conversation_summaries(limit=20),
+        "access_rules": agent.store.list_access_rules(limit=50),
         "table_counts": agent.store.table_counts(),
         "logs": read_log_lines(limit=80),
     }
@@ -188,6 +199,11 @@ def feedbacks(limit: int = 20) -> list[dict[str, object]]:
 @app.get("/memories")
 def memories(subject: str | None = None, limit: int = 20) -> list[dict[str, object]]:
     return build_agent().store.list_memory_items(subject=subject, limit=limit)
+
+
+@app.get("/access-rules")
+def access_rules(limit: int = 50) -> list[dict[str, object]]:
+    return build_agent().store.list_access_rules(limit=limit)
 
 
 @app.post("/feedbacks")
@@ -307,6 +323,34 @@ def dashboard_control_clear_conversation_messages(
     return {"conversation_id": conversation_id, "deleted": deleted}
 
 
+@app.post("/dashboard-control/access-rules")
+def dashboard_control_upsert_access_rule(
+    request: AccessRuleRequest,
+    _: None = Depends(require_admin_token),
+) -> dict[str, int]:
+    allowed_roles = {"owner", "trusted", "user", "blocked"}
+    if request.role not in allowed_roles:
+        raise HTTPException(status_code=400, detail="Invalid access role")
+    rule_id = build_agent().store.upsert_access_rule(
+        platform=request.platform,
+        user_id=request.user_id,
+        role=request.role,
+        display_name=request.display_name,
+        notes=request.notes,
+    )
+    return {"id": rule_id}
+
+
+@app.delete("/dashboard-control/access-rules/{rule_id}")
+def dashboard_control_delete_access_rule(
+    rule_id: int,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    if not build_agent().store.delete_access_rule(rule_id):
+        raise HTTPException(status_code=404, detail="Access rule not found")
+    return {"id": rule_id, "deleted": True}
+
+
 @app.patch("/dashboard-control/feedbacks/{feedback_id}")
 def dashboard_control_update_feedback(
     feedback_id: int,
@@ -331,6 +375,15 @@ def onebot_event(payload: dict[str, object]) -> dict[str, object]:
         owner_ids=settings.owner_qq_id_set,
         group_wake_words=settings.qq_group_wake_word_list,
     )
+    access = evaluate_access(context, agent.store)
+    if not access.allowed:
+        logger.info(
+            "onebot message ignored source=%s user_id=%s reason=%s",
+            context.source,
+            context.user_id,
+            access.reason,
+        )
+        return {"status": "ignored", "reason": access.reason}
     reply_allowed = context.is_wake_triggered
     if not reply_allowed:
         route = agent.router.route(text)
