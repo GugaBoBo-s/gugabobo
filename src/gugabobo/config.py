@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     napcat_access_token: str = Field(default="", repr=False)
     napcat_reply_enabled: bool = False
     napcat_passive_reply_enabled: bool = False
-    qq_group_wake_words: str = "gugabobo,咕嘎啵啵"
+    qq_group_wake_words: str = "gugabobo,咕嘎BoBo"
     llm_provider: str = "moonshot"
     moonshot_api_key: str = Field(default="", repr=False)
     moonshot_base_url: str = "https://api.moonshot.ai/v1"
