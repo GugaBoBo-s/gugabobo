@@ -26,16 +26,21 @@ class CoreAgent:
         user_id: str = "local",
         conversation_id: str | None = None,
     ) -> str:
+        settings = get_settings()
         resolved_conversation_id = conversation_id or f"{source}:{user_id}"
         history = self.store.list_conversation_messages(
             resolved_conversation_id,
-            limit=get_settings().llm_context_messages,
+            limit=settings.llm_context_messages,
         )
         llm_history = [
             {"role": str(item["role"]), "content": str(item["content"])}
             for item in history
             if item["role"] in {"user", "assistant"}
         ]
+        system_context = self.build_system_context(
+            conversation_id=resolved_conversation_id,
+            memory_limit=settings.llm_memory_items,
+        )
         self.store.add_message(
             source=source,
             user_id=user_id,
@@ -47,7 +52,11 @@ class CoreAgent:
         if route.skill == "feedback":
             response = self.feedback_skill.record(text, source=source, user_id=user_id)
         else:
-            response = self.chat_skill.reply(text, history=llm_history)
+            response = self.chat_skill.reply(
+                text,
+                history=llm_history,
+                system_context=system_context,
+            )
         self.store.add_message(
             source=source,
             user_id="gugabobo",
@@ -56,6 +65,20 @@ class CoreAgent:
             conversation_id=resolved_conversation_id,
         )
         return response
+
+    def build_system_context(self, conversation_id: str, memory_limit: int) -> list[str]:
+        context = []
+        summary = self.store.get_conversation_summary(conversation_id)
+        if summary:
+            context.append(f"Conversation summary:\n{summary['summary']}")
+        memory_items = self.store.list_memory_items(subject=conversation_id, limit=memory_limit)
+        if memory_items:
+            memory_lines = [
+                f"- [{item['memory_type']}; importance={item['importance']}] {item['content']}"
+                for item in memory_items
+            ]
+            context.append("Relevant long-term memories:\n" + "\n".join(memory_lines))
+        return context
 
     def status(self) -> dict[str, object]:
         settings = get_settings()

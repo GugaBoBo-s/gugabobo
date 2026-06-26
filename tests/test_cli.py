@@ -58,3 +58,35 @@ def test_feedback_resolve_and_reopen_commands(tmp_path, monkeypatch):
     assert "#1 [new]" in list_result.output
     get_settings.cache_clear()
     get_logger.cache_clear()
+
+
+def test_memory_commands(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+
+    add_result = runner.invoke(
+        app,
+        ["memory", "add", "用户喜欢蓝色", "--subject", "qq:user:1", "--memory-type", "preference"],
+    )
+    list_result = runner.invoke(app, ["memory", "list", "--subject", "qq:user:1"])
+
+    assert add_result.exit_code == 0
+    assert list_result.exit_code == 0
+    assert "用户喜欢蓝色" in list_result.output
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
+def test_summary_commands(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+
+    set_result = runner.invoke(
+        app,
+        ["summary", "set", "qq:user:1", "用户正在测试上下文。"],
+    )
+    show_result = runner.invoke(app, ["summary", "show", "qq:user:1"])
+
+    assert set_result.exit_code == 0
+    assert show_result.exit_code == 0
+    assert "用户正在测试上下文" in show_result.output
+    get_settings.cache_clear()
+    get_logger.cache_clear()

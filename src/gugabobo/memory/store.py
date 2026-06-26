@@ -24,6 +24,24 @@ CREATE TABLE IF NOT EXISTS feedbacks (
     status TEXT NOT NULL DEFAULT 'new',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS conversation_summaries (
+    conversation_id TEXT PRIMARY KEY,
+    summary TEXT NOT NULL,
+    updated_until_message_id INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS memory_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject TEXT NOT NULL,
+    memory_type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    importance INTEGER NOT NULL DEFAULT 5,
+    source TEXT NOT NULL DEFAULT 'manual',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -118,6 +136,81 @@ class MemoryStore:
                 (message_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def upsert_conversation_summary(
+        self,
+        conversation_id: str,
+        summary: str,
+        updated_until_message_id: int = 0,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO conversation_summaries "
+                "(conversation_id, summary, updated_until_message_id, updated_at) "
+                "VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(conversation_id) DO UPDATE SET "
+                "summary = excluded.summary, "
+                "updated_until_message_id = excluded.updated_until_message_id, "
+                "updated_at = CURRENT_TIMESTAMP",
+                (conversation_id, summary, updated_until_message_id),
+            )
+
+    def get_conversation_summary(self, conversation_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT conversation_id, summary, updated_until_message_id, updated_at "
+                "FROM conversation_summaries WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_conversation_summaries(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT conversation_id, summary, updated_until_message_id, updated_at "
+                "FROM conversation_summaries ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_memory_item(
+        self,
+        subject: str,
+        content: str,
+        memory_type: str = "note",
+        importance: int = 5,
+        source: str = "manual",
+    ) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "INSERT INTO memory_items (subject, memory_type, content, importance, source) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (subject, memory_type, content, importance, source),
+            )
+            return int(cursor.lastrowid)
+
+    def list_memory_items(
+        self,
+        subject: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            if subject:
+                rows = conn.execute(
+                    "SELECT id, subject, memory_type, content, importance, source, "
+                    "created_at, updated_at FROM memory_items "
+                    "WHERE subject IN (?, 'global') "
+                    "ORDER BY importance DESC, id DESC LIMIT ?",
+                    (subject, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, subject, memory_type, content, importance, source, "
+                    "created_at, updated_at FROM memory_items "
+                    "ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        return [dict(row) for row in rows]
 
     def add_feedback(self, source: str, user_id: str, content: str) -> int:
         with self.connect() as conn:

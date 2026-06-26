@@ -1039,7 +1039,25 @@ QQ private: qq:user:<user_id>
 QQ group: qq:group:<group_id>
 ```
 
-The LLM receives only the latest `GUGABOBO_LLM_CONTEXT_MESSAGES` messages from the same conversation. Different users and different groups do not share short-term context.
+The LLM context has three layers:
+
+```text
+recent raw messages from the same conversation
+conversation summary
+long-term memory items for the same conversation and global memories
+```
+
+Different users and different groups do not share short-term context.
+
+Manual memory and summary commands:
+
+```text
+gugabobo memory add "用户喜欢蓝色" --subject qq:user:241398668 --memory-type preference --importance 8
+gugabobo memory list --subject qq:user:241398668
+gugabobo summary set qq:user:241398668 "用户正在测试 QQ Bot 上下文。"
+gugabobo summary show qq:user:241398668
+gugabobo summary list
+```
 
 ## 21. Logging And Observability
 

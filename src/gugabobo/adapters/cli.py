@@ -12,10 +12,14 @@ feedback_app = typer.Typer(help="Feedback commands")
 messages_app = typer.Typer(help="Message commands")
 config_app = typer.Typer(help="Configuration commands")
 db_app = typer.Typer(help="Database commands")
+memory_app = typer.Typer(help="Long-term memory commands")
+summary_app = typer.Typer(help="Conversation summary commands")
 app.add_typer(feedback_app, name="feedback")
 app.add_typer(messages_app, name="messages")
 app.add_typer(config_app, name="config")
 app.add_typer(db_app, name="db")
+app.add_typer(memory_app, name="memory")
+app.add_typer(summary_app, name="summary")
 
 
 def echo_mapping(data: dict[str, object]) -> None:
@@ -94,6 +98,60 @@ def feedback_reopen(feedback_id: int) -> None:
     typer.echo(f"已重新打开反馈 #{feedback_id}。")
 
 
+@memory_app.command("add")
+def memory_add(
+    content: str,
+    subject: str = "global",
+    memory_type: str = "note",
+    importance: int = 5,
+) -> None:
+    """Add one long-term memory item."""
+    memory_id = build_agent().store.add_memory_item(
+        subject=subject,
+        content=content,
+        memory_type=memory_type,
+        importance=importance,
+    )
+    typer.echo(f"已添加记忆 #{memory_id}。")
+
+
+@memory_app.command("list")
+def memory_list(subject: str | None = None, limit: int = 20) -> None:
+    """List long-term memory items."""
+    for item in build_agent().store.list_memory_items(subject=subject, limit=limit):
+        typer.echo(
+            f"#{item['id']} [{item['subject']}/{item['memory_type']}/"
+            f"{item['importance']}] {item['content']}"
+        )
+
+
+@summary_app.command("set")
+def summary_set(conversation_id: str, summary: str, updated_until_message_id: int = 0) -> None:
+    """Set one conversation summary."""
+    build_agent().store.upsert_conversation_summary(
+        conversation_id=conversation_id,
+        summary=summary,
+        updated_until_message_id=updated_until_message_id,
+    )
+    typer.echo(f"已更新会话摘要：{conversation_id}")
+
+
+@summary_app.command("show")
+def summary_show(conversation_id: str) -> None:
+    """Show one conversation summary."""
+    summary = build_agent().store.get_conversation_summary(conversation_id)
+    if not summary:
+        raise typer.BadParameter(f"summary for {conversation_id} not found")
+    echo_mapping(summary)
+
+
+@summary_app.command("list")
+def summary_list(limit: int = 20) -> None:
+    """List conversation summaries."""
+    for item in build_agent().store.list_conversation_summaries(limit=limit):
+        typer.echo(f"{item['conversation_id']}: {item['summary']}")
+
+
 @config_app.command("show")
 def config_show() -> None:
     """Show effective configuration."""
@@ -122,6 +180,7 @@ def config_show() -> None:
             "deepseek_api_key": "***" if settings.deepseek_api_key else "",
             "llm_timeout_seconds": settings.llm_timeout_seconds,
             "llm_context_messages": settings.llm_context_messages,
+            "llm_memory_items": settings.llm_memory_items,
         }
     )
 

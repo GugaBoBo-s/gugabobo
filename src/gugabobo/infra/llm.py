@@ -41,10 +41,11 @@ class OpenAICompatibleClient:
         text: str,
         persona: Persona,
         history: list[dict[str, str]] | None = None,
+        system_context: list[str] | None = None,
     ) -> LLMResult:
         if not self.configured:
             raise RuntimeError(f"{self.provider_name} API key is not configured")
-        response = self._post_chat_completion(text, persona, history or [])
+        response = self._post_chat_completion(text, persona, history or [], system_context or [])
         choice = response["choices"][0]
         content = choice["message"]["content"]
         return LLMResult(content=str(content).strip(), model=str(response.get("model", "")))
@@ -54,6 +55,7 @@ class OpenAICompatibleClient:
         text: str,
         persona: Persona,
         history: list[dict[str, str]],
+        system_context: list[str],
     ) -> dict[str, object]:
         url = f"{self.base_url.rstrip('/')}/chat/completions"
         headers = {
@@ -61,6 +63,9 @@ class OpenAICompatibleClient:
             "Content-Type": "application/json",
         }
         messages = [{"role": "system", "content": persona.system_summary()}]
+        for content in system_context:
+            if content.strip():
+                messages.append({"role": "system", "content": content})
         messages.extend(history)
         messages.append({"role": "user", "content": text})
         payload = {

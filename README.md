@@ -71,7 +71,22 @@ GUGABOBO_LLM_CONTEXT_MESSAGES=12
 
 If the API key is missing or the provider call fails, chat falls back to the local placeholder reply.
 
-LLM context is scoped by conversation. CLI/API users, QQ private chats, and QQ groups keep separate short-term context windows.
+LLM context is scoped by conversation. CLI/API users, QQ private chats, and QQ groups keep separate context.
+
+Context inputs:
+
+- recent raw messages from the same conversation
+- optional conversation summary
+- relevant long-term memory items for the same conversation and global memories
+
+Useful commands:
+
+```bash
+gugabobo memory add "用户喜欢蓝色" --subject qq:user:241398668 --memory-type preference --importance 8
+gugabobo memory list --subject qq:user:241398668
+gugabobo summary set qq:user:241398668 "用户正在测试 QQ Bot 上下文。"
+gugabobo summary show qq:user:241398668
+```
 
 ## Configuration
 
