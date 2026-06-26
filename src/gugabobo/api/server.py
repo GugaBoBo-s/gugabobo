@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -32,6 +32,31 @@ class FeedbackCreateRequest(BaseModel):
 
 class FeedbackStatusRequest(BaseModel):
     status: str
+
+
+class DashboardChatRequest(BaseModel):
+    message: str
+    user_id: str = "dashboard"
+    conversation_id: str | None = None
+
+
+class MemoryCreateRequest(BaseModel):
+    subject: str = "global"
+    content: str
+    memory_type: str = "note"
+    importance: int = 5
+
+
+class SummarySetRequest(BaseModel):
+    conversation_id: str
+    summary: str
+    updated_until_message_id: int = 0
+
+
+def require_admin_token(x_gugabobo_admin_token: str | None = Header(default=None)) -> None:
+    settings = get_settings()
+    if settings.admin_token and x_gugabobo_admin_token != settings.admin_token:
+        raise HTTPException(status_code=401, detail="Invalid admin token")
 
 
 @app.get("/")
@@ -168,6 +193,64 @@ def update_feedback(feedback_id: int, request: FeedbackStatusRequest) -> dict[st
     if not agent.store.update_feedback_status(feedback_id, request.status):
         raise HTTPException(status_code=404, detail="Feedback not found")
     return {"id": feedback_id, "status": request.status}
+
+
+@app.post("/dashboard-control/chat")
+def dashboard_control_chat(
+    request: DashboardChatRequest,
+    _: None = Depends(require_admin_token),
+) -> dict[str, str]:
+    agent = build_agent()
+    reply = agent.handle_context_message(
+        request.message,
+        ChannelContext(
+            platform="web",
+            channel_type="webhook",
+            source="dashboard",
+            user_id=request.user_id,
+            conversation_id=request.conversation_id or f"dashboard:{request.user_id}",
+            is_owner=True,
+            is_wake_triggered=True,
+        ),
+    )
+    return {"reply": reply}
+
+
+@app.post("/dashboard-control/memories")
+def dashboard_control_add_memory(
+    request: MemoryCreateRequest,
+    _: None = Depends(require_admin_token),
+) -> dict[str, int]:
+    memory_id = build_agent().store.add_memory_item(
+        subject=request.subject,
+        content=request.content,
+        memory_type=request.memory_type,
+        importance=request.importance,
+        source="dashboard",
+    )
+    return {"id": memory_id}
+
+
+@app.post("/dashboard-control/summaries")
+def dashboard_control_set_summary(
+    request: SummarySetRequest,
+    _: None = Depends(require_admin_token),
+) -> dict[str, str]:
+    build_agent().store.upsert_conversation_summary(
+        conversation_id=request.conversation_id,
+        summary=request.summary,
+        updated_until_message_id=request.updated_until_message_id,
+    )
+    return {"conversation_id": request.conversation_id}
+
+
+@app.patch("/dashboard-control/feedbacks/{feedback_id}")
+def dashboard_control_update_feedback(
+    feedback_id: int,
+    request: FeedbackStatusRequest,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    return update_feedback(feedback_id, request)
 
 
 @app.post("/onebot/v11/events")

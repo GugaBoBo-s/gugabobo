@@ -127,6 +127,37 @@ def dashboard_html() -> str:
             color: var(--muted);
             font-size: 13px;
           }
+          .control-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+            padding: 12px;
+          }
+          .control-box {
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            padding: 10px;
+            display: grid;
+            gap: 8px;
+            align-content: start;
+          }
+          .control-box h3 {
+            margin: 0;
+            font-size: 13px;
+            font-weight: 650;
+          }
+          input, select, textarea {
+            width: 100%;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            padding: 7px 8px;
+            font: inherit;
+            background: #fff;
+          }
+          textarea {
+            min-height: 72px;
+            resize: vertical;
+          }
           button {
             border: 1px solid var(--line);
             background: #fff;
@@ -138,6 +169,7 @@ def dashboard_html() -> str:
           @media (max-width: 960px) {
             main { grid-template-columns: 1fr; }
             .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .control-grid { grid-template-columns: 1fr; }
           }
         </style>
       </head>
@@ -154,6 +186,51 @@ def dashboard_html() -> str:
             <section>
               <h2>运行状态</h2>
               <div class="grid" id="metrics"></div>
+            </section>
+            <section>
+              <h2>控制台</h2>
+              <div class="control-grid">
+                <div class="control-box">
+                  <h3>Admin Token</h3>
+                  <input id="adminToken" type="password" placeholder="GUGABOBO_ADMIN_TOKEN">
+                  <button id="saveTokenButton" type="button">保存到本机浏览器</button>
+                </div>
+                <div class="control-box">
+                  <h3>发送测试消息</h3>
+                  <input id="chatConversationId" placeholder="conversation_id，可空">
+                  <textarea id="chatMessage" placeholder="消息内容"></textarea>
+                  <button id="chatButton" type="button">发送</button>
+                </div>
+                <div class="control-box">
+                  <h3>添加长期记忆</h3>
+                  <input id="memorySubject" value="global" placeholder="subject">
+                  <input id="memoryType" value="note" placeholder="memory_type">
+                  <input id="memoryImportance" type="number" value="5" min="1" max="10">
+                  <textarea id="memoryContent" placeholder="记忆内容"></textarea>
+                  <button id="memoryButton" type="button">添加记忆</button>
+                </div>
+                <div class="control-box">
+                  <h3>设置会话摘要</h3>
+                  <input id="summaryConversationId" placeholder="conversation_id">
+                  <textarea id="summaryContent" placeholder="摘要内容"></textarea>
+                  <button id="summaryButton" type="button">保存摘要</button>
+                </div>
+                <div class="control-box">
+                  <h3>修改反馈状态</h3>
+                  <input id="feedbackId" type="number" placeholder="反馈 ID">
+                  <select id="feedbackStatus">
+                    <option value="new">new</option>
+                    <option value="triaged">triaged</option>
+                    <option value="resolved">resolved</option>
+                    <option value="ignored">ignored</option>
+                  </select>
+                  <button id="feedbackButton" type="button">更新反馈</button>
+                </div>
+                <div class="control-box">
+                  <h3>操作结果</h3>
+                  <pre id="controlResult"></pre>
+                </div>
+              </div>
             </section>
             <section>
               <h2>会话</h2>
@@ -219,6 +296,8 @@ def dashboard_html() -> str:
         </main>
         <script>
           const byId = (id) => document.getElementById(id);
+          const tokenStorageKey = "gugabobo.adminToken";
+          byId("adminToken").value = localStorage.getItem(tokenStorageKey) || "";
           function esc(value) {
             return String(value ?? "").replace(/[&<>"']/g, (c) => {
               switch (c) {
@@ -236,6 +315,27 @@ def dashboard_html() -> str:
           }
           function row(cells) {
             return `<tr>${cells.map((cell) => `<td>${cell}</td>`).join("")}</tr>`;
+          }
+          function adminHeaders() {
+            return {
+              "Content-Type": "application/json",
+              "X-Gugabobo-Admin-Token": byId("adminToken").value
+            };
+          }
+          function showControlResult(value) {
+            byId("controlResult").textContent = typeof value === "string"
+              ? value
+              : JSON.stringify(value, null, 2);
+          }
+          async function controlFetch(url, options) {
+            const response = await fetch(url, options);
+            const data = await response.json();
+            if (!response.ok) {
+              throw new Error(data.detail || response.statusText);
+            }
+            showControlResult(data);
+            await loadDashboard();
+            return data;
           }
           async function loadDashboard() {
             const state = byId("refreshState");
@@ -285,6 +385,49 @@ def dashboard_html() -> str:
             byId("logs").textContent = data.logs.join("\\n");
             state.textContent = `已刷新 ${new Date().toLocaleTimeString()}`;
           }
+          byId("saveTokenButton").addEventListener("click", () => {
+            localStorage.setItem(tokenStorageKey, byId("adminToken").value);
+            showControlResult("admin token saved");
+          });
+          byId("chatButton").addEventListener("click", () => {
+            controlFetch("/dashboard-control/chat", {
+              method: "POST",
+              headers: adminHeaders(),
+              body: JSON.stringify({
+                message: byId("chatMessage").value,
+                conversation_id: byId("chatConversationId").value || null
+              })
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("memoryButton").addEventListener("click", () => {
+            controlFetch("/dashboard-control/memories", {
+              method: "POST",
+              headers: adminHeaders(),
+              body: JSON.stringify({
+                subject: byId("memorySubject").value || "global",
+                memory_type: byId("memoryType").value || "note",
+                importance: Number(byId("memoryImportance").value || 5),
+                content: byId("memoryContent").value
+              })
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("summaryButton").addEventListener("click", () => {
+            controlFetch("/dashboard-control/summaries", {
+              method: "POST",
+              headers: adminHeaders(),
+              body: JSON.stringify({
+                conversation_id: byId("summaryConversationId").value,
+                summary: byId("summaryContent").value
+              })
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("feedbackButton").addEventListener("click", () => {
+            controlFetch(`/dashboard-control/feedbacks/${byId("feedbackId").value}`, {
+              method: "PATCH",
+              headers: adminHeaders(),
+              body: JSON.stringify({ status: byId("feedbackStatus").value })
+            }).catch((error) => showControlResult(error.message));
+          });
           byId("refreshButton").addEventListener("click", loadDashboard);
           loadDashboard().catch((error) => { byId("refreshState").textContent = error.message; });
           setInterval(() => loadDashboard().catch((error) => {

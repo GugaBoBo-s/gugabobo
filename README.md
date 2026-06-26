@@ -33,6 +33,8 @@ Open the local monitoring dashboard:
 http://127.0.0.1:8765/dashboard
 ```
 
+The dashboard can also run admin-controlled actions after entering `GUGABOBO_ADMIN_TOKEN`: send a test chat message, add long-term memory, set a conversation summary, and update feedback status.
+
 Windows launchers:
 
 ```text

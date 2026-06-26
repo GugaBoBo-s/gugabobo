@@ -8,9 +8,14 @@ def configure_test_env(tmp_path, monkeypatch):
     monkeypatch.setenv("GUGABOBO_DB_PATH", str(tmp_path / "api.db"))
     monkeypatch.setenv("GUGABOBO_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("GUGABOBO_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setenv("GUGABOBO_ADMIN_TOKEN", "test-admin")
     monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
     monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
     get_settings.cache_clear()
+
+
+def admin_headers() -> dict[str, str]:
+    return {"X-Gugabobo-Admin-Token": "test-admin"}
 
 
 def test_health_endpoint(tmp_path, monkeypatch):
@@ -58,6 +63,7 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
 
     assert page_response.status_code == 200
     assert "咕嘎BoBo Dashboard" in page_response.text
+    assert "控制台" in page_response.text
     assert "数据库表状态" in page_response.text
     assert "会话摘要" in page_response.text
     assert '""":' not in page_response.text
@@ -65,6 +71,63 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     assert "status" in data_response.json()
     assert "messages" in data_response.json()
     assert "table_counts" in data_response.json()
+    get_settings.cache_clear()
+
+
+def test_dashboard_control_requires_admin_token(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/dashboard-control/chat", json={"message": "你好"})
+
+    assert response.status_code == 401
+    get_settings.cache_clear()
+
+
+def test_dashboard_control_chat_records_message(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    response = client.post(
+        "/dashboard-control/chat",
+        json={"message": "你好", "conversation_id": "dashboard:test"},
+        headers=admin_headers(),
+    )
+    messages_response = client.get("/messages")
+
+    assert response.status_code == 200
+    assert "已收到" in response.json()["reply"]
+    assert messages_response.json()[0]["conversation_id"] == "dashboard:test"
+    get_settings.cache_clear()
+
+
+def test_dashboard_control_memory_summary_and_feedback(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+    feedback_id = client.post(
+        "/feedbacks",
+        json={"content": "回复太长", "user_id": "u1"},
+    ).json()["id"]
+
+    memory_response = client.post(
+        "/dashboard-control/memories",
+        json={"subject": "global", "content": "主人喜欢短回复", "memory_type": "preference"},
+        headers=admin_headers(),
+    )
+    summary_response = client.post(
+        "/dashboard-control/summaries",
+        json={"conversation_id": "dashboard:test", "summary": "正在测试控制台。"},
+        headers=admin_headers(),
+    )
+    feedback_response = client.patch(
+        f"/dashboard-control/feedbacks/{feedback_id}",
+        json={"status": "triaged"},
+        headers=admin_headers(),
+    )
+
+    assert memory_response.status_code == 200
+    assert summary_response.json()["conversation_id"] == "dashboard:test"
+    assert feedback_response.json()["status"] == "triaged"
     get_settings.cache_clear()
 
 
