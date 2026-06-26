@@ -1070,6 +1070,14 @@ gugabobo summary show qq:user:241398668
 gugabobo summary list
 ```
 
+Explicit memory capture:
+
+```text
+If the user starts a message with `记住`, `请记住`, `你要记住`, `帮我记住`, or `remember`,
+gugabobo stores the remaining content as a long-term memory for the current conversation.
+Regular chat messages are not automatically stored as long-term memory.
+```
+
 ## 21. Logging And Observability
 
 Target log categories:

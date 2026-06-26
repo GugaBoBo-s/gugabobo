@@ -32,6 +32,43 @@ def test_feedback_route_records_feedback(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
+def test_explicit_memory_request_records_long_term_memory(tmp_path, monkeypatch):
+    monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
+    monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
+    get_settings.cache_clear()
+    agent = CoreAgent(MemoryStore(tmp_path / "test.db"))
+
+    reply = agent.handle_message(
+        "记住我喜欢蓝色",
+        source="qq_private",
+        user_id="u1",
+        conversation_id="qq:user:u1",
+    )
+    memories = agent.store.list_memory_items(subject="qq:user:u1")
+
+    assert "已记住" in reply
+    assert memories[0]["content"] == "我喜欢蓝色"
+    assert memories[0]["source"] == "explicit_user_request"
+    get_settings.cache_clear()
+
+
+def test_regular_chat_does_not_record_long_term_memory(tmp_path, monkeypatch):
+    monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
+    monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
+    get_settings.cache_clear()
+    agent = CoreAgent(MemoryStore(tmp_path / "test.db"))
+
+    agent.handle_message(
+        "我喜欢蓝色",
+        source="qq_private",
+        user_id="u1",
+        conversation_id="qq:user:u1",
+    )
+
+    assert agent.store.list_memory_items(subject="qq:user:u1") == []
+    get_settings.cache_clear()
+
+
 class FakeLLMClient:
     configured = True
 

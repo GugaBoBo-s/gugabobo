@@ -102,6 +102,8 @@ gugabobo summary set qq:user:241398668 "用户正在测试 QQ Bot 上下文。"
 gugabobo summary show qq:user:241398668
 ```
 
+When a user explicitly says `记住...`, `请记住...`, `你要记住...`, `帮我记住...`, or `remember...`, gugabobo records the content as a long-term memory for the current conversation automatically.
+
 ## Configuration
 
 Copy `.env.example` to `.env` when you need custom local settings.

@@ -4,6 +4,7 @@ from gugabobo.config import get_settings
 from gugabobo.memory.store import MemoryStore
 from gugabobo.skills.chat import ChatSkill
 from gugabobo.skills.feedback import FeedbackSkill
+from gugabobo.skills.memory import MemorySkill
 
 
 class CoreAgent:
@@ -18,6 +19,7 @@ class CoreAgent:
         self.router = router or Router()
         self.chat_skill = ChatSkill(self.persona)
         self.feedback_skill = FeedbackSkill(store)
+        self.memory_skill = MemorySkill(store)
 
     def handle_message(
         self,
@@ -51,6 +53,8 @@ class CoreAgent:
         route = self.router.route(text)
         if route.skill == "feedback":
             response = self.feedback_skill.record(text, source=source, user_id=user_id)
+        elif route.skill == "memory":
+            response = self.memory_skill.record(text, subject=resolved_conversation_id)
         else:
             response = self.chat_skill.reply(
                 text,
