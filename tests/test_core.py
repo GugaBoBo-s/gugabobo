@@ -152,6 +152,16 @@ def test_chat_skill_falls_back_without_llm():
     assert "已收到" in reply
 
 
+def test_persona_system_summary_contains_operating_rules():
+    summary = Persona().system_summary()
+
+    assert "咕嘎BoBo" in summary
+    assert "QQ群聊" in summary
+    assert "长期记忆" in summary
+    assert "合并 PR" in summary
+    assert "API key" in summary
+
+
 def test_build_llm_client_uses_deepseek_provider(monkeypatch):
     monkeypatch.setenv("GUGABOBO_LLM_PROVIDER", "deepseek")
     monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "test-key")
