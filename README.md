@@ -33,6 +33,14 @@ Open the local monitoring dashboard:
 http://127.0.0.1:8765/dashboard
 ```
 
+Windows launchers:
+
+```text
+scripts\start-gugabobo.bat
+scripts\stop-gugabobo.bat
+scripts\restart-gugabobo.bat
+```
+
 ## NapCat / OneBot v11
 
 P1 starts with a OneBot v11 HTTP webhook for NapCat.
