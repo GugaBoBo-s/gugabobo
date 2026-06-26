@@ -8,7 +8,9 @@ def configure_test_env(tmp_path, monkeypatch):
     monkeypatch.setenv("GUGABOBO_DB_PATH", str(tmp_path / "api.db"))
     monkeypatch.setenv("GUGABOBO_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("GUGABOBO_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setenv("GUGABOBO_CONFIG_FILE_PATH", str(tmp_path / ".env"))
     monkeypatch.setenv("GUGABOBO_ADMIN_TOKEN", "test-admin")
+    monkeypatch.setenv("GUGABOBO_LLM_PROVIDER", "moonshot")
     monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
     monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
     get_settings.cache_clear()
@@ -65,6 +67,7 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     assert "咕嘎BoBo Dashboard" in page_response.text
     assert "控制台" in page_response.text
     assert "编辑长期记忆" in page_response.text
+    assert "配置编辑器" in page_response.text
     assert "会话上下文" in page_response.text
     assert "访问权限" in page_response.text
     assert "运行管理" in page_response.text
@@ -97,6 +100,51 @@ def test_dashboard_runtime_control_requires_admin_token(tmp_path, monkeypatch):
     response = client.post("/dashboard-control/runtime/telegram/start")
 
     assert response.status_code == 401
+    get_settings.cache_clear()
+
+
+def test_dashboard_config_control_requires_admin_token(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    response = client.get("/dashboard-control/config")
+
+    assert response.status_code == 401
+    get_settings.cache_clear()
+
+
+def test_dashboard_config_control_updates_env_file(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "GUGABOBO_LLM_PROVIDER=moonshot\nGUGABOBO_DEEPSEEK_API_KEY=secret\n",
+        encoding="utf-8",
+    )
+    client = TestClient(app)
+
+    config_response = client.get("/dashboard-control/config", headers=admin_headers())
+    update_response = client.post(
+        "/dashboard-control/config",
+        json={
+            "values": {
+                "GUGABOBO_LLM_PROVIDER": "deepseek",
+                "GUGABOBO_LLM_CONTEXT_MESSAGES": 80,
+                "GUGABOBO_TELEGRAM_REPLY_ENABLED": True,
+                "GUGABOBO_DEEPSEEK_API_KEY": "should-not-save",
+            }
+        },
+        headers=admin_headers(),
+    )
+    env_text = env_path.read_text(encoding="utf-8")
+
+    assert config_response.status_code == 200
+    assert config_response.json()["values"]["GUGABOBO_LLM_PROVIDER"] == "moonshot"
+    assert update_response.status_code == 200
+    assert "GUGABOBO_LLM_PROVIDER=deepseek" in env_text
+    assert "GUGABOBO_LLM_CONTEXT_MESSAGES=80" in env_text
+    assert "GUGABOBO_TELEGRAM_REPLY_ENABLED=true" in env_text
+    assert "should-not-save" not in env_text
+    assert "GUGABOBO_DEEPSEEK_API_KEY=secret" in env_text
     get_settings.cache_clear()
 
 

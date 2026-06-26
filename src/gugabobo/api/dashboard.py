@@ -172,6 +172,9 @@ def dashboard_html() -> str:
             font: inherit;
             background: #fff;
           }
+          input[type="checkbox"] {
+            width: auto;
+          }
           textarea {
             min-height: 72px;
             resize: vertical;
@@ -212,6 +215,29 @@ def dashboard_html() -> str:
                   <h3>Admin Token</h3>
                   <input id="adminToken" type="password" placeholder="GUGABOBO_ADMIN_TOKEN">
                   <button id="saveTokenButton" type="button">保存到本机浏览器</button>
+                </div>
+                <div class="control-box">
+                  <h3>配置编辑器</h3>
+                  <select id="configLlmProvider">
+                    <option value="moonshot">moonshot</option>
+                    <option value="deepseek">deepseek</option>
+                  </select>
+                  <input id="configMoonshotModel" placeholder="Moonshot model">
+                  <input id="configDeepseekModel" placeholder="DeepSeek model">
+                  <input id="configContextMessages" type="number" min="1" placeholder="上下文消息数">
+                  <input id="configMemoryItems" type="number" min="0" placeholder="长期记忆条数">
+                  <label><input id="configTelegramReplyEnabled" type="checkbox"> Telegram 发送回复</label>
+                  <label><input id="configNapcatReplyEnabled" type="checkbox"> NapCat 主动回复</label>
+                  <label><input id="configNapcatPassiveReplyEnabled" type="checkbox"> NapCat 被动回复</label>
+                  <input id="configQqWakeWords" placeholder="QQ 群聊唤醒词，逗号分隔">
+                  <input id="configTelegramWakeWords" placeholder="Telegram 群聊唤醒词，逗号分隔">
+                  <input id="configOwnerQqIds" placeholder="owner QQ IDs，逗号分隔">
+                  <input id="configOwnerTelegramIds" placeholder="owner Telegram IDs，逗号分隔">
+                  <input id="configNapcatApiUrl" placeholder="NapCat API URL">
+                  <input id="configTelegramBotUsername" placeholder="Telegram bot username">
+                  <div id="configSecrets" class="muted"></div>
+                  <button id="loadConfigButton" type="button">加载配置</button>
+                  <button id="saveConfigButton" type="button">保存配置</button>
                 </div>
                 <div class="control-box">
                   <h3>运行管理</h3>
@@ -408,6 +434,56 @@ def dashboard_html() -> str:
               ? value
               : JSON.stringify(value, null, 2);
           }
+          function applyEditableConfig(config) {
+            const values = config.values;
+            byId("configLlmProvider").value = values.GUGABOBO_LLM_PROVIDER || "moonshot";
+            byId("configMoonshotModel").value = values.GUGABOBO_MOONSHOT_MODEL || "";
+            byId("configDeepseekModel").value = values.GUGABOBO_DEEPSEEK_MODEL || "";
+            byId("configContextMessages").value = values.GUGABOBO_LLM_CONTEXT_MESSAGES || 40;
+            byId("configMemoryItems").value = values.GUGABOBO_LLM_MEMORY_ITEMS || 12;
+            byId("configTelegramReplyEnabled").checked = Boolean(values.GUGABOBO_TELEGRAM_REPLY_ENABLED);
+            byId("configNapcatReplyEnabled").checked = Boolean(values.GUGABOBO_NAPCAT_REPLY_ENABLED);
+            byId("configNapcatPassiveReplyEnabled").checked = Boolean(values.GUGABOBO_NAPCAT_PASSIVE_REPLY_ENABLED);
+            byId("configQqWakeWords").value = values.GUGABOBO_QQ_GROUP_WAKE_WORDS || "";
+            byId("configTelegramWakeWords").value = values.GUGABOBO_TELEGRAM_GROUP_WAKE_WORDS || "";
+            byId("configOwnerQqIds").value = values.GUGABOBO_OWNER_QQ_IDS || "";
+            byId("configOwnerTelegramIds").value = values.GUGABOBO_OWNER_TELEGRAM_IDS || "";
+            byId("configNapcatApiUrl").value = values.GUGABOBO_NAPCAT_API_URL || "";
+            byId("configTelegramBotUsername").value = values.GUGABOBO_TELEGRAM_BOT_USERNAME || "";
+            byId("configSecrets").innerHTML = Object.entries(config.secrets)
+              .map(([key, configured]) => `${esc(key.replace("GUGABOBO_", ""))}: ${pill(configured ? "configured" : "missing", configured)}`)
+              .join("<br>");
+          }
+          function collectEditableConfig() {
+            return {
+              GUGABOBO_LLM_PROVIDER: byId("configLlmProvider").value,
+              GUGABOBO_MOONSHOT_MODEL: byId("configMoonshotModel").value,
+              GUGABOBO_DEEPSEEK_MODEL: byId("configDeepseekModel").value,
+              GUGABOBO_LLM_CONTEXT_MESSAGES: Number(byId("configContextMessages").value || 40),
+              GUGABOBO_LLM_MEMORY_ITEMS: Number(byId("configMemoryItems").value || 12),
+              GUGABOBO_TELEGRAM_REPLY_ENABLED: byId("configTelegramReplyEnabled").checked,
+              GUGABOBO_NAPCAT_REPLY_ENABLED: byId("configNapcatReplyEnabled").checked,
+              GUGABOBO_NAPCAT_PASSIVE_REPLY_ENABLED: byId("configNapcatPassiveReplyEnabled").checked,
+              GUGABOBO_QQ_GROUP_WAKE_WORDS: byId("configQqWakeWords").value,
+              GUGABOBO_TELEGRAM_GROUP_WAKE_WORDS: byId("configTelegramWakeWords").value,
+              GUGABOBO_OWNER_QQ_IDS: byId("configOwnerQqIds").value,
+              GUGABOBO_OWNER_TELEGRAM_IDS: byId("configOwnerTelegramIds").value,
+              GUGABOBO_NAPCAT_API_URL: byId("configNapcatApiUrl").value,
+              GUGABOBO_TELEGRAM_BOT_USERNAME: byId("configTelegramBotUsername").value
+            };
+          }
+          async function loadEditableConfig() {
+            const response = await fetch("/dashboard-control/config", {
+              headers: { "X-Gugabobo-Admin-Token": byId("adminToken").value },
+              cache: "no-store"
+            });
+            const data = await response.json();
+            if (!response.ok) {
+              throw new Error(data.detail || response.statusText);
+            }
+            applyEditableConfig(data);
+            showControlResult("config loaded");
+          }
           async function controlFetch(url, options) {
             const response = await fetch(url, options);
             const data = await response.json();
@@ -502,6 +578,17 @@ def dashboard_html() -> str:
           byId("saveTokenButton").addEventListener("click", () => {
             localStorage.setItem(tokenStorageKey, byId("adminToken").value);
             showControlResult("admin token saved");
+            loadEditableConfig().catch((error) => showControlResult(error.message));
+          });
+          byId("loadConfigButton").addEventListener("click", () => {
+            loadEditableConfig().catch((error) => showControlResult(error.message));
+          });
+          byId("saveConfigButton").addEventListener("click", () => {
+            controlFetch("/dashboard-control/config", {
+              method: "POST",
+              headers: adminHeaders(),
+              body: JSON.stringify({ values: collectEditableConfig() })
+            }).then(() => loadEditableConfig()).catch((error) => showControlResult(error.message));
           });
           byId("chatButton").addEventListener("click", () => {
             controlFetch("/dashboard-control/chat", {

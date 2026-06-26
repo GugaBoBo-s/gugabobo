@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path(".gugabobo")
     db_path: Path = Path(".gugabobo/gugabobo.db")
     log_dir: Path = Path(".gugabobo/logs")
+    config_file_path: Path = Path(".env")
     api_host: str = "127.0.0.1"
     api_port: int = 8765
     admin_token: str = Field(default="change-me", repr=False)

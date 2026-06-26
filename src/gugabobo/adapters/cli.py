@@ -198,6 +198,7 @@ def config_show() -> None:
             "data_dir": settings.data_dir,
             "db_path": settings.db_path,
             "log_dir": settings.log_dir,
+            "config_file_path": settings.config_file_path,
             "api_host": settings.api_host,
             "api_port": settings.api_port,
             "admin_token": "***" if settings.admin_token else "",

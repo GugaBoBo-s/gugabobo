@@ -8,6 +8,7 @@ from gugabobo.api.dashboard import dashboard_html
 from gugabobo.config import get_settings
 from gugabobo.core.access import evaluate_access
 from gugabobo.core.channel import ChannelContext
+from gugabobo.infra.env_file import EnvFile
 from gugabobo.infra.logs import get_logger, read_log_lines
 from gugabobo.infra.napcat_client import NapCatClient
 from gugabobo.infra.runtime import RuntimeManager, build_agent
@@ -67,6 +68,10 @@ class AccessRuleRequest(BaseModel):
     role: str = "user"
     display_name: str = ""
     notes: str = ""
+
+
+class ConfigUpdateRequest(BaseModel):
+    values: dict[str, object]
 
 
 def require_admin_token(x_gugabobo_admin_token: str | None = Header(default=None)) -> None:
@@ -160,6 +165,53 @@ def status() -> dict[str, object]:
 @app.get("/runtime/status")
 def runtime_status() -> dict[str, object]:
     return RuntimeManager().status()
+
+
+@app.get("/dashboard-control/config")
+def dashboard_control_config(_: None = Depends(require_admin_token)) -> dict[str, object]:
+    settings = get_settings()
+    return {
+        "values": {
+            "GUGABOBO_OWNER_QQ_IDS": settings.owner_qq_ids,
+            "GUGABOBO_OWNER_TELEGRAM_IDS": settings.owner_telegram_ids,
+            "GUGABOBO_NAPCAT_API_URL": settings.napcat_api_url,
+            "GUGABOBO_NAPCAT_REPLY_ENABLED": settings.napcat_reply_enabled,
+            "GUGABOBO_NAPCAT_PASSIVE_REPLY_ENABLED": settings.napcat_passive_reply_enabled,
+            "GUGABOBO_QQ_GROUP_WAKE_WORDS": settings.qq_group_wake_words,
+            "GUGABOBO_TELEGRAM_BOT_USERNAME": settings.telegram_bot_username,
+            "GUGABOBO_TELEGRAM_REPLY_ENABLED": settings.telegram_reply_enabled,
+            "GUGABOBO_TELEGRAM_GROUP_WAKE_WORDS": settings.telegram_group_wake_words,
+            "GUGABOBO_LLM_PROVIDER": settings.llm_provider,
+            "GUGABOBO_MOONSHOT_BASE_URL": settings.moonshot_base_url,
+            "GUGABOBO_MOONSHOT_MODEL": settings.moonshot_model,
+            "GUGABOBO_DEEPSEEK_BASE_URL": settings.deepseek_base_url,
+            "GUGABOBO_DEEPSEEK_MODEL": settings.deepseek_model,
+            "GUGABOBO_LLM_TIMEOUT_SECONDS": settings.llm_timeout_seconds,
+            "GUGABOBO_LLM_CONTEXT_MESSAGES": settings.llm_context_messages,
+            "GUGABOBO_LLM_MEMORY_ITEMS": settings.llm_memory_items,
+        },
+        "secrets": {
+            "GUGABOBO_ADMIN_TOKEN": bool(settings.admin_token),
+            "GUGABOBO_NAPCAT_ACCESS_TOKEN": bool(settings.napcat_access_token),
+            "GUGABOBO_TELEGRAM_BOT_TOKEN": bool(settings.telegram_bot_token),
+            "GUGABOBO_TELEGRAM_WEBHOOK_SECRET": bool(settings.telegram_webhook_secret),
+            "GUGABOBO_MOONSHOT_API_KEY": bool(settings.moonshot_api_key),
+            "GUGABOBO_DEEPSEEK_API_KEY": bool(settings.deepseek_api_key),
+        },
+    }
+
+
+@app.post("/dashboard-control/config")
+def dashboard_control_update_config(
+    request: ConfigUpdateRequest,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    updated = EnvFile(get_settings().config_file_path).update(request.values)
+    get_settings.cache_clear()
+    return {
+        "updated": updated,
+        "restart_recommended": True,
+    }
 
 
 @app.post("/chat")
