@@ -1,6 +1,6 @@
 # gugabobo
 
-`gugabobo` is a cloud-first autonomous agent prototype. The first milestone focuses on a minimal core that can run locally or on a server, keep SQLite-backed memory, expose a small API, and provide a CLI control surface. QQ and Telegram are planned as social chat adapters over the same core identity.
+`gugabobo` is a cloud-first autonomous agent prototype. The first milestone focuses on a minimal core that can run locally or on a server, keep SQLite-backed memory, expose a small API, and provide a CLI control surface. QQ and Telegram are social chat adapters over the same core identity; Telegram currently has a local webhook skeleton.
 
 ## P0 scope
 
@@ -69,15 +69,34 @@ Group chats only reply when the bot is mentioned or the message starts with a co
 
 ## Telegram Bot
 
-Telegram is a planned social chat adapter. It should reuse the same `CoreAgent`, persona, memory store, LLM provider, dashboard, and permission model as QQ.
+Telegram uses the same `CoreAgent`, persona, memory store, LLM provider, dashboard, and permission model as QQ.
 
-Target behavior:
+Local webhook endpoint:
+
+```text
+http://127.0.0.1:8765/telegram/events
+```
+
+Configuration:
+
+```env
+GUGABOBO_OWNER_TELEGRAM_IDS=
+GUGABOBO_TELEGRAM_BOT_TOKEN=
+GUGABOBO_TELEGRAM_BOT_USERNAME=
+GUGABOBO_TELEGRAM_WEBHOOK_SECRET=
+GUGABOBO_TELEGRAM_REPLY_ENABLED=false
+GUGABOBO_TELEGRAM_GROUP_WAKE_WORDS=gugabobo,咕嘎BoBo
+```
+
+Current behavior:
 
 - private chats reply directly
 - group chats reply only when mentioned or explicitly awakened
 - each Telegram user and group keeps separate conversation context
 - risky owner-only operations require explicit owner confirmation
 - Telegram-specific code stays in the adapter layer, not in the core agent
+
+When `GUGABOBO_TELEGRAM_REPLY_ENABLED=false`, the endpoint processes the message and reports that a reply is available without calling Telegram's `sendMessage` API.
 
 ## Kimi / Moonshot LLM
 

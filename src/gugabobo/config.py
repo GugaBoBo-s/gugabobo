@@ -16,11 +16,17 @@ class Settings(BaseSettings):
     api_port: int = 8765
     admin_token: str = Field(default="change-me", repr=False)
     owner_qq_ids: str = ""
+    owner_telegram_ids: str = ""
     napcat_api_url: str = "http://127.0.0.1:3000"
     napcat_access_token: str = Field(default="", repr=False)
     napcat_reply_enabled: bool = False
     napcat_passive_reply_enabled: bool = False
     qq_group_wake_words: str = "gugabobo,咕嘎BoBo"
+    telegram_bot_token: str = Field(default="", repr=False)
+    telegram_bot_username: str = ""
+    telegram_webhook_secret: str = Field(default="", repr=False)
+    telegram_reply_enabled: bool = False
+    telegram_group_wake_words: str = "gugabobo,咕嘎BoBo"
     llm_provider: str = "moonshot"
     moonshot_api_key: str = Field(default="", repr=False)
     moonshot_base_url: str = "https://api.moonshot.ai/v1"
@@ -42,8 +48,20 @@ class Settings(BaseSettings):
         return {item.strip() for item in self.owner_qq_ids.split(",") if item.strip()}
 
     @property
+    def owner_telegram_id_set(self) -> set[str]:
+        return {item.strip() for item in self.owner_telegram_ids.split(",") if item.strip()}
+
+    @property
     def qq_group_wake_word_list(self) -> list[str]:
         return [item.strip() for item in self.qq_group_wake_words.split(",") if item.strip()]
+
+    @property
+    def telegram_group_wake_word_list(self) -> list[str]:
+        return [
+            item.strip()
+            for item in self.telegram_group_wake_words.split(",")
+            if item.strip()
+        ]
 
 
 @lru_cache

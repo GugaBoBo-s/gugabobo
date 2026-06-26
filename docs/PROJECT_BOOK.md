@@ -100,6 +100,7 @@ GET  /feedbacks
 POST /feedbacks
 PATCH /feedbacks/{feedback_id}
 POST /onebot/v11/events
+POST /telegram/events
 GET  /docs
 ```
 
@@ -1218,7 +1219,7 @@ Milestone:
 P1/P2
 ```
 
-Telegram is a required social chat adapter. It must not fork the agent into a separate Telegram-only personality.
+Telegram is a required social chat adapter. It must not fork the agent into a separate Telegram-only personality. The local webhook skeleton is implemented; production use still requires BotFather token setup and public webhook registration.
 
 Target flow:
 
@@ -1260,6 +1261,20 @@ GUGABOBO_TELEGRAM_WEBHOOK_SECRET=
 GUGABOBO_TELEGRAM_REPLY_ENABLED=false
 GUGABOBO_TELEGRAM_GROUP_WAKE_WORDS=gugabobo,咕嘎BoBo
 GUGABOBO_OWNER_TELEGRAM_IDS=
+```
+
+Implemented:
+
+```text
+Telegram webhook endpoint
+Telegram message event parsing
+private message reply decision
+group mention/wake-word reply decision
+conversation scoping
+owner id mapping
+Telegram sendMessage client
+webhook secret validation
+adapter tests
 ```
 
 Implementation notes:
@@ -1314,6 +1329,18 @@ GUGABOBO_DB_PATH=.gugabobo/gugabobo.db
 GUGABOBO_API_HOST=127.0.0.1
 GUGABOBO_API_PORT=8765
 GUGABOBO_ADMIN_TOKEN=change-me
+GUGABOBO_OWNER_QQ_IDS=
+GUGABOBO_OWNER_TELEGRAM_IDS=
+GUGABOBO_NAPCAT_API_URL=http://127.0.0.1:3000
+GUGABOBO_NAPCAT_ACCESS_TOKEN=
+GUGABOBO_NAPCAT_REPLY_ENABLED=false
+GUGABOBO_NAPCAT_PASSIVE_REPLY_ENABLED=false
+GUGABOBO_QQ_GROUP_WAKE_WORDS=gugabobo,咕嘎BoBo
+GUGABOBO_TELEGRAM_BOT_TOKEN=
+GUGABOBO_TELEGRAM_BOT_USERNAME=
+GUGABOBO_TELEGRAM_WEBHOOK_SECRET=
+GUGABOBO_TELEGRAM_REPLY_ENABLED=false
+GUGABOBO_TELEGRAM_GROUP_WAKE_WORDS=gugabobo,咕嘎BoBo
 ```
 
 Target configuration groups:
