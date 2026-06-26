@@ -210,6 +210,16 @@ def dashboard_html() -> str:
                   <button id="memoryButton" type="button">添加记忆</button>
                 </div>
                 <div class="control-box">
+                  <h3>编辑长期记忆</h3>
+                  <input id="editMemoryId" type="number" placeholder="记忆 ID">
+                  <input id="editMemorySubject" placeholder="subject">
+                  <input id="editMemoryType" placeholder="memory_type">
+                  <input id="editMemoryImportance" type="number" min="1" max="10" placeholder="importance">
+                  <textarea id="editMemoryContent" placeholder="记忆内容"></textarea>
+                  <button id="updateMemoryButton" type="button">更新记忆</button>
+                  <button id="deleteMemoryButton" type="button">删除记忆</button>
+                </div>
+                <div class="control-box">
                   <h3>设置会话摘要</h3>
                   <input id="summaryConversationId" placeholder="conversation_id">
                   <textarea id="summaryContent" placeholder="摘要内容"></textarea>
@@ -272,9 +282,13 @@ def dashboard_html() -> str:
             </section>
             <section>
               <h2>长期记忆</h2>
+              <div class="toolbar" style="padding: 10px 12px;">
+                <input id="memoryFilter" placeholder="按 subject 过滤，留空显示全部">
+                <button id="memoryFilterButton" type="button">过滤</button>
+              </div>
               <table>
                 <thead>
-                  <tr><th style="width: 56px;">ID</th><th style="width: 170px;">Subject</th><th>内容</th></tr>
+                  <tr><th style="width: 56px;">ID</th><th style="width: 160px;">Subject</th><th style="width: 90px;">类型</th><th style="width: 70px;">重要度</th><th>内容</th><th style="width: 92px;">操作</th></tr>
                 </thead>
                 <tbody id="memories"></tbody>
               </table>
@@ -297,6 +311,7 @@ def dashboard_html() -> str:
         <script>
           const byId = (id) => document.getElementById(id);
           const tokenStorageKey = "gugabobo.adminToken";
+          let currentMemories = [];
           byId("adminToken").value = localStorage.getItem(tokenStorageKey) || "";
           function esc(value) {
             return String(value ?? "").replace(/[&<>"']/g, (c) => {
@@ -342,6 +357,9 @@ def dashboard_html() -> str:
             state.textContent = "刷新中";
             const response = await fetch("/dashboard-data", { cache: "no-store" });
             const data = await response.json();
+            const memorySubject = byId("memoryFilter").value.trim();
+            const memoriesResponse = await fetch(`/memories?limit=50${memorySubject ? `&subject=${encodeURIComponent(memorySubject)}` : ""}`, { cache: "no-store" });
+            currentMemories = await memoriesResponse.json();
             byId("metrics").innerHTML = [
               metric("状态", data.status.status, "ok"),
               metric("消息", data.status.messages),
@@ -372,10 +390,13 @@ def dashboard_html() -> str:
               esc(item.content),
               `<span class="muted">${esc(item.conversation_id)}</span>`
             ])).join("");
-            byId("memories").innerHTML = data.memories.map((item) => row([
+            byId("memories").innerHTML = currentMemories.map((item) => row([
               esc(item.id),
               esc(item.subject),
-              esc(item.content)
+              esc(item.memory_type),
+              esc(item.importance),
+              esc(item.content),
+              `<button type="button" data-memory-id="${esc(item.id)}" class="edit-memory">编辑</button>`
             ])).join("");
             byId("summaries").innerHTML = data.summaries.map((item) => row([
               esc(item.conversation_id),
@@ -411,6 +432,32 @@ def dashboard_html() -> str:
               })
             }).catch((error) => showControlResult(error.message));
           });
+          byId("updateMemoryButton").addEventListener("click", () => {
+            controlFetch(`/dashboard-control/memories/${byId("editMemoryId").value}`, {
+              method: "PATCH",
+              headers: adminHeaders(),
+              body: JSON.stringify({
+                subject: byId("editMemorySubject").value,
+                memory_type: byId("editMemoryType").value,
+                importance: Number(byId("editMemoryImportance").value || 5),
+                content: byId("editMemoryContent").value
+              })
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("deleteMemoryButton").addEventListener("click", () => {
+            const memoryId = byId("editMemoryId").value;
+            if (!memoryId) {
+              showControlResult("missing memory id");
+              return;
+            }
+            if (!confirm(`删除记忆 #${memoryId}?`)) {
+              return;
+            }
+            controlFetch(`/dashboard-control/memories/${memoryId}`, {
+              method: "DELETE",
+              headers: adminHeaders()
+            }).catch((error) => showControlResult(error.message));
+          });
           byId("summaryButton").addEventListener("click", () => {
             controlFetch("/dashboard-control/summaries", {
               method: "POST",
@@ -427,6 +474,22 @@ def dashboard_html() -> str:
               headers: adminHeaders(),
               body: JSON.stringify({ status: byId("feedbackStatus").value })
             }).catch((error) => showControlResult(error.message));
+          });
+          byId("memoryFilterButton").addEventListener("click", loadDashboard);
+          byId("memories").addEventListener("click", (event) => {
+            if (!event.target.classList.contains("edit-memory")) {
+              return;
+            }
+            const memory = currentMemories.find((item) => String(item.id) === event.target.dataset.memoryId);
+            if (!memory) {
+              return;
+            }
+            byId("editMemoryId").value = memory.id;
+            byId("editMemorySubject").value = memory.subject;
+            byId("editMemoryType").value = memory.memory_type;
+            byId("editMemoryImportance").value = memory.importance;
+            byId("editMemoryContent").value = memory.content;
+            showControlResult(`loaded memory #${memory.id}`);
           });
           byId("refreshButton").addEventListener("click", loadDashboard);
           loadDashboard().catch((error) => { byId("refreshState").textContent = error.message; });

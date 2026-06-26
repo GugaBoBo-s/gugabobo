@@ -47,6 +47,13 @@ class MemoryCreateRequest(BaseModel):
     importance: int = 5
 
 
+class MemoryUpdateRequest(BaseModel):
+    subject: str
+    content: str
+    memory_type: str
+    importance: int
+
+
 class SummarySetRequest(BaseModel):
     conversation_id: str
     summary: str
@@ -173,6 +180,11 @@ def feedbacks(limit: int = 20) -> list[dict[str, object]]:
     return agent.store.list_feedbacks(limit=limit)
 
 
+@app.get("/memories")
+def memories(subject: str | None = None, limit: int = 20) -> list[dict[str, object]]:
+    return build_agent().store.list_memory_items(subject=subject, limit=limit)
+
+
 @app.post("/feedbacks")
 def create_feedback(request: FeedbackCreateRequest) -> dict[str, int]:
     agent = build_agent()
@@ -229,6 +241,33 @@ def dashboard_control_add_memory(
         source="dashboard",
     )
     return {"id": memory_id}
+
+
+@app.patch("/dashboard-control/memories/{memory_id}")
+def dashboard_control_update_memory(
+    memory_id: int,
+    request: MemoryUpdateRequest,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    if not build_agent().store.update_memory_item(
+        memory_id=memory_id,
+        subject=request.subject,
+        content=request.content,
+        memory_type=request.memory_type,
+        importance=request.importance,
+    ):
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"id": memory_id}
+
+
+@app.delete("/dashboard-control/memories/{memory_id}")
+def dashboard_control_delete_memory(
+    memory_id: int,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    if not build_agent().store.delete_memory_item(memory_id):
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"id": memory_id, "deleted": True}
 
 
 @app.post("/dashboard-control/summaries")

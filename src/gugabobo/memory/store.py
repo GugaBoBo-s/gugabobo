@@ -223,6 +223,36 @@ class MemoryStore:
                 ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_memory_item(self, memory_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id, subject, memory_type, content, importance, source, "
+                "created_at, updated_at FROM memory_items WHERE id = ?",
+                (memory_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_memory_item(
+        self,
+        memory_id: int,
+        subject: str,
+        content: str,
+        memory_type: str,
+        importance: int,
+    ) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE memory_items SET subject = ?, content = ?, memory_type = ?, "
+                "importance = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (subject, content, memory_type, importance, memory_id),
+            )
+            return cursor.rowcount > 0
+
+    def delete_memory_item(self, memory_id: int) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute("DELETE FROM memory_items WHERE id = ?", (memory_id,))
+            return cursor.rowcount > 0
+
     def add_feedback(self, source: str, user_id: str, content: str) -> int:
         with self.connect() as conn:
             cursor = conn.execute(

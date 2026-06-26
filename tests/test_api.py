@@ -64,6 +64,7 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     assert page_response.status_code == 200
     assert "咕嘎BoBo Dashboard" in page_response.text
     assert "控制台" in page_response.text
+    assert "编辑长期记忆" in page_response.text
     assert "数据库表状态" in page_response.text
     assert "会话摘要" in page_response.text
     assert '""":' not in page_response.text
@@ -128,6 +129,62 @@ def test_dashboard_control_memory_summary_and_feedback(tmp_path, monkeypatch):
     assert memory_response.status_code == 200
     assert summary_response.json()["conversation_id"] == "dashboard:test"
     assert feedback_response.json()["status"] == "triaged"
+    get_settings.cache_clear()
+
+
+def test_memory_endpoint_filters_by_subject(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+    client.post(
+        "/dashboard-control/memories",
+        json={"subject": "telegram:user:1", "content": "TG 用户喜欢短回复"},
+        headers=admin_headers(),
+    )
+    client.post(
+        "/dashboard-control/memories",
+        json={"subject": "qq:user:1", "content": "QQ 用户喜欢长回复"},
+        headers=admin_headers(),
+    )
+
+    response = client.get("/memories?subject=telegram:user:1")
+
+    contents = [item["content"] for item in response.json()]
+    assert "TG 用户喜欢短回复" in contents
+    assert "QQ 用户喜欢长回复" not in contents
+    get_settings.cache_clear()
+
+
+def test_dashboard_control_updates_and_deletes_memory(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+    memory_id = client.post(
+        "/dashboard-control/memories",
+        json={"subject": "global", "content": "旧内容"},
+        headers=admin_headers(),
+    ).json()["id"]
+
+    update_response = client.patch(
+        f"/dashboard-control/memories/{memory_id}",
+        json={
+            "subject": "telegram:user:1",
+            "content": "新内容",
+            "memory_type": "preference",
+            "importance": 9,
+        },
+        headers=admin_headers(),
+    )
+    filtered_response = client.get("/memories?subject=telegram:user:1")
+    delete_response = client.delete(
+        f"/dashboard-control/memories/{memory_id}",
+        headers=admin_headers(),
+    )
+    after_delete_response = client.get("/memories?subject=telegram:user:1")
+
+    assert update_response.status_code == 200
+    assert filtered_response.json()[0]["content"] == "新内容"
+    assert filtered_response.json()[0]["importance"] == 9
+    assert delete_response.json()["deleted"] is True
+    assert all(item["id"] != memory_id for item in after_delete_response.json())
     get_settings.cache_clear()
 
 
