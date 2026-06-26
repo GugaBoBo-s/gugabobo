@@ -1,6 +1,6 @@
 # gugabobo
 
-`gugabobo` is a cloud-first autonomous agent prototype. The first milestone focuses on a minimal core that can run locally or on a server, keep SQLite-backed memory, expose a small API, and provide a CLI control surface.
+`gugabobo` is a cloud-first autonomous agent prototype. The first milestone focuses on a minimal core that can run locally or on a server, keep SQLite-backed memory, expose a small API, and provide a CLI control surface. QQ and Telegram are planned as social chat adapters over the same core identity.
 
 ## P0 scope
 
@@ -67,6 +67,18 @@ GUGABOBO_NAPCAT_ACCESS_TOKEN=
 
 Group chats only reply when the bot is mentioned or the message starts with a configured wake word.
 
+## Telegram Bot
+
+Telegram is a planned social chat adapter. It should reuse the same `CoreAgent`, persona, memory store, LLM provider, dashboard, and permission model as QQ.
+
+Target behavior:
+
+- private chats reply directly
+- group chats reply only when mentioned or explicitly awakened
+- each Telegram user and group keeps separate conversation context
+- risky owner-only operations require explicit owner confirmation
+- Telegram-specific code stays in the adapter layer, not in the core agent
+
 ## Kimi / Moonshot LLM
 
 `gugabobo` supports OpenAI-compatible providers. Set `GUGABOBO_LLM_PROVIDER` to choose one.
@@ -92,6 +104,58 @@ Context inputs:
 - recent raw messages from the same conversation
 - optional conversation summary
 - relevant long-term memory items for the same conversation and global memories
+
+Current SQLite data model:
+
+```mermaid
+erDiagram
+    CONVERSATION {
+        string conversation_id PK "logical id, not a physical table"
+    }
+
+    MESSAGES {
+        integer id PK
+        string conversation_id
+        string source
+        string user_id
+        string role
+        string content
+        string created_at
+    }
+
+    CONVERSATION_SUMMARIES {
+        string conversation_id PK
+        string summary
+        integer updated_until_message_id
+        string updated_at
+    }
+
+    MEMORY_ITEMS {
+        integer id PK
+        string subject
+        string memory_type
+        string content
+        integer importance
+        string source
+        string created_at
+        string updated_at
+    }
+
+    FEEDBACKS {
+        integer id PK
+        string source
+        string user_id
+        string content
+        string status
+        string created_at
+    }
+
+    CONVERSATION ||--o{ MESSAGES : "conversation_id"
+    CONVERSATION ||--o| CONVERSATION_SUMMARIES : "conversation_id"
+    CONVERSATION ||--o{ MEMORY_ITEMS : "subject"
+```
+
+`CONVERSATION` is a logical entity derived from `conversation_id`; it is not a separate SQLite table yet.
 
 Useful commands:
 

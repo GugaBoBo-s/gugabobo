@@ -16,7 +16,7 @@ gugabobo is a persistent cloud-side autonomous agent that can interact across pl
 
 ### 2.1 Primary Goals
 
-- Keep one canonical `gugabobo` identity across CLI, QQ, GitHub, API, dashboard, and future social platforms.
+- Keep one canonical `gugabobo` identity across CLI, QQ, Telegram, GitHub, API, dashboard, and future social platforms.
 - Run continuously on a Linux server while remaining controllable from local tools.
 - Persist messages, feedback, tasks, tool calls, and improvement history.
 - Route user input and platform events to the correct skill.
@@ -121,7 +121,7 @@ SWE Bot
 Correct structure:
 
 ```text
-QQ / CLI / GitHub / X / Dashboard
+QQ / Telegram / CLI / GitHub / X / Dashboard
         |
         v
 gugabobo core
@@ -201,6 +201,8 @@ Linux server
 External platforms
 ├─ QQ private chat
 ├─ QQ group chat
+├─ Telegram private chat
+├─ Telegram group chat
 ├─ GitHub events
 ├─ X / Twitter
 └─ Xiaohongshu
@@ -235,6 +237,8 @@ Planned adapters:
 CLI Adapter
 QQ Private Chat Adapter
 QQ Group Chat Adapter
+Telegram Private Chat Adapter
+Telegram Group Chat Adapter
 GitHub Adapter
 Dashboard/API Adapter
 X Adapter
@@ -403,6 +407,63 @@ health reporting
 
 ### 9.1 Current Tables
 
+Current SQLite ER diagram:
+
+```mermaid
+erDiagram
+    CONVERSATION {
+        string conversation_id PK "logical entity"
+    }
+
+    MESSAGES {
+        integer id PK
+        string conversation_id
+        string source
+        string user_id
+        string role
+        string content
+        string created_at
+    }
+
+    FEEDBACKS {
+        integer id PK
+        string source
+        string user_id
+        string content
+        string status
+        string created_at
+    }
+
+    CONVERSATION_SUMMARIES {
+        string conversation_id PK
+        string summary
+        integer updated_until_message_id
+        string updated_at
+    }
+
+    MEMORY_ITEMS {
+        integer id PK
+        string subject
+        string memory_type
+        string content
+        integer importance
+        string source
+        string created_at
+        string updated_at
+    }
+
+    CONVERSATION ||--o{ MESSAGES : "conversation_id"
+    CONVERSATION ||--o| CONVERSATION_SUMMARIES : "conversation_id"
+    CONVERSATION ||--o{ MEMORY_ITEMS : "subject"
+```
+
+Notes:
+
+- `CONVERSATION` is a logical entity derived from `conversation_id`; it is not a physical SQLite table yet.
+- Current SQLite tables do not declare foreign keys.
+- `memory_items.subject` can point to a conversation id such as `qq:user:241398668`, `telegram:user:<id>`, or the global subject `global`.
+- `feedbacks` currently records source and user id only. It is intentionally not tied to a single message yet.
+
 #### messages
 
 Purpose:
@@ -414,12 +475,13 @@ Store conversation messages from CLI/API and future platform adapters.
 Fields:
 
 ```text
-id          integer primary key
-source      text
-user_id     text
-role        text
-content     text
-created_at  timestamp
+id               integer primary key
+conversation_id  text
+source           text
+user_id          text
+role             text
+content          text
+created_at       timestamp
 ```
 
 #### feedbacks
@@ -441,7 +503,193 @@ status      text
 created_at  timestamp
 ```
 
+#### conversation_summaries
+
+Purpose:
+
+```text
+Store rolling summaries for long conversations so the LLM can keep broader context without sending every raw message.
+```
+
+Fields:
+
+```text
+conversation_id            text primary key
+summary                    text
+updated_until_message_id   integer
+updated_at                 timestamp
+```
+
+#### memory_items
+
+Purpose:
+
+```text
+Store explicit long-term memories for a conversation subject or for the global agent.
+```
+
+Fields:
+
+```text
+id           integer primary key
+subject      text
+memory_type  text
+content      text
+importance   integer
+source       text
+created_at   timestamp
+updated_at   timestamp
+```
+
 ### 9.2 Target Tables
+
+Target ER diagram:
+
+```mermaid
+erDiagram
+    USERS {
+        integer id PK
+        string platform
+        string platform_user_id
+        string display_name
+        string role
+        integer trust_level
+        string created_at
+        string updated_at
+    }
+
+    CONVERSATIONS {
+        string id PK
+        string platform
+        string conversation_type
+        string platform_chat_id
+        string title
+        string created_at
+        string updated_at
+    }
+
+    MESSAGES {
+        integer id PK
+        string conversation_id FK
+        integer user_id FK
+        string source
+        string platform
+        string role
+        string content
+        string attachments_json
+        string metadata_json
+        string created_at
+    }
+
+    CONVERSATION_SUMMARIES {
+        string conversation_id PK
+        string summary
+        integer updated_until_message_id
+        string updated_at
+    }
+
+    MEMORY_ITEMS {
+        integer id PK
+        string subject
+        string memory_type
+        string content
+        integer importance
+        string source
+        string expires_at
+        string created_at
+        string updated_at
+    }
+
+    FEEDBACKS {
+        integer id PK
+        string source
+        string platform
+        integer user_id FK
+        integer message_id FK
+        string content
+        string feedback_type
+        string severity
+        string status
+        integer linked_task_id FK
+        string created_at
+        string updated_at
+    }
+
+    TASKS {
+        integer id PK
+        string title
+        string description
+        string status
+        string priority
+        integer created_by FK
+        string assigned_skill
+        boolean requires_approval
+        string created_at
+        string updated_at
+    }
+
+    IMPROVEMENT_TASKS {
+        integer id PK
+        integer task_id FK
+        integer feedback_id FK
+        string repo
+        string branch_name
+        string scope
+        string risk_level
+        string approval_status
+        string runner_status
+        string created_at
+        string updated_at
+    }
+
+    PULL_REQUESTS {
+        integer id PK
+        integer improvement_task_id FK
+        string github_owner
+        string github_repo
+        integer number
+        string url
+        string branch_name
+        string status
+        string checks_status
+        string merged_at
+        string created_at
+        string updated_at
+    }
+
+    TOOL_CALLS {
+        integer id PK
+        integer task_id FK
+        string tool_name
+        string input_json
+        string output_json
+        string status
+        string error
+        string created_at
+        string finished_at
+    }
+
+    LOGS {
+        integer id PK
+        string level
+        string component
+        string message
+        string metadata_json
+        string created_at
+    }
+
+    USERS ||--o{ MESSAGES : "sends"
+    CONVERSATIONS ||--o{ MESSAGES : "contains"
+    CONVERSATIONS ||--o| CONVERSATION_SUMMARIES : "summarized_by"
+    USERS ||--o{ FEEDBACKS : "creates"
+    MESSAGES ||--o{ FEEDBACKS : "may_trigger"
+    FEEDBACKS ||--o| TASKS : "may_create"
+    USERS ||--o{ TASKS : "creates"
+    TASKS ||--o| IMPROVEMENT_TASKS : "may_become"
+    FEEDBACKS ||--o{ IMPROVEMENT_TASKS : "informs"
+    IMPROVEMENT_TASKS ||--o| PULL_REQUESTS : "opens"
+    TASKS ||--o{ TOOL_CALLS : "uses"
+```
 
 #### users
 
@@ -962,9 +1210,68 @@ NapCat HTTP send client
 FastAPI webhook endpoint
 ```
 
-## 19. Deployment Design
+## 19. Telegram Integration Plan
 
-### 19.1 Early Server Layout
+Milestone:
+
+```text
+P1/P2
+```
+
+Telegram is a required social chat adapter. It must not fork the agent into a separate Telegram-only personality.
+
+Target flow:
+
+```text
+Telegram Bot API webhook or polling
+        |
+        v
+Telegram Adapter
+        |
+        v
+normalized channel context
+        |
+        v
+gugabobo core
+```
+
+Target behavior:
+
+- private chats are handled directly
+- group chats only respond when mentioned or explicitly awakened
+- each Telegram user has isolated context
+- each Telegram group has isolated group context
+- owner-only operations require owner confirmation
+- risky operations are blocked in group chats
+- Telegram media events are normalized before reaching skills
+
+Conversation scoping:
+
+```text
+Telegram private: telegram:user:<user_id>
+Telegram group: telegram:group:<chat_id>
+```
+
+Configuration:
+
+```text
+GUGABOBO_TELEGRAM_BOT_TOKEN=
+GUGABOBO_TELEGRAM_WEBHOOK_SECRET=
+GUGABOBO_TELEGRAM_REPLY_ENABLED=false
+GUGABOBO_TELEGRAM_GROUP_WAKE_WORDS=gugabobo,咕嘎BoBo
+GUGABOBO_OWNER_TELEGRAM_IDS=
+```
+
+Implementation notes:
+
+- Use the same `CoreAgent`, `Persona`, memory store, LLM provider, and dashboard.
+- Keep Telegram-specific parsing and sending in the adapter layer.
+- Do not put Telegram permission logic directly into skills.
+- Prefer webhook on server deployment; polling is acceptable for local development.
+
+## 20. Deployment Design
+
+### 20.1 Early Server Layout
 
 ```text
 /opt/gugabobo/
@@ -976,7 +1283,7 @@ FastAPI webhook endpoint
 └─ scripts/
 ```
 
-### 19.2 Early Services
+### 20.2 Early Services
 
 ```text
 gugabobo-api.service
@@ -984,7 +1291,7 @@ gugabobo-daemon.service
 gugabobo-worker.service
 ```
 
-### 19.3 Later Infrastructure
+### 20.3 Later Infrastructure
 
 ```text
 Docker Compose
@@ -996,7 +1303,7 @@ systemd timers
 structured log shipping
 ```
 
-## 20. Configuration
+## 21. Configuration
 
 Current `.env.example`:
 
@@ -1017,6 +1324,7 @@ database
 api
 auth
 qq
+telegram
 github
 llm
 sandbox
@@ -1048,6 +1356,8 @@ CLI default: cli:local
 API default: api:<user_id>
 QQ private: qq:user:<user_id>
 QQ group: qq:group:<group_id>
+Telegram private: telegram:user:<user_id>
+Telegram group: telegram:group:<chat_id>
 ```
 
 The LLM context has three layers:
@@ -1078,7 +1388,7 @@ gugabobo stores the remaining content as a long-term memory for the current conv
 Regular chat messages are not automatically stored as long-term memory.
 ```
 
-## 21. Logging And Observability
+## 22. Logging And Observability
 
 Target log categories:
 
@@ -1120,9 +1430,9 @@ private keys
 LLM provider keys
 ```
 
-## 22. Testing Strategy
+## 23. Testing Strategy
 
-### 22.1 Current Tests
+### 23.1 Current Tests
 
 ```text
 core chat records messages
@@ -1131,7 +1441,7 @@ health endpoint returns ok
 chat endpoint records message
 ```
 
-### 22.2 Target Test Types
+### 23.2 Target Test Types
 
 ```text
 unit tests
@@ -1145,7 +1455,7 @@ GitHub client tests with mocks
 end-to-end local flow tests
 ```
 
-### 22.3 Required Checks Before PR Merge
+### 23.3 Required Checks Before PR Merge
 
 ```text
 pytest
@@ -1155,7 +1465,7 @@ database migration verification
 security-sensitive test cases for policy changes
 ```
 
-## 23. Milestone Roadmap
+## 24. Milestone Roadmap
 
 ### P0: Minimal Core
 
@@ -1234,7 +1544,27 @@ feedback recording from QQ
 tests for message normalization and policy
 ```
 
-### P2: Dashboard And Server Management
+### P2: Telegram Adapter
+
+Goal:
+
+```text
+Make gugabobo available in Telegram private chats and groups without forking the core agent.
+```
+
+Tasks:
+
+```text
+define normalized Telegram message schema
+implement Telegram private message adapter
+implement Telegram group message adapter
+owner permission mapping
+group mention/wake-word policy
+Telegram webhook or local polling mode
+tests for message normalization and policy
+```
+
+### P3: Dashboard And Server Management
 
 Goal:
 
@@ -1255,7 +1585,7 @@ config page
 admin token authentication
 ```
 
-### P3: GitHub And Code Runner
+### P4: GitHub And Code Runner
 
 Goal:
 
@@ -1276,7 +1606,7 @@ PR creation
 GitHub Actions status reading
 ```
 
-### P4: Feedback-Driven Self-Improvement
+### P5: Feedback-Driven Self-Improvement
 
 Goal:
 
@@ -1297,7 +1627,7 @@ reflection record
 post-merge verification
 ```
 
-### P5: Social Expansion
+### P6: Social Expansion
 
 Goal:
 
@@ -1316,9 +1646,9 @@ social feedback ingestion
 public posting approval
 ```
 
-## 24. Risk Register
+## 25. Risk Register
 
-### 24.1 Platform Risk
+### 25.1 Platform Risk
 
 QQ integrations may change or break.
 
@@ -1330,7 +1660,7 @@ keep internal message schema stable
 avoid core dependency on QQ framework
 ```
 
-### 24.2 Permission Risk
+### 25.2 Permission Risk
 
 An agent with write access could modify sensitive code.
 
@@ -1345,7 +1675,7 @@ audit logs
 no automatic merge
 ```
 
-### 24.3 Secret Leakage Risk
+### 25.3 Secret Leakage Risk
 
 Logs, prompts, or PRs may accidentally include secrets.
 
@@ -1359,7 +1689,7 @@ GitHub secret scanning
 review generated diffs
 ```
 
-### 24.4 Scope Creep Risk
+### 25.4 Scope Creep Risk
 
 Too many adapters too early may destabilize the core.
 
@@ -1371,7 +1701,7 @@ keep milestones explicit
 avoid dashboard/social/runner until needed
 ```
 
-### 24.5 Cost Risk
+### 25.5 Cost Risk
 
 LLM and code runner usage may become expensive.
 
@@ -1385,9 +1715,9 @@ model routing
 dry-run mode
 ```
 
-## 25. Engineering Standards
+## 26. Engineering Standards
 
-### 25.1 Coding
+### 26.1 Coding
 
 - Use Python 3.11 or newer.
 - Keep modules small and explicit.
@@ -1396,7 +1726,7 @@ dry-run mode
 - Prefer structured data over string parsing.
 - Keep persistence behind store/repository classes.
 
-### 25.2 Review
+### 26.2 Review
 
 - Every behavior change needs tests when practical.
 - Policy changes need explicit tests.
@@ -1404,7 +1734,7 @@ dry-run mode
 - Database changes need migration notes.
 - PR descriptions should include risk and verification.
 
-### 25.3 Operations
+### 26.3 Operations
 
 - Keep `.env` local.
 - Keep `.env.example` updated.
@@ -1412,7 +1742,7 @@ dry-run mode
 - Do not commit logs.
 - Do not commit tokens.
 
-## 26. Acceptance Checklist By Layer
+## 27. Acceptance Checklist By Layer
 
 ### Core
 
@@ -1455,7 +1785,7 @@ owner approval required
 reflection recorded after outcome
 ```
 
-## 27. Immediate Next Steps
+## 28. Immediate Next Steps
 
 Recommended next milestone:
 
