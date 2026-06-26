@@ -263,3 +263,14 @@ class MemoryStore:
     def count_conversation_summaries(self) -> int:
         with self.connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM conversation_summaries").fetchone()[0])
+
+    def table_counts(self) -> list[dict[str, Any]]:
+        table_names = ["messages", "feedbacks", "memory_items", "conversation_summaries"]
+        with self.connect() as conn:
+            return [
+                {
+                    "table": table_name,
+                    "rows": int(conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]),
+                }
+                for table_name in table_names
+            ]

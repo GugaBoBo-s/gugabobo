@@ -173,6 +173,15 @@ def dashboard_html() -> str:
                 <tbody id="feedbacks"></tbody>
               </table>
             </section>
+            <section>
+              <h2>数据库表状态</h2>
+              <table>
+                <thead>
+                  <tr><th>表</th><th style="width: 120px;">行数</th></tr>
+                </thead>
+                <tbody id="tableCounts"></tbody>
+              </table>
+            </section>
           </div>
           <div class="stack">
             <section>
@@ -191,6 +200,15 @@ def dashboard_html() -> str:
                   <tr><th style="width: 56px;">ID</th><th style="width: 170px;">Subject</th><th>内容</th></tr>
                 </thead>
                 <tbody id="memories"></tbody>
+              </table>
+            </section>
+            <section>
+              <h2>会话摘要</h2>
+              <table>
+                <thead>
+                  <tr><th style="width: 190px;">conversation_id</th><th>摘要</th><th style="width: 160px;">更新时间</th></tr>
+                </thead>
+                <tbody id="summaries"></tbody>
               </table>
             </section>
             <section>
@@ -244,6 +262,10 @@ def dashboard_html() -> str:
               esc(item.status),
               esc(item.content)
             ])).join("");
+            byId("tableCounts").innerHTML = data.table_counts.map((item) => row([
+              esc(item.table),
+              esc(item.rows)
+            ])).join("");
             byId("messages").innerHTML = data.messages.map((item) => row([
               esc(item.id),
               esc(item.role),
@@ -254,6 +276,11 @@ def dashboard_html() -> str:
               esc(item.id),
               esc(item.subject),
               esc(item.content)
+            ])).join("");
+            byId("summaries").innerHTML = data.summaries.map((item) => row([
+              esc(item.conversation_id),
+              esc(item.summary),
+              `<span class="muted">${esc(item.updated_at)}</span>`
             ])).join("");
             byId("logs").textContent = data.logs.join("\\n");
             state.textContent = `已刷新 ${new Date().toLocaleTimeString()}`;

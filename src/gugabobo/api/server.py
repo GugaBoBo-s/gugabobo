@@ -90,6 +90,7 @@ def dashboard_data() -> dict[str, object]:
         "feedbacks": agent.store.list_feedbacks(limit=20),
         "memories": agent.store.list_memory_items(limit=20),
         "summaries": agent.store.list_conversation_summaries(limit=20),
+        "table_counts": agent.store.table_counts(),
         "logs": read_log_lines(limit=80),
     }
 
