@@ -107,6 +107,24 @@ def dashboard_html() -> str:
           .muted { color: var(--muted); }
           .ok { color: var(--good); font-weight: 650; }
           .warn { color: var(--warn); font-weight: 650; }
+          .status-pill {
+            display: inline-flex;
+            align-items: center;
+            width: fit-content;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 3px 8px;
+            font-size: 12px;
+            font-weight: 650;
+          }
+          .status-pill.ok {
+            border-color: #b7e1c8;
+            background: #eefaf3;
+          }
+          .status-pill.warn {
+            border-color: #ffd9a8;
+            background: #fff7ed;
+          }
           .stack {
             display: grid;
             gap: 16px;
@@ -194,6 +212,12 @@ def dashboard_html() -> str:
                   <h3>Admin Token</h3>
                   <input id="adminToken" type="password" placeholder="GUGABOBO_ADMIN_TOKEN">
                   <button id="saveTokenButton" type="button">保存到本机浏览器</button>
+                </div>
+                <div class="control-box">
+                  <h3>运行管理</h3>
+                  <div id="runtimePanel" class="muted"></div>
+                  <button id="startTelegramButton" type="button">启动 Telegram polling</button>
+                  <button id="stopTelegramButton" type="button">停止 Telegram polling</button>
                 </div>
                 <div class="control-box">
                   <h3>发送测试消息</h3>
@@ -367,6 +391,9 @@ def dashboard_html() -> str:
           function metric(label, value, className = "") {
             return `<div class="metric"><span>${esc(label)}</span><strong class="${className}">${esc(value)}</strong></div>`;
           }
+          function pill(label, active) {
+            return `<span class="status-pill ${active ? "ok" : "warn"}">${esc(label)}</span>`;
+          }
           function row(cells) {
             return `<tr>${cells.map((cell) => `<td>${cell}</td>`).join("")}</tr>`;
           }
@@ -405,6 +432,8 @@ def dashboard_html() -> str:
             currentSummaries = data.summaries;
             byId("metrics").innerHTML = [
               metric("状态", data.status.status, "ok"),
+              metric("API", data.runtime.api.running ? `运行 ${data.runtime.api.pid}` : "停止", data.runtime.api.running ? "ok" : "warn"),
+              metric("Telegram", data.runtime.telegram_polling.running ? `运行 ${data.runtime.telegram_polling.pid}` : "停止", data.runtime.telegram_polling.running ? "ok" : "warn"),
               metric("消息", data.status.messages),
               metric("反馈", data.status.feedbacks),
               metric("记忆", data.status.memory_items),
@@ -413,6 +442,14 @@ def dashboard_html() -> str:
               metric("LLM", data.config.llm_provider),
               metric("回复", data.config.napcat_passive_reply_enabled ? "被动" : (data.config.napcat_reply_enabled ? "主动" : "关闭"), data.config.napcat_passive_reply_enabled || data.config.napcat_reply_enabled ? "ok" : "warn"),
               metric("窗口", data.config.llm_context_messages)
+            ].join("");
+            byId("runtimePanel").innerHTML = [
+              `<div>API ${pill(data.runtime.api.running ? `running pid=${data.runtime.api.pid}` : "stopped", data.runtime.api.running)}</div>`,
+              `<div>Telegram ${pill(data.runtime.telegram_polling.running ? `running pid=${data.runtime.telegram_polling.pid}` : "stopped", data.runtime.telegram_polling.running)}</div>`,
+              `<div>Telegram token ${pill(data.runtime.telegram_polling.configured ? "configured" : "missing", data.runtime.telegram_polling.configured)}</div>`,
+              `<div>Telegram send ${pill(data.runtime.telegram_polling.reply_enabled ? "enabled" : "disabled", data.runtime.telegram_polling.reply_enabled)}</div>`,
+              `<div>NapCat ${pill(data.runtime.napcat.reply_enabled ? "active reply" : (data.runtime.napcat.passive_reply_enabled ? "passive reply" : "reply off"), data.runtime.napcat.reply_enabled || data.runtime.napcat.passive_reply_enabled)}</div>`,
+              `<div class="muted">${esc(data.runtime.napcat.api_url)}</div>`
             ].join("");
             byId("conversations").innerHTML = data.conversations.map((item) => (
               `<tr data-conversation-id="${esc(item.conversation_id)}">` +
@@ -474,6 +511,18 @@ def dashboard_html() -> str:
                 message: byId("chatMessage").value,
                 conversation_id: byId("chatConversationId").value || null
               })
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("startTelegramButton").addEventListener("click", () => {
+            controlFetch("/dashboard-control/runtime/telegram/start", {
+              method: "POST",
+              headers: adminHeaders()
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("stopTelegramButton").addEventListener("click", () => {
+            controlFetch("/dashboard-control/runtime/telegram/stop", {
+              method: "POST",
+              headers: adminHeaders()
             }).catch((error) => showControlResult(error.message));
           });
           function selectConversation(conversationId) {

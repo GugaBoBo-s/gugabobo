@@ -10,7 +10,7 @@ from gugabobo.core.access import evaluate_access
 from gugabobo.core.channel import ChannelContext
 from gugabobo.infra.logs import get_logger, read_log_lines
 from gugabobo.infra.napcat_client import NapCatClient
-from gugabobo.infra.runtime import build_agent
+from gugabobo.infra.runtime import RuntimeManager, build_agent
 
 
 class Utf8JSONResponse(JSONResponse):
@@ -137,6 +137,7 @@ def dashboard_data() -> dict[str, object]:
         "summaries": agent.store.list_conversation_summaries(limit=20),
         "access_rules": agent.store.list_access_rules(limit=50),
         "table_counts": agent.store.table_counts(),
+        "runtime": RuntimeManager().status(),
         "logs": read_log_lines(limit=80),
     }
 
@@ -154,6 +155,11 @@ def health() -> dict[str, str]:
 @app.get("/status")
 def status() -> dict[str, object]:
     return build_agent().status()
+
+
+@app.get("/runtime/status")
+def runtime_status() -> dict[str, object]:
+    return RuntimeManager().status()
 
 
 @app.post("/chat")
@@ -349,6 +355,20 @@ def dashboard_control_delete_access_rule(
     if not build_agent().store.delete_access_rule(rule_id):
         raise HTTPException(status_code=404, detail="Access rule not found")
     return {"id": rule_id, "deleted": True}
+
+
+@app.post("/dashboard-control/runtime/telegram/start")
+def dashboard_control_start_telegram_polling(
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    return RuntimeManager().start_telegram_polling()
+
+
+@app.post("/dashboard-control/runtime/telegram/stop")
+def dashboard_control_stop_telegram_polling(
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    return RuntimeManager().stop_telegram_polling()
 
 
 @app.patch("/dashboard-control/feedbacks/{feedback_id}")

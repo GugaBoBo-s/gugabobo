@@ -67,6 +67,7 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     assert "编辑长期记忆" in page_response.text
     assert "会话上下文" in page_response.text
     assert "访问权限" in page_response.text
+    assert "运行管理" in page_response.text
     assert "数据库表状态" in page_response.text
     assert "会话摘要" in page_response.text
     assert '""":' not in page_response.text
@@ -74,6 +75,8 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     assert "status" in data_response.json()
     assert "messages" in data_response.json()
     assert "table_counts" in data_response.json()
+    assert "runtime" in data_response.json()
+    assert data_response.json()["runtime"]["api"]["running"] is True
     get_settings.cache_clear()
 
 
@@ -84,6 +87,34 @@ def test_dashboard_control_requires_admin_token(tmp_path, monkeypatch):
     response = client.post("/dashboard-control/chat", json={"message": "你好"})
 
     assert response.status_code == 401
+    get_settings.cache_clear()
+
+
+def test_dashboard_runtime_control_requires_admin_token(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/dashboard-control/runtime/telegram/start")
+
+    assert response.status_code == 401
+    get_settings.cache_clear()
+
+
+def test_dashboard_runtime_control_reports_unconfigured_telegram(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("GUGABOBO_TELEGRAM_BOT_TOKEN", "")
+    get_settings.cache_clear()
+    client = TestClient(app)
+
+    status_response = client.get("/runtime/status")
+    start_response = client.post(
+        "/dashboard-control/runtime/telegram/start",
+        headers=admin_headers(),
+    )
+
+    assert status_response.status_code == 200
+    assert status_response.json()["telegram_polling"]["configured"] is False
+    assert start_response.json()["status"] == "not_configured"
     get_settings.cache_clear()
 
 
