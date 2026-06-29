@@ -10,6 +10,7 @@ def configure_test_env(tmp_path, monkeypatch):
     monkeypatch.setenv("GUGABOBO_LOG_DIR", str(tmp_path / "logs"))
     monkeypatch.setenv("GUGABOBO_CONFIG_FILE_PATH", str(tmp_path / ".env"))
     monkeypatch.setenv("GUGABOBO_ADMIN_TOKEN", "test-admin")
+    monkeypatch.setenv("GUGABOBO_NAPCAT_DIR", str(tmp_path / "napcat"))
     monkeypatch.setenv("GUGABOBO_LLM_PROVIDER", "moonshot")
     monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
     monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
@@ -69,6 +70,8 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     assert "编辑长期记忆" in page_response.text
     assert "配置编辑器" in page_response.text
     assert "QQ/NapCat 诊断" in page_response.text
+    assert "启动 NapCat" in page_response.text
+    assert "打开 NapCat WebUI" in page_response.text
     assert "会话上下文" in page_response.text
     assert "访问权限" in page_response.text
     assert "运行管理" in page_response.text
@@ -105,6 +108,32 @@ def test_dashboard_runtime_control_requires_admin_token(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
+def test_dashboard_napcat_runtime_control_requires_admin_token(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/dashboard-control/runtime/napcat/start")
+
+    assert response.status_code == 401
+    get_settings.cache_clear()
+
+
+def test_dashboard_napcat_runtime_control_reports_missing_directory(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    status_response = client.get("/runtime/status")
+    start_response = client.post(
+        "/dashboard-control/runtime/napcat/start",
+        headers=admin_headers(),
+    )
+
+    assert status_response.json()["napcat"]["running"] is False
+    assert status_response.json()["napcat"]["webui"]["url"].endswith("/webui")
+    assert start_response.json()["status"] == "not_configured"
+    get_settings.cache_clear()
+
+
 def test_qq_diagnostics_endpoint(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     client = TestClient(app)
@@ -115,6 +144,7 @@ def test_qq_diagnostics_endpoint(tmp_path, monkeypatch):
     assert response.json()["api"]["running"] is True
     assert response.json()["api"]["onebot_url"].endswith("/onebot/v11/events")
     assert "napcat_webui" in response.json()
+    assert "napcat_process" in response.json()
     assert "checks" in response.json()
     get_settings.cache_clear()
 
@@ -172,6 +202,7 @@ def test_dashboard_config_control_updates_env_file(tmp_path, monkeypatch):
                 "GUGABOBO_LLM_PROVIDER": "deepseek",
                 "GUGABOBO_LLM_CONTEXT_MESSAGES": 80,
                 "GUGABOBO_TELEGRAM_REPLY_ENABLED": True,
+                "GUGABOBO_NAPCAT_DIR": "D:/tools/napcat",
                 "GUGABOBO_DEEPSEEK_API_KEY": "should-not-save",
             }
         },
@@ -185,6 +216,7 @@ def test_dashboard_config_control_updates_env_file(tmp_path, monkeypatch):
     assert "GUGABOBO_LLM_PROVIDER=deepseek" in env_text
     assert "GUGABOBO_LLM_CONTEXT_MESSAGES=80" in env_text
     assert "GUGABOBO_TELEGRAM_REPLY_ENABLED=true" in env_text
+    assert "GUGABOBO_NAPCAT_DIR=D:/tools/napcat" in env_text
     assert "should-not-save" not in env_text
     assert "GUGABOBO_DEEPSEEK_API_KEY=secret" in env_text
     get_settings.cache_clear()

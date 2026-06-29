@@ -250,6 +250,7 @@ def dashboard_html() -> str:
                   <input id="configTelegramWakeWords" placeholder="Telegram 群聊唤醒词，逗号分隔">
                   <input id="configOwnerQqIds" placeholder="owner QQ IDs，逗号分隔">
                   <input id="configOwnerTelegramIds" placeholder="owner Telegram IDs，逗号分隔">
+                  <input id="configNapcatDir" placeholder="NapCat 目录">
                   <input id="configNapcatApiUrl" placeholder="NapCat API URL">
                   <input id="configTelegramBotUsername" placeholder="Telegram bot username">
                   <div id="configSecrets" class="muted"></div>
@@ -261,6 +262,9 @@ def dashboard_html() -> str:
                   <div id="runtimePanel" class="muted"></div>
                   <button id="startTelegramButton" type="button">启动 Telegram polling</button>
                   <button id="stopTelegramButton" type="button">停止 Telegram polling</button>
+                  <button id="startNapcatButton" type="button">启动 NapCat</button>
+                  <button id="stopNapcatButton" type="button">停止 NapCat</button>
+                  <button id="openNapcatWebuiButton" type="button">打开 NapCat WebUI</button>
                 </div>
                 <div class="control-box">
                   <h3>发送测试消息</h3>
@@ -472,6 +476,7 @@ def dashboard_html() -> str:
             byId("configTelegramWakeWords").value = values.GUGABOBO_TELEGRAM_GROUP_WAKE_WORDS || "";
             byId("configOwnerQqIds").value = values.GUGABOBO_OWNER_QQ_IDS || "";
             byId("configOwnerTelegramIds").value = values.GUGABOBO_OWNER_TELEGRAM_IDS || "";
+            byId("configNapcatDir").value = values.GUGABOBO_NAPCAT_DIR || "";
             byId("configNapcatApiUrl").value = values.GUGABOBO_NAPCAT_API_URL || "";
             byId("configTelegramBotUsername").value = values.GUGABOBO_TELEGRAM_BOT_USERNAME || "";
             byId("configSecrets").innerHTML = Object.entries(config.secrets)
@@ -492,6 +497,7 @@ def dashboard_html() -> str:
               GUGABOBO_TELEGRAM_GROUP_WAKE_WORDS: byId("configTelegramWakeWords").value,
               GUGABOBO_OWNER_QQ_IDS: byId("configOwnerQqIds").value,
               GUGABOBO_OWNER_TELEGRAM_IDS: byId("configOwnerTelegramIds").value,
+              GUGABOBO_NAPCAT_DIR: byId("configNapcatDir").value,
               GUGABOBO_NAPCAT_API_URL: byId("configNapcatApiUrl").value,
               GUGABOBO_TELEGRAM_BOT_USERNAME: byId("configTelegramBotUsername").value
             };
@@ -549,13 +555,17 @@ def dashboard_html() -> str:
               `<div>Telegram token ${pill(data.runtime.telegram_polling.configured ? "configured" : "missing", data.runtime.telegram_polling.configured)}</div>`,
               `<div>Telegram send ${pill(data.runtime.telegram_polling.reply_enabled ? "enabled" : "disabled", data.runtime.telegram_polling.reply_enabled)}</div>`,
               `<div>NapCat ${pill(data.runtime.napcat.reply_enabled ? "active reply" : (data.runtime.napcat.passive_reply_enabled ? "passive reply" : "reply off"), data.runtime.napcat.reply_enabled || data.runtime.napcat.passive_reply_enabled)}</div>`,
+              `<div>NapCat process ${pill(data.runtime.napcat.running ? `running ${data.runtime.napcat.pids.join(",")}` : "stopped", data.runtime.napcat.running)}</div>`,
+              `<div>NapCat WebUI ${pill(data.runtime.napcat.webui.configured ? "configured" : "missing", data.runtime.napcat.webui.configured)}</div>`,
               `<div class="muted">${esc(data.runtime.napcat.api_url)}</div>`
             ].join("");
             const qq = data.qq_diagnostics;
             byId("qqDiagnostics").innerHTML = [
               diagnosticItem("API", `${pill(`running pid=${qq.api.pid}`, true)}<br><span class="muted">${esc(qq.api.onebot_url)}</span>`),
               diagnosticItem("NapCat WebUI", `${pill(qq.napcat_webui.running ? "online" : "offline", qq.napcat_webui.running)}<br><span class="muted">127.0.0.1:6099</span>`),
+              diagnosticItem("NapCat 进程", `${pill(qq.napcat_process.running ? `running ${qq.napcat_process.pids.join(",")}` : "stopped", qq.napcat_process.running)}<br><span class="muted">${esc(qq.napcat_process.dir)}</span>`),
               diagnosticItem("NapCat OneBot API", `${pill(qq.napcat_api.running ? "online" : "offline", qq.napcat_api.running)}<br><span class="muted">${esc(qq.napcat_api.url)}</span>`),
+              diagnosticItem("HTTP Client URL", `<span class="muted">${esc(qq.api.onebot_url)}</span>`),
               diagnosticItem("回复模式", pill(qq.reply_mode, qq.reply_mode !== "off")),
               diagnosticItem("群聊唤醒词", `<span class="muted">${esc(qq.settings.qq_group_wake_words)}</span>`),
               diagnosticItem("最近 QQ 事件", qq.last_qq_message
@@ -648,6 +658,28 @@ def dashboard_html() -> str:
               method: "POST",
               headers: adminHeaders()
             }).catch((error) => showControlResult(error.message));
+          });
+          byId("startNapcatButton").addEventListener("click", () => {
+            controlFetch("/dashboard-control/runtime/napcat/start", {
+              method: "POST",
+              headers: adminHeaders()
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("stopNapcatButton").addEventListener("click", () => {
+            controlFetch("/dashboard-control/runtime/napcat/stop", {
+              method: "POST",
+              headers: adminHeaders()
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("openNapcatWebuiButton").addEventListener("click", () => {
+            const resultText = byId("controlResult").textContent;
+            fetch("/runtime/status", { cache: "no-store" })
+              .then((response) => response.json())
+              .then((data) => {
+                window.open(data.napcat.webui.url, "_blank");
+                byId("controlResult").textContent = resultText;
+              })
+              .catch((error) => showControlResult(error.message));
           });
           byId("qqDiagnostics").addEventListener("click", (event) => {
             if (event.target.id !== "onebotTestButton") {

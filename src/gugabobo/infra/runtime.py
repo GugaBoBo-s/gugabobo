@@ -49,6 +49,7 @@ class RuntimeManager:
                 "reply_enabled": self.settings.napcat_reply_enabled,
                 "passive_reply_enabled": self.settings.napcat_passive_reply_enabled,
                 "access_token_configured": bool(self.settings.napcat_access_token),
+                **self._napcat_process_status(),
             },
         }
 
@@ -69,6 +70,7 @@ class RuntimeManager:
                 **napcat_api,
                 "url": napcat_api_url,
             },
+            "napcat_process": self._napcat_process_status(),
             "reply_mode": reply_mode,
             "settings": {
                 "napcat_reply_enabled": self.settings.napcat_reply_enabled,
@@ -77,6 +79,50 @@ class RuntimeManager:
             },
             "last_qq_message": qq_messages[0] if qq_messages else None,
             "checks": self._qq_checks(webui, napcat_api, reply_mode),
+        }
+
+    def start_napcat(self) -> dict[str, object]:
+        status = self._napcat_process_status()
+        if status["running"]:
+            return {"status": "already_running", "pids": status["pids"]}
+        quick_bat = self.settings.napcat_dir / "napcat.quick.bat"
+        if not quick_bat.exists():
+            return {
+                "status": "not_configured",
+                "reason": f"{quick_bat} not found",
+                "pids": [],
+            }
+        subprocess.Popen(
+            ["cmd", "/c", str(quick_bat)],
+            cwd=self.settings.napcat_dir,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=self._creation_flags(),
+        )
+        return {"status": "started", "pids": []}
+
+    def stop_napcat(self) -> dict[str, object]:
+        status = self._napcat_process_status()
+        pids = [int(pid) for pid in status["pids"]]
+        if not pids:
+            return {"status": "not_running", "pids": []}
+        for pid in pids:
+            self._terminate_process(pid)
+        return {"status": "stopped", "pids": pids}
+
+    def napcat_webui_url(self) -> dict[str, object]:
+        webui_config = self._napcat_webui_config()
+        token = str(webui_config.get("token", ""))
+        port = int(webui_config.get("port", 6099) or 6099)
+        url = f"http://127.0.0.1:{port}/webui"
+        if token:
+            url = f"{url}?token={token}"
+        return {
+            "url": url,
+            "token": token,
+            "port": port,
+            "configured": bool(token),
         }
 
     def start_telegram_polling(self) -> dict[str, object]:
@@ -173,6 +219,55 @@ class RuntimeManager:
         if os.name != "nt":
             return 0
         return subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+
+    def _napcat_process_status(self) -> dict[str, object]:
+        pids = self._napcat_pids()
+        return {
+            "running": bool(pids),
+            "pids": pids,
+            "dir": str(self.settings.napcat_dir),
+            "webui": self.napcat_webui_url(),
+        }
+
+    def _napcat_pids(self) -> list[int]:
+        if os.name != "nt":
+            return []
+        directory = str(self.settings.napcat_dir).replace("'", "''")
+        script = (
+            "Get-CimInstance Win32_Process | "
+            f"Where-Object {{ $_.ExecutablePath -like '{directory}*' }} | "
+            "Select-Object -ExpandProperty ProcessId"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        pids: list[int] = []
+        for line in result.stdout.splitlines():
+            pid = self._pid_value(line.strip())
+            if pid and pid != os.getpid():
+                pids.append(pid)
+        return sorted(set(pids))
+
+    def _napcat_webui_config(self) -> dict[str, object]:
+        config_path = (
+            self.settings.napcat_dir
+            / "versions"
+            / "9.9.26-44498"
+            / "resources"
+            / "app"
+            / "napcat"
+            / "config"
+            / "webui.json"
+        )
+        if not config_path.exists():
+            return {}
+        try:
+            return json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
 
     def _qq_reply_mode(self) -> str:
         if self.settings.napcat_reply_enabled:

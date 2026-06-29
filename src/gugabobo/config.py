@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     admin_token: str = Field(default="change-me", repr=False)
     owner_qq_ids: str = ""
     owner_telegram_ids: str = ""
+    napcat_dir: Path = Path("D:/0code/处理程序/NapCat.44498.Shell")
     napcat_api_url: str = "http://127.0.0.1:3000"
     napcat_access_token: str = Field(default="", repr=False)
     napcat_reply_enabled: bool = False

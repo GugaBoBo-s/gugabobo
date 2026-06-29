@@ -181,6 +181,7 @@ def dashboard_control_config(_: None = Depends(require_admin_token)) -> dict[str
         "values": {
             "GUGABOBO_OWNER_QQ_IDS": settings.owner_qq_ids,
             "GUGABOBO_OWNER_TELEGRAM_IDS": settings.owner_telegram_ids,
+            "GUGABOBO_NAPCAT_DIR": str(settings.napcat_dir),
             "GUGABOBO_NAPCAT_API_URL": settings.napcat_api_url,
             "GUGABOBO_NAPCAT_REPLY_ENABLED": settings.napcat_reply_enabled,
             "GUGABOBO_NAPCAT_PASSIVE_REPLY_ENABLED": settings.napcat_passive_reply_enabled,
@@ -428,6 +429,20 @@ def dashboard_control_stop_telegram_polling(
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
     return RuntimeManager().stop_telegram_polling()
+
+
+@app.post("/dashboard-control/runtime/napcat/start")
+def dashboard_control_start_napcat(
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    return RuntimeManager().start_napcat()
+
+
+@app.post("/dashboard-control/runtime/napcat/stop")
+def dashboard_control_stop_napcat(
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    return RuntimeManager().stop_napcat()
 
 
 @app.post("/dashboard-control/diagnostics/onebot-test")

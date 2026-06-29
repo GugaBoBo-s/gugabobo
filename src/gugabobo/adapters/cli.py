@@ -204,6 +204,7 @@ def config_show() -> None:
             "admin_token": "***" if settings.admin_token else "",
             "owner_qq_ids": settings.owner_qq_ids,
             "owner_telegram_ids": settings.owner_telegram_ids,
+            "napcat_dir": settings.napcat_dir,
             "napcat_api_url": settings.napcat_api_url,
             "napcat_access_token": "***" if settings.napcat_access_token else "",
             "napcat_reply_enabled": settings.napcat_reply_enabled,
