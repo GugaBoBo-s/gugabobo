@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from gugabobo.config import get_settings
 from gugabobo.core.agent import CoreAgent
+from gugabobo.infra.telegram_client import TelegramClient
 from gugabobo.memory.store import MemoryStore
 
 
@@ -80,6 +81,45 @@ class RuntimeManager:
             "last_qq_message": qq_messages[0] if qq_messages else None,
             "checks": self._qq_checks(webui, napcat_api, reply_mode),
         }
+
+    def telegram_diagnostics(self, store: MemoryStore) -> dict[str, object]:
+        runtime_status = self.status()["telegram_polling"]
+        telegram_messages = store.list_messages_by_source_prefix("telegram_", limit=1)
+        configured = bool(self.settings.telegram_bot_token)
+        return {
+            "configured": configured,
+            "bot_username": self.settings.telegram_bot_username,
+            "polling": runtime_status,
+            "reply_enabled": self.settings.telegram_reply_enabled,
+            "group_wake_words": self.settings.telegram_group_wake_words,
+            "last_telegram_message": telegram_messages[0] if telegram_messages else None,
+            "checks": [
+                {
+                    "name": "Telegram token",
+                    "ok": configured,
+                    "detail": "GUGABOBO_TELEGRAM_BOT_TOKEN",
+                },
+                {
+                    "name": "Telegram polling",
+                    "ok": bool(runtime_status["running"]),
+                    "detail": "local getUpdates polling",
+                },
+                {
+                    "name": "Telegram replies",
+                    "ok": self.settings.telegram_reply_enabled,
+                    "detail": "GUGABOBO_TELEGRAM_REPLY_ENABLED",
+                },
+            ],
+        }
+
+    def telegram_get_me(self) -> dict[str, object]:
+        if not self.settings.telegram_bot_token:
+            return {"status": "not_configured", "ok": False}
+        try:
+            me = TelegramClient().get_me()
+        except Exception as error:
+            return {"status": "error", "ok": False, "error": str(error)}
+        return {"status": "ok", "ok": True, "bot": me}
 
     def start_napcat(self) -> dict[str, object]:
         status = self._napcat_process_status()

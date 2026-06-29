@@ -12,6 +12,7 @@ def configure_test_env(tmp_path, monkeypatch):
     monkeypatch.setenv("GUGABOBO_ADMIN_TOKEN", "test-admin")
     monkeypatch.setenv("GUGABOBO_NAPCAT_DIR", str(tmp_path / "napcat"))
     monkeypatch.setenv("GUGABOBO_LLM_PROVIDER", "moonshot")
+    monkeypatch.setenv("GUGABOBO_TELEGRAM_BOT_TOKEN", "")
     monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
     monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
     get_settings.cache_clear()
@@ -70,6 +71,7 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     assert "编辑长期记忆" in page_response.text
     assert "配置编辑器" in page_response.text
     assert "QQ/NapCat 诊断" in page_response.text
+    assert "Telegram 诊断" in page_response.text
     assert "启动 NapCat" in page_response.text
     assert "打开 NapCat WebUI" in page_response.text
     assert "会话上下文" in page_response.text
@@ -84,6 +86,7 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     assert "table_counts" in data_response.json()
     assert "runtime" in data_response.json()
     assert "qq_diagnostics" in data_response.json()
+    assert "telegram_diagnostics" in data_response.json()
     assert data_response.json()["runtime"]["api"]["running"] is True
     get_settings.cache_clear()
 
@@ -149,11 +152,34 @@ def test_qq_diagnostics_endpoint(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
+def test_telegram_diagnostics_endpoint(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    response = client.get("/diagnostics/telegram")
+
+    assert response.status_code == 200
+    assert response.json()["configured"] is False
+    assert "polling" in response.json()
+    assert "checks" in response.json()
+    get_settings.cache_clear()
+
+
 def test_dashboard_onebot_diagnostic_requires_admin_token(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     client = TestClient(app)
 
     response = client.post("/dashboard-control/diagnostics/onebot-test")
+
+    assert response.status_code == 401
+    get_settings.cache_clear()
+
+
+def test_dashboard_telegram_diagnostic_requires_admin_token(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/dashboard-control/diagnostics/telegram-test")
 
     assert response.status_code == 401
     get_settings.cache_clear()
@@ -172,6 +198,37 @@ def test_dashboard_onebot_diagnostic_records_message(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
     assert messages_response.json()[0]["content"] == "ping"
+    get_settings.cache_clear()
+
+
+def test_dashboard_telegram_diagnostic_records_message(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    response = client.post(
+        "/dashboard-control/diagnostics/telegram-test",
+        headers=admin_headers(),
+    )
+    messages_response = client.get("/messages?conversation_id=telegram:user:10001")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert messages_response.json()[0]["content"] == "ping"
+    get_settings.cache_clear()
+
+
+def test_dashboard_telegram_getme_reports_missing_token(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    response = client.post(
+        "/dashboard-control/diagnostics/telegram-getme",
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "not_configured"
+    assert response.json()["ok"] is False
     get_settings.cache_clear()
 
 

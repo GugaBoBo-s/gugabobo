@@ -343,6 +343,10 @@ def dashboard_html() -> str:
               <div class="diagnostic-list" id="qqDiagnostics"></div>
             </section>
             <section>
+              <h2>Telegram 诊断</h2>
+              <div class="diagnostic-list" id="telegramDiagnostics"></div>
+            </section>
+            <section>
               <h2>会话</h2>
               <table>
                 <thead>
@@ -574,6 +578,19 @@ def dashboard_html() -> str:
               diagnosticItem("检查项", qq.checks.map((item) => `${pill(item.ok ? "OK" : "WARN", item.ok)} ${esc(item.name)} <span class="muted">${esc(item.detail)}</span>`).join("<br>")),
               diagnosticItem("操作", `<button id="onebotTestButton" type="button">模拟 OneBot 私聊测试</button>`)
             ].join("");
+            const tg = data.telegram_diagnostics;
+            byId("telegramDiagnostics").innerHTML = [
+              diagnosticItem("Token", pill(tg.configured ? "configured" : "missing", tg.configured)),
+              diagnosticItem("Bot", `<span class="muted">${esc(tg.bot_username || "unknown")}</span>`),
+              diagnosticItem("Polling", `${pill(tg.polling.running ? `running pid=${tg.polling.pid}` : "stopped", tg.polling.running)}<br><span class="muted">本地 getUpdates</span>`),
+              diagnosticItem("发送回复", pill(tg.reply_enabled ? "enabled" : "disabled", tg.reply_enabled)),
+              diagnosticItem("群聊唤醒词", `<span class="muted">${esc(tg.group_wake_words)}</span>`),
+              diagnosticItem("最近 Telegram 事件", tg.last_telegram_message
+                ? `#${esc(tg.last_telegram_message.id)} ${esc(tg.last_telegram_message.source)} ${esc(tg.last_telegram_message.created_at)}<br>${esc(tg.last_telegram_message.content)}`
+                : `<span class="muted">暂无</span>`),
+              diagnosticItem("检查项", tg.checks.map((item) => `${pill(item.ok ? "OK" : "WARN", item.ok)} ${esc(item.name)} <span class="muted">${esc(item.detail)}</span>`).join("<br>")),
+              diagnosticItem("操作", `<button id="telegramTestButton" type="button">模拟 Telegram 私聊测试</button> <button id="telegramGetMeButton" type="button">检查 getMe</button>`)
+            ].join("");
             byId("conversations").innerHTML = data.conversations.map((item) => (
               `<tr data-conversation-id="${esc(item.conversation_id)}">` +
               `<td>${esc(item.conversation_id)}</td>` +
@@ -689,6 +706,21 @@ def dashboard_html() -> str:
               method: "POST",
               headers: adminHeaders()
             }).catch((error) => showControlResult(error.message));
+          });
+          byId("telegramDiagnostics").addEventListener("click", (event) => {
+            if (event.target.id === "telegramTestButton") {
+              controlFetch("/dashboard-control/diagnostics/telegram-test", {
+                method: "POST",
+                headers: adminHeaders()
+              }).catch((error) => showControlResult(error.message));
+              return;
+            }
+            if (event.target.id === "telegramGetMeButton") {
+              controlFetch("/dashboard-control/diagnostics/telegram-getme", {
+                method: "POST",
+                headers: adminHeaders()
+              }).catch((error) => showControlResult(error.message));
+            }
           });
           function selectConversation(conversationId) {
             byId("selectedConversationId").value = conversationId;

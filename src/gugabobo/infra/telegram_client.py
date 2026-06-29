@@ -48,5 +48,10 @@ class TelegramClient:
             return []
         return [dict(item) for item in result if isinstance(item, dict)]
 
+    def get_me(self) -> dict[str, object]:
+        data = self.call("getMe")
+        result = data.get("result", {})
+        return dict(result) if isinstance(result, dict) else {}
+
     def send_message(self, chat_id: str, text: str) -> None:
         self.call("sendMessage", {"chat_id": chat_id, "text": text})

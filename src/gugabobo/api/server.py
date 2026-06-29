@@ -144,6 +144,7 @@ def dashboard_data() -> dict[str, object]:
         "table_counts": agent.store.table_counts(),
         "runtime": RuntimeManager().status(),
         "qq_diagnostics": RuntimeManager().qq_diagnostics(agent.store),
+        "telegram_diagnostics": RuntimeManager().telegram_diagnostics(agent.store),
         "logs": read_log_lines(limit=80),
     }
 
@@ -172,6 +173,12 @@ def runtime_status() -> dict[str, object]:
 def qq_diagnostics() -> dict[str, object]:
     agent = build_agent()
     return RuntimeManager().qq_diagnostics(agent.store)
+
+
+@app.get("/diagnostics/telegram")
+def telegram_diagnostics() -> dict[str, object]:
+    agent = build_agent()
+    return RuntimeManager().telegram_diagnostics(agent.store)
 
 
 @app.get("/dashboard-control/config")
@@ -458,6 +465,33 @@ def dashboard_control_onebot_test(
             "message": "ping",
         }
     )
+
+
+@app.post("/dashboard-control/diagnostics/telegram-test")
+def dashboard_control_telegram_test(
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    return handle_telegram_update(
+        {
+            "update_id": 1,
+            "message": {
+                "message_id": 10,
+                "from": {"id": 10001, "username": "dashboard_test"},
+                "chat": {"id": 10001, "type": "private"},
+                "text": "ping",
+            },
+        },
+        agent=build_agent(),
+        settings=get_settings(),
+        send_reply=False,
+    )
+
+
+@app.post("/dashboard-control/diagnostics/telegram-getme")
+def dashboard_control_telegram_get_me(
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    return RuntimeManager().telegram_get_me()
 
 
 @app.patch("/dashboard-control/feedbacks/{feedback_id}")
