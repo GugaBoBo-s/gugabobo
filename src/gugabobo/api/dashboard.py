@@ -164,6 +164,23 @@ def dashboard_html() -> str:
             font-size: 13px;
             font-weight: 650;
           }
+          .diagnostic-list {
+            display: grid;
+            gap: 8px;
+            padding: 12px;
+          }
+          .diagnostic-item {
+            display: grid;
+            grid-template-columns: minmax(120px, 180px) 1fr;
+            gap: 8px;
+            align-items: start;
+            border-bottom: 1px solid var(--line);
+            padding-bottom: 8px;
+          }
+          .diagnostic-item:last-child {
+            border-bottom: 0;
+            padding-bottom: 0;
+          }
           input, select, textarea {
             width: 100%;
             border: 1px solid var(--line);
@@ -318,6 +335,10 @@ def dashboard_html() -> str:
               </div>
             </section>
             <section>
+              <h2>QQ/NapCat 诊断</h2>
+              <div class="diagnostic-list" id="qqDiagnostics"></div>
+            </section>
+            <section>
               <h2>会话</h2>
               <table>
                 <thead>
@@ -423,6 +444,9 @@ def dashboard_html() -> str:
           function row(cells) {
             return `<tr>${cells.map((cell) => `<td>${cell}</td>`).join("")}</tr>`;
           }
+          function diagnosticItem(label, value) {
+            return `<div class="diagnostic-item"><strong>${esc(label)}</strong><div>${value}</div></div>`;
+          }
           function adminHeaders() {
             return {
               "Content-Type": "application/json",
@@ -527,6 +551,19 @@ def dashboard_html() -> str:
               `<div>NapCat ${pill(data.runtime.napcat.reply_enabled ? "active reply" : (data.runtime.napcat.passive_reply_enabled ? "passive reply" : "reply off"), data.runtime.napcat.reply_enabled || data.runtime.napcat.passive_reply_enabled)}</div>`,
               `<div class="muted">${esc(data.runtime.napcat.api_url)}</div>`
             ].join("");
+            const qq = data.qq_diagnostics;
+            byId("qqDiagnostics").innerHTML = [
+              diagnosticItem("API", `${pill(`running pid=${qq.api.pid}`, true)}<br><span class="muted">${esc(qq.api.onebot_url)}</span>`),
+              diagnosticItem("NapCat WebUI", `${pill(qq.napcat_webui.running ? "online" : "offline", qq.napcat_webui.running)}<br><span class="muted">127.0.0.1:6099</span>`),
+              diagnosticItem("NapCat OneBot API", `${pill(qq.napcat_api.running ? "online" : "offline", qq.napcat_api.running)}<br><span class="muted">${esc(qq.napcat_api.url)}</span>`),
+              diagnosticItem("回复模式", pill(qq.reply_mode, qq.reply_mode !== "off")),
+              diagnosticItem("群聊唤醒词", `<span class="muted">${esc(qq.settings.qq_group_wake_words)}</span>`),
+              diagnosticItem("最近 QQ 事件", qq.last_qq_message
+                ? `#${esc(qq.last_qq_message.id)} ${esc(qq.last_qq_message.source)} ${esc(qq.last_qq_message.created_at)}<br>${esc(qq.last_qq_message.content)}`
+                : `<span class="muted">暂无</span>`),
+              diagnosticItem("检查项", qq.checks.map((item) => `${pill(item.ok ? "OK" : "WARN", item.ok)} ${esc(item.name)} <span class="muted">${esc(item.detail)}</span>`).join("<br>")),
+              diagnosticItem("操作", `<button id="onebotTestButton" type="button">模拟 OneBot 私聊测试</button>`)
+            ].join("");
             byId("conversations").innerHTML = data.conversations.map((item) => (
               `<tr data-conversation-id="${esc(item.conversation_id)}">` +
               `<td>${esc(item.conversation_id)}</td>` +
@@ -608,6 +645,15 @@ def dashboard_html() -> str:
           });
           byId("stopTelegramButton").addEventListener("click", () => {
             controlFetch("/dashboard-control/runtime/telegram/stop", {
+              method: "POST",
+              headers: adminHeaders()
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("qqDiagnostics").addEventListener("click", (event) => {
+            if (event.target.id !== "onebotTestButton") {
+              return;
+            }
+            controlFetch("/dashboard-control/diagnostics/onebot-test", {
               method: "POST",
               headers: adminHeaders()
             }).catch((error) => showControlResult(error.message));

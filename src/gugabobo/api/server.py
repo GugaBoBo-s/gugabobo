@@ -143,6 +143,7 @@ def dashboard_data() -> dict[str, object]:
         "access_rules": agent.store.list_access_rules(limit=50),
         "table_counts": agent.store.table_counts(),
         "runtime": RuntimeManager().status(),
+        "qq_diagnostics": RuntimeManager().qq_diagnostics(agent.store),
         "logs": read_log_lines(limit=80),
     }
 
@@ -165,6 +166,12 @@ def status() -> dict[str, object]:
 @app.get("/runtime/status")
 def runtime_status() -> dict[str, object]:
     return RuntimeManager().status()
+
+
+@app.get("/diagnostics/qq")
+def qq_diagnostics() -> dict[str, object]:
+    agent = build_agent()
+    return RuntimeManager().qq_diagnostics(agent.store)
 
 
 @app.get("/dashboard-control/config")
@@ -421,6 +428,21 @@ def dashboard_control_stop_telegram_polling(
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
     return RuntimeManager().stop_telegram_polling()
+
+
+@app.post("/dashboard-control/diagnostics/onebot-test")
+def dashboard_control_onebot_test(
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    return onebot_event(
+        {
+            "post_type": "message",
+            "message_type": "private",
+            "user_id": 10001,
+            "raw_message": "ping",
+            "message": "ping",
+        }
+    )
 
 
 @app.patch("/dashboard-control/feedbacks/{feedback_id}")

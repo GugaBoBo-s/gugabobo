@@ -1,9 +1,11 @@
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 from gugabobo.config import get_settings
 from gugabobo.core.agent import CoreAgent
@@ -48,6 +50,33 @@ class RuntimeManager:
                 "passive_reply_enabled": self.settings.napcat_passive_reply_enabled,
                 "access_token_configured": bool(self.settings.napcat_access_token),
             },
+        }
+
+    def qq_diagnostics(self, store: MemoryStore) -> dict[str, object]:
+        webui = self._tcp_status("127.0.0.1", 6099)
+        napcat_api_url = self.settings.napcat_api_url
+        napcat_api = self._url_tcp_status(napcat_api_url)
+        qq_messages = store.list_messages_by_source_prefix("qq_", limit=1)
+        reply_mode = self._qq_reply_mode()
+        return {
+            "api": {
+                "running": True,
+                "pid": os.getpid(),
+                "onebot_url": f"http://{self.settings.api_host}:{self.settings.api_port}/onebot/v11/events",
+            },
+            "napcat_webui": webui,
+            "napcat_api": {
+                **napcat_api,
+                "url": napcat_api_url,
+            },
+            "reply_mode": reply_mode,
+            "settings": {
+                "napcat_reply_enabled": self.settings.napcat_reply_enabled,
+                "napcat_passive_reply_enabled": self.settings.napcat_passive_reply_enabled,
+                "qq_group_wake_words": self.settings.qq_group_wake_words,
+            },
+            "last_qq_message": qq_messages[0] if qq_messages else None,
+            "checks": self._qq_checks(webui, napcat_api, reply_mode),
         }
 
     def start_telegram_polling(self) -> dict[str, object]:
@@ -144,3 +173,62 @@ class RuntimeManager:
         if os.name != "nt":
             return 0
         return subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+
+    def _qq_reply_mode(self) -> str:
+        if self.settings.napcat_reply_enabled:
+            return "active"
+        if self.settings.napcat_passive_reply_enabled:
+            return "passive"
+        return "off"
+
+    def _tcp_status(self, host: str, port: int) -> dict[str, object]:
+        try:
+            with socket.create_connection((host, port), timeout=0.3):
+                return {"running": True, "host": host, "port": port}
+        except OSError as error:
+            return {
+                "running": False,
+                "host": host,
+                "port": port,
+                "error": str(error),
+            }
+
+    def _url_tcp_status(self, url: str) -> dict[str, object]:
+        parsed = urlparse(url)
+        host = parsed.hostname or "127.0.0.1"
+        if parsed.port:
+            port = parsed.port
+        elif parsed.scheme == "https":
+            port = 443
+        else:
+            port = 80
+        return self._tcp_status(host, port)
+
+    def _qq_checks(
+        self,
+        webui: dict[str, object],
+        napcat_api: dict[str, object],
+        reply_mode: str,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "name": "API",
+                "ok": True,
+                "detail": "gugabobo API is running",
+            },
+            {
+                "name": "NapCat WebUI",
+                "ok": bool(webui["running"]),
+                "detail": "127.0.0.1:6099 should be reachable",
+            },
+            {
+                "name": "NapCat OneBot API",
+                "ok": bool(napcat_api["running"]) or reply_mode == "passive",
+                "detail": "only required when active reply is enabled",
+            },
+            {
+                "name": "QQ reply mode",
+                "ok": reply_mode != "off",
+                "detail": reply_mode,
+            },
+        ]

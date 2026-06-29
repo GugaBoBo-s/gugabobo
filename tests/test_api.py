@@ -68,6 +68,7 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     assert "控制台" in page_response.text
     assert "编辑长期记忆" in page_response.text
     assert "配置编辑器" in page_response.text
+    assert "QQ/NapCat 诊断" in page_response.text
     assert "会话上下文" in page_response.text
     assert "访问权限" in page_response.text
     assert "运行管理" in page_response.text
@@ -79,6 +80,7 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     assert "messages" in data_response.json()
     assert "table_counts" in data_response.json()
     assert "runtime" in data_response.json()
+    assert "qq_diagnostics" in data_response.json()
     assert data_response.json()["runtime"]["api"]["running"] is True
     get_settings.cache_clear()
 
@@ -100,6 +102,46 @@ def test_dashboard_runtime_control_requires_admin_token(tmp_path, monkeypatch):
     response = client.post("/dashboard-control/runtime/telegram/start")
 
     assert response.status_code == 401
+    get_settings.cache_clear()
+
+
+def test_qq_diagnostics_endpoint(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    response = client.get("/diagnostics/qq")
+
+    assert response.status_code == 200
+    assert response.json()["api"]["running"] is True
+    assert response.json()["api"]["onebot_url"].endswith("/onebot/v11/events")
+    assert "napcat_webui" in response.json()
+    assert "checks" in response.json()
+    get_settings.cache_clear()
+
+
+def test_dashboard_onebot_diagnostic_requires_admin_token(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/dashboard-control/diagnostics/onebot-test")
+
+    assert response.status_code == 401
+    get_settings.cache_clear()
+
+
+def test_dashboard_onebot_diagnostic_records_message(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    response = client.post(
+        "/dashboard-control/diagnostics/onebot-test",
+        headers=admin_headers(),
+    )
+    messages_response = client.get("/messages?conversation_id=qq:user:10001")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert messages_response.json()[0]["content"] == "ping"
     get_settings.cache_clear()
 
 

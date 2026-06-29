@@ -142,6 +142,19 @@ class MemoryStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_messages_by_source_prefix(
+        self,
+        source_prefix: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, conversation_id, source, user_id, role, content, created_at "
+                "FROM messages WHERE source LIKE ? ORDER BY id DESC LIMIT ?",
+                (f"{source_prefix}%", limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_conversations(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
