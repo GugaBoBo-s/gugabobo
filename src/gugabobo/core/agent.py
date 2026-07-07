@@ -1,4 +1,5 @@
 from gugabobo.core.channel import ChannelContext
+from gugabobo.core.access import context_access_role, role_can_use_skill
 from gugabobo.core.persona import Persona
 from gugabobo.core.router import Router
 from gugabobo.config import get_settings
@@ -66,7 +67,10 @@ class CoreAgent:
             conversation_id=context.conversation_id,
         )
         route = self.router.route(text)
-        if route.skill == "feedback":
+        access_role = context_access_role(context)
+        if not role_can_use_skill(access_role, route.skill):
+            response = self.permission_denied_response(route.skill, access_role)
+        elif route.skill == "feedback":
             response = self.feedback_skill.record(
                 text,
                 source=context.source,
@@ -88,6 +92,13 @@ class CoreAgent:
             conversation_id=context.conversation_id,
         )
         return response
+
+    def permission_denied_response(self, skill: str, role: str) -> str:
+        if skill == "memory":
+            return f"当前权限是 {role}，不能写入长期记忆。需要 trusted 或 owner。"
+        if skill == "feedback":
+            return f"当前权限是 {role}，不能记录反馈。需要 trusted 或 owner。"
+        return f"当前权限是 {role}，不能执行这个操作。"
 
     def build_system_context(self, conversation_id: str, memory_limit: int) -> list[str]:
         context = []

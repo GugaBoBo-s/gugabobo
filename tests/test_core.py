@@ -26,7 +26,7 @@ def test_feedback_route_records_feedback(tmp_path, monkeypatch):
     get_settings.cache_clear()
     agent = CoreAgent(MemoryStore(tmp_path / "test.db"))
 
-    reply = agent.handle_message("建议回复短一点", source="test", user_id="u1")
+    reply = agent.handle_message("建议回复短一点", source="cli", user_id="u1")
 
     assert "已记录反馈" in reply
     assert agent.store.count_feedbacks() == 1
@@ -39,17 +39,47 @@ def test_explicit_memory_request_records_long_term_memory(tmp_path, monkeypatch)
     get_settings.cache_clear()
     agent = CoreAgent(MemoryStore(tmp_path / "test.db"))
 
-    reply = agent.handle_message(
+    reply = agent.handle_context_message(
         "记住我喜欢蓝色",
-        source="qq_private",
-        user_id="u1",
-        conversation_id="qq:user:u1",
+        ChannelContext(
+            platform="qq",
+            channel_type="private",
+            source="qq_private",
+            user_id="u1",
+            conversation_id="qq:user:u1",
+            is_wake_triggered=True,
+            metadata={"access_role": "trusted"},
+        ),
     )
     memories = agent.store.list_memory_items(subject="qq:user:u1")
 
     assert "已记住" in reply
     assert memories[0]["content"] == "我喜欢蓝色"
     assert memories[0]["source"] == "explicit_user_request"
+    get_settings.cache_clear()
+
+
+def test_user_role_cannot_write_long_term_memory(tmp_path, monkeypatch):
+    monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
+    monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
+    get_settings.cache_clear()
+    agent = CoreAgent(MemoryStore(tmp_path / "test.db"))
+
+    reply = agent.handle_context_message(
+        "记住我喜欢蓝色",
+        ChannelContext(
+            platform="qq",
+            channel_type="private",
+            source="qq_private",
+            user_id="u1",
+            conversation_id="qq:user:u1",
+            is_wake_triggered=True,
+            metadata={"access_role": "user"},
+        ),
+    )
+
+    assert "不能写入长期记忆" in reply
+    assert agent.store.list_memory_items(subject="qq:user:u1") == []
     get_settings.cache_clear()
 
 

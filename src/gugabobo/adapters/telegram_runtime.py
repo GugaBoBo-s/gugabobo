@@ -4,7 +4,7 @@ from typing import Any
 
 from gugabobo.adapters.telegram import TelegramMessageEvent
 from gugabobo.config import Settings
-from gugabobo.core.access import evaluate_access
+from gugabobo.core.access import context_with_access_role, evaluate_access, role_can_use_skill
 from gugabobo.core.agent import CoreAgent
 from gugabobo.infra.logs import get_logger
 from gugabobo.infra.telegram_client import TelegramClient
@@ -35,9 +35,12 @@ def handle_telegram_update(
             access.reason,
         )
         return {"status": "ignored", "reason": access.reason}
+    context = context_with_access_role(context, access)
     if not context.is_wake_triggered:
         route = agent.router.route(event.text)
         if route.skill == "feedback":
+            if not role_can_use_skill(access.role, "feedback"):
+                return {"status": "ignored", "reason": "insufficient role"}
             feedback_id = agent.store.add_feedback(
                 source=context.source,
                 user_id=context.user_id,

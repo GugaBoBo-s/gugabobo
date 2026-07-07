@@ -6,7 +6,7 @@ from gugabobo.adapters.onebot import OneBotMessageEvent
 from gugabobo.adapters.telegram_runtime import handle_telegram_update
 from gugabobo.api.dashboard import dashboard_html
 from gugabobo.config import get_settings
-from gugabobo.core.access import evaluate_access
+from gugabobo.core.access import context_with_access_role, evaluate_access, role_can_use_skill
 from gugabobo.core.channel import ChannelContext
 from gugabobo.infra.env_file import EnvFile
 from gugabobo.infra.logs import get_logger, read_log_lines
@@ -527,10 +527,13 @@ def onebot_event(payload: dict[str, object]) -> dict[str, object]:
             access.reason,
         )
         return {"status": "ignored", "reason": access.reason}
+    context = context_with_access_role(context, access)
     reply_allowed = context.is_wake_triggered
     if not reply_allowed:
         route = agent.router.route(text)
         if route.skill == "feedback":
+            if not role_can_use_skill(access.role, "feedback"):
+                return {"status": "ignored", "reason": "insufficient role"}
             feedback_id = agent.store.add_feedback(
                 source=context.source,
                 user_id=context.user_id,
