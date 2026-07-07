@@ -74,10 +74,15 @@ class ConfigUpdateRequest(BaseModel):
     values: dict[str, object]
 
 
+class DangerousActionRequest(BaseModel):
+    confirm_text: str = ""
+
+
 def add_dashboard_audit(
     action: str,
     target: str = "",
     status: str = "ok",
+    risk_level: str = "normal",
     detail: str = "",
 ) -> None:
     build_agent().store.add_audit_log(
@@ -86,8 +91,20 @@ def add_dashboard_audit(
         action=action,
         target=target,
         status=status,
+        risk_level=risk_level,
         detail=detail[:1000],
     )
+
+
+def require_danger_confirmation(
+    request: DangerousActionRequest | None,
+    expected_text: str,
+) -> None:
+    if request is None or request.confirm_text != expected_text:
+        raise HTTPException(
+            status_code=400,
+            detail=f"High-risk action requires confirm_text={expected_text}",
+        )
 
 
 def require_admin_token(x_gugabobo_admin_token: str | None = Header(default=None)) -> None:
@@ -391,11 +408,13 @@ def dashboard_control_update_memory(
 @app.delete("/dashboard-control/memories/{memory_id}")
 def dashboard_control_delete_memory(
     memory_id: int,
+    request: DangerousActionRequest | None = None,
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
+    require_danger_confirmation(request, "DELETE")
     if not build_agent().store.delete_memory_item(memory_id):
         raise HTTPException(status_code=404, detail="Memory not found")
-    add_dashboard_audit("memory.delete", f"memory:{memory_id}")
+    add_dashboard_audit("memory.delete", f"memory:{memory_id}", risk_level="high")
     return {"id": memory_id, "deleted": True}
 
 
@@ -416,21 +435,30 @@ def dashboard_control_set_summary(
 @app.delete("/dashboard-control/summaries/{conversation_id}")
 def dashboard_control_delete_summary(
     conversation_id: str,
+    request: DangerousActionRequest | None = None,
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
+    require_danger_confirmation(request, "DELETE")
     if not build_agent().store.delete_conversation_summary(conversation_id):
         raise HTTPException(status_code=404, detail="Summary not found")
-    add_dashboard_audit("summary.delete", conversation_id)
+    add_dashboard_audit("summary.delete", conversation_id, risk_level="high")
     return {"conversation_id": conversation_id, "deleted": True}
 
 
 @app.delete("/dashboard-control/conversations/{conversation_id}/messages")
 def dashboard_control_clear_conversation_messages(
     conversation_id: str,
+    request: DangerousActionRequest | None = None,
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
+    require_danger_confirmation(request, "CLEAR")
     deleted = build_agent().store.delete_conversation_messages(conversation_id)
-    add_dashboard_audit("conversation.messages.delete", conversation_id, detail=str(deleted))
+    add_dashboard_audit(
+        "conversation.messages.delete",
+        conversation_id,
+        risk_level="high",
+        detail=str(deleted),
+    )
     return {"conversation_id": conversation_id, "deleted": deleted}
 
 
@@ -460,11 +488,13 @@ def dashboard_control_upsert_access_rule(
 @app.delete("/dashboard-control/access-rules/{rule_id}")
 def dashboard_control_delete_access_rule(
     rule_id: int,
+    request: DangerousActionRequest | None = None,
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
+    require_danger_confirmation(request, "DELETE")
     if not build_agent().store.delete_access_rule(rule_id):
         raise HTTPException(status_code=404, detail="Access rule not found")
-    add_dashboard_audit("access_rule.delete", f"access_rule:{rule_id}")
+    add_dashboard_audit("access_rule.delete", f"access_rule:{rule_id}", risk_level="high")
     return {"id": rule_id, "deleted": True}
 
 
@@ -479,10 +509,16 @@ def dashboard_control_start_telegram_polling(
 
 @app.post("/dashboard-control/runtime/telegram/stop")
 def dashboard_control_stop_telegram_polling(
+    request: DangerousActionRequest | None = None,
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
+    require_danger_confirmation(request, "STOP")
     result = RuntimeManager().stop_telegram_polling()
-    add_dashboard_audit("runtime.telegram.stop", status=str(result.get("status", "ok")))
+    add_dashboard_audit(
+        "runtime.telegram.stop",
+        status=str(result.get("status", "ok")),
+        risk_level="high",
+    )
     return result
 
 
@@ -497,10 +533,16 @@ def dashboard_control_start_napcat(
 
 @app.post("/dashboard-control/runtime/napcat/stop")
 def dashboard_control_stop_napcat(
+    request: DangerousActionRequest | None = None,
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
+    require_danger_confirmation(request, "STOP")
     result = RuntimeManager().stop_napcat()
-    add_dashboard_audit("runtime.napcat.stop", status=str(result.get("status", "ok")))
+    add_dashboard_audit(
+        "runtime.napcat.stop",
+        status=str(result.get("status", "ok")),
+        risk_level="high",
+    )
     return result
 
 

@@ -361,6 +361,7 @@ def test_dashboard_control_writes_audit_logs(tmp_path, monkeypatch):
     logs = logs_response.json()
     assert logs[0]["action"] == "memory.create"
     assert logs[0]["target"] == f"memory:{response.json()['id']}"
+    assert logs[0]["risk_level"] == "normal"
     assert logs[0]["actor_source"] == "dashboard"
     assert logs[0]["actor_user_id"] == "admin"
     get_settings.cache_clear()
@@ -408,17 +409,28 @@ def test_dashboard_control_updates_and_deletes_memory(tmp_path, monkeypatch):
         headers=admin_headers(),
     )
     filtered_response = client.get("/memories?subject=telegram:user:1")
-    delete_response = client.delete(
+    missing_confirmation_response = client.request(
+        "DELETE",
         f"/dashboard-control/memories/{memory_id}",
         headers=admin_headers(),
     )
+    delete_response = client.request(
+        "DELETE",
+        f"/dashboard-control/memories/{memory_id}",
+        json={"confirm_text": "DELETE"},
+        headers=admin_headers(),
+    )
     after_delete_response = client.get("/memories?subject=telegram:user:1")
+    audit_response = client.get("/audit-logs")
 
     assert update_response.status_code == 200
     assert filtered_response.json()[0]["content"] == "新内容"
     assert filtered_response.json()[0]["importance"] == 9
+    assert missing_confirmation_response.status_code == 400
     assert delete_response.json()["deleted"] is True
     assert all(item["id"] != memory_id for item in after_delete_response.json())
+    assert audit_response.json()[0]["action"] == "memory.delete"
+    assert audit_response.json()[0]["risk_level"] == "high"
     get_settings.cache_clear()
 
 
@@ -468,13 +480,17 @@ def test_dashboard_control_clears_conversation_messages_and_deletes_summary(
         headers=admin_headers(),
     )
 
-    clear_response = client.delete(
+    clear_response = client.request(
+        "DELETE",
         "/dashboard-control/conversations/dashboard:test/messages",
+        json={"confirm_text": "CLEAR"},
         headers=admin_headers(),
     )
     messages_response = client.get("/messages?conversation_id=dashboard:test")
-    delete_summary_response = client.delete(
+    delete_summary_response = client.request(
+        "DELETE",
         "/dashboard-control/summaries/dashboard:test",
+        json={"confirm_text": "DELETE"},
         headers=admin_headers(),
     )
 
@@ -500,8 +516,10 @@ def test_dashboard_control_manages_access_rules(tmp_path, monkeypatch):
         headers=admin_headers(),
     )
     rules_response = client.get("/access-rules")
-    delete_response = client.delete(
+    delete_response = client.request(
+        "DELETE",
         f"/dashboard-control/access-rules/{create_response.json()['id']}",
+        json={"confirm_text": "DELETE"},
         headers=admin_headers(),
     )
 

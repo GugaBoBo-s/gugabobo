@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     action TEXT NOT NULL,
     target TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL,
+    risk_level TEXT NOT NULL DEFAULT 'normal',
     detail TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -83,6 +84,7 @@ class MemoryStore:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
             self._migrate_access_rules(conn)
+            self._migrate_audit_logs(conn)
             columns = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(messages)").fetchall()
@@ -127,6 +129,14 @@ class MemoryStore:
         for column, definition in expected.items():
             if column not in columns:
                 conn.execute(f"ALTER TABLE access_rules ADD COLUMN {column} {definition}")
+
+    def _migrate_audit_logs(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(audit_logs)").fetchall()
+        }
+        if "risk_level" not in columns:
+            conn.execute("ALTER TABLE audit_logs ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'normal'")
 
     def add_message(
         self,
@@ -375,21 +385,22 @@ class MemoryStore:
         action: str,
         target: str = "",
         status: str = "ok",
+        risk_level: str = "normal",
         detail: str = "",
     ) -> int:
         with self.connect() as conn:
             cursor = conn.execute(
                 "INSERT INTO audit_logs "
-                "(actor_source, actor_user_id, action, target, status, detail) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (actor_source, actor_user_id, action, target, status, detail),
+                "(actor_source, actor_user_id, action, target, status, risk_level, detail) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (actor_source, actor_user_id, action, target, status, risk_level, detail),
             )
             return int(cursor.lastrowid)
 
     def list_audit_logs(self, limit: int = 50) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT id, actor_source, actor_user_id, action, target, status, detail, "
+                "SELECT id, actor_source, actor_user_id, action, target, status, risk_level, detail, "
                 "created_at FROM audit_logs ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()

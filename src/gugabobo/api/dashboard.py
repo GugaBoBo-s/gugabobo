@@ -204,6 +204,14 @@ def dashboard_html() -> str:
             cursor: pointer;
           }
           button:hover { border-color: var(--accent); }
+          button.danger {
+            border-color: #dc2626;
+            color: #b91c1c;
+          }
+          button.danger:hover {
+            background: #fef2f2;
+            border-color: #b91c1c;
+          }
           @media (max-width: 960px) {
             main { grid-template-columns: 1fr; }
             .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -261,9 +269,9 @@ def dashboard_html() -> str:
                   <h3>运行管理</h3>
                   <div id="runtimePanel" class="muted"></div>
                   <button id="startTelegramButton" type="button">启动 Telegram polling</button>
-                  <button id="stopTelegramButton" type="button">停止 Telegram polling</button>
+                  <button id="stopTelegramButton" class="danger" type="button">停止 Telegram polling</button>
                   <button id="startNapcatButton" type="button">启动 NapCat</button>
-                  <button id="stopNapcatButton" type="button">停止 NapCat</button>
+                  <button id="stopNapcatButton" class="danger" type="button">停止 NapCat</button>
                   <button id="openNapcatWebuiButton" type="button">打开 NapCat WebUI</button>
                 </div>
                 <div class="control-box">
@@ -276,8 +284,8 @@ def dashboard_html() -> str:
                   <h3>会话上下文</h3>
                   <input id="selectedConversationId" placeholder="conversation_id">
                   <button id="loadConversationButton" type="button">查看会话消息</button>
-                  <button id="clearConversationButton" type="button">清空会话消息</button>
-                  <button id="deleteSummaryButton" type="button">删除会话摘要</button>
+                  <button id="clearConversationButton" class="danger" type="button">清空会话消息</button>
+                  <button id="deleteSummaryButton" class="danger" type="button">删除会话摘要</button>
                 </div>
                 <div class="control-box">
                   <h3>添加长期记忆</h3>
@@ -295,7 +303,7 @@ def dashboard_html() -> str:
                   <input id="editMemoryImportance" type="number" min="1" max="10" placeholder="importance">
                   <textarea id="editMemoryContent" placeholder="记忆内容"></textarea>
                   <button id="updateMemoryButton" type="button">更新记忆</button>
-                  <button id="deleteMemoryButton" type="button">删除记忆</button>
+                  <button id="deleteMemoryButton" class="danger" type="button">删除记忆</button>
                 </div>
                 <div class="control-box">
                   <h3>设置会话摘要</h3>
@@ -423,7 +431,7 @@ def dashboard_html() -> str:
               <h2>审计日志</h2>
               <table>
                 <thead>
-                  <tr><th style="width: 56px;">ID</th><th style="width: 150px;">操作</th><th style="width: 160px;">目标</th><th>详情</th><th style="width: 160px;">时间</th></tr>
+                  <tr><th style="width: 56px;">ID</th><th style="width: 150px;">操作</th><th style="width: 80px;">风险</th><th style="width: 160px;">目标</th><th>详情</th><th style="width: 160px;">时间</th></tr>
                 </thead>
                 <tbody id="auditLogs"></tbody>
               </table>
@@ -537,6 +545,14 @@ def dashboard_html() -> str:
             await loadDashboard();
             return data;
           }
+          function requireConfirmText(expectedText, label) {
+            const value = prompt(`${label}\\n请输入 ${expectedText} 确认`);
+            if (value !== expectedText) {
+              showControlResult(`cancelled: expected ${expectedText}`);
+              return null;
+            }
+            return { confirm_text: expectedText };
+          }
           async function loadDashboard() {
             const state = byId("refreshState");
             state.textContent = "刷新中";
@@ -623,7 +639,7 @@ def dashboard_html() -> str:
               esc(item.user_id),
               esc(item.role),
               `${esc(item.display_name)} ${esc(item.notes)}`,
-              `<button type="button" data-rule-id="${esc(item.id)}" class="delete-access-rule">删除</button>`
+              `<button type="button" data-rule-id="${esc(item.id)}" class="delete-access-rule danger">删除</button>`
             ])).join("");
             byId("messages").innerHTML = currentMessages.map((item) => row([
               esc(item.id),
@@ -649,6 +665,7 @@ def dashboard_html() -> str:
             byId("auditLogs").innerHTML = data.audit_logs.map((item) => row([
               esc(item.id),
               esc(item.action),
+              esc(item.risk_level),
               esc(item.target),
               `${esc(item.status)} ${esc(item.detail)}`,
               `<span class="muted">${esc(item.created_at)}</span>`
@@ -688,9 +705,14 @@ def dashboard_html() -> str:
             }).catch((error) => showControlResult(error.message));
           });
           byId("stopTelegramButton").addEventListener("click", () => {
+            const confirmation = requireConfirmText("STOP", "停止 Telegram polling");
+            if (!confirmation) {
+              return;
+            }
             controlFetch("/dashboard-control/runtime/telegram/stop", {
               method: "POST",
-              headers: adminHeaders()
+              headers: adminHeaders(),
+              body: JSON.stringify(confirmation)
             }).catch((error) => showControlResult(error.message));
           });
           byId("startNapcatButton").addEventListener("click", () => {
@@ -700,9 +722,14 @@ def dashboard_html() -> str:
             }).catch((error) => showControlResult(error.message));
           });
           byId("stopNapcatButton").addEventListener("click", () => {
+            const confirmation = requireConfirmText("STOP", "停止 NapCat");
+            if (!confirmation) {
+              return;
+            }
             controlFetch("/dashboard-control/runtime/napcat/stop", {
               method: "POST",
-              headers: adminHeaders()
+              headers: adminHeaders(),
+              body: JSON.stringify(confirmation)
             }).catch((error) => showControlResult(error.message));
           });
           byId("openNapcatWebuiButton").addEventListener("click", () => {
@@ -761,12 +788,14 @@ def dashboard_html() -> str:
               showControlResult("missing conversation_id");
               return;
             }
-            if (!confirm(`清空会话消息 ${conversationId}?`)) {
+            const confirmation = requireConfirmText("CLEAR", `清空会话消息 ${conversationId}`);
+            if (!confirmation) {
               return;
             }
             controlFetch(`/dashboard-control/conversations/${encodeURIComponent(conversationId)}/messages`, {
               method: "DELETE",
-              headers: adminHeaders()
+              headers: adminHeaders(),
+              body: JSON.stringify(confirmation)
             }).catch((error) => showControlResult(error.message));
           });
           byId("deleteSummaryButton").addEventListener("click", () => {
@@ -775,12 +804,14 @@ def dashboard_html() -> str:
               showControlResult("missing conversation_id");
               return;
             }
-            if (!confirm(`删除会话摘要 ${conversationId}?`)) {
+            const confirmation = requireConfirmText("DELETE", `删除会话摘要 ${conversationId}`);
+            if (!confirmation) {
               return;
             }
             controlFetch(`/dashboard-control/summaries/${encodeURIComponent(conversationId)}`, {
               method: "DELETE",
-              headers: adminHeaders()
+              headers: adminHeaders(),
+              body: JSON.stringify(confirmation)
             }).catch((error) => showControlResult(error.message));
           });
           byId("memoryButton").addEventListener("click", () => {
@@ -813,12 +844,14 @@ def dashboard_html() -> str:
               showControlResult("missing memory id");
               return;
             }
-            if (!confirm(`删除记忆 #${memoryId}?`)) {
+            const confirmation = requireConfirmText("DELETE", `删除记忆 #${memoryId}`);
+            if (!confirmation) {
               return;
             }
             controlFetch(`/dashboard-control/memories/${memoryId}`, {
               method: "DELETE",
-              headers: adminHeaders()
+              headers: adminHeaders(),
+              body: JSON.stringify(confirmation)
             }).catch((error) => showControlResult(error.message));
           });
           byId("summaryButton").addEventListener("click", () => {
@@ -856,12 +889,14 @@ def dashboard_html() -> str:
               return;
             }
             const ruleId = event.target.dataset.ruleId;
-            if (!confirm(`删除权限规则 #${ruleId}?`)) {
+            const confirmation = requireConfirmText("DELETE", `删除权限规则 #${ruleId}`);
+            if (!confirmation) {
               return;
             }
             controlFetch(`/dashboard-control/access-rules/${ruleId}`, {
               method: "DELETE",
-              headers: adminHeaders()
+              headers: adminHeaders(),
+              body: JSON.stringify(confirmation)
             }).catch((error) => showControlResult(error.message));
           });
           byId("memoryFilterButton").addEventListener("click", loadDashboard);
