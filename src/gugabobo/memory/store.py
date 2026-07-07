@@ -54,6 +54,17 @@ CREATE TABLE IF NOT EXISTS access_rules (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(platform, user_id)
 );
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_source TEXT NOT NULL,
+    actor_user_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -357,6 +368,33 @@ class MemoryStore:
             cursor = conn.execute("DELETE FROM access_rules WHERE id = ?", (rule_id,))
             return cursor.rowcount > 0
 
+    def add_audit_log(
+        self,
+        actor_source: str,
+        actor_user_id: str,
+        action: str,
+        target: str = "",
+        status: str = "ok",
+        detail: str = "",
+    ) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "INSERT INTO audit_logs "
+                "(actor_source, actor_user_id, action, target, status, detail) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (actor_source, actor_user_id, action, target, status, detail),
+            )
+            return int(cursor.lastrowid)
+
+    def list_audit_logs(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, actor_source, actor_user_id, action, target, status, detail, "
+                "created_at FROM audit_logs ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def add_feedback(self, source: str, user_id: str, content: str) -> int:
         with self.connect() as conn:
             cursor = conn.execute(
@@ -402,6 +440,10 @@ class MemoryStore:
         with self.connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM access_rules").fetchone()[0])
 
+    def count_audit_logs(self) -> int:
+        with self.connect() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0])
+
     def table_counts(self) -> list[dict[str, Any]]:
         table_names = [
             "messages",
@@ -409,6 +451,7 @@ class MemoryStore:
             "memory_items",
             "conversation_summaries",
             "access_rules",
+            "audit_logs",
         ]
         with self.connect() as conn:
             return [

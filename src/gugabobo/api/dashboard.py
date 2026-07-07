@@ -420,6 +420,15 @@ def dashboard_html() -> str:
               </table>
             </section>
             <section>
+              <h2>审计日志</h2>
+              <table>
+                <thead>
+                  <tr><th style="width: 56px;">ID</th><th style="width: 150px;">操作</th><th style="width: 160px;">目标</th><th>详情</th><th style="width: 160px;">时间</th></tr>
+                </thead>
+                <tbody id="auditLogs"></tbody>
+              </table>
+            </section>
+            <section>
               <h2>日志</h2>
               <pre id="logs"></pre>
             </section>
@@ -549,6 +558,7 @@ def dashboard_html() -> str:
               metric("记忆", data.status.memory_items),
               metric("摘要", data.status.conversation_summaries),
               metric("权限", data.status.access_rules),
+              metric("审计", data.status.audit_logs),
               metric("LLM", data.config.llm_provider),
               metric("回复", data.config.napcat_passive_reply_enabled ? "被动" : (data.config.napcat_reply_enabled ? "主动" : "关闭"), data.config.napcat_passive_reply_enabled || data.config.napcat_reply_enabled ? "ok" : "warn"),
               metric("窗口", data.config.llm_context_messages)
@@ -635,6 +645,13 @@ def dashboard_html() -> str:
               esc(item.summary),
               `<span class="muted">${esc(item.updated_at)}</span>`,
               `<button type="button" data-conversation-id="${esc(item.conversation_id)}" class="edit-summary">编辑</button>`
+            ])).join("");
+            byId("auditLogs").innerHTML = data.audit_logs.map((item) => row([
+              esc(item.id),
+              esc(item.action),
+              esc(item.target),
+              `${esc(item.status)} ${esc(item.detail)}`,
+              `<span class="muted">${esc(item.created_at)}</span>`
             ])).join("");
             byId("logs").textContent = data.logs.join("\\n");
             state.textContent = `已刷新 ${new Date().toLocaleTimeString()}`;

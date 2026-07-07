@@ -74,6 +74,22 @@ class ConfigUpdateRequest(BaseModel):
     values: dict[str, object]
 
 
+def add_dashboard_audit(
+    action: str,
+    target: str = "",
+    status: str = "ok",
+    detail: str = "",
+) -> None:
+    build_agent().store.add_audit_log(
+        actor_source="dashboard",
+        actor_user_id="admin",
+        action=action,
+        target=target,
+        status=status,
+        detail=detail[:1000],
+    )
+
+
 def require_admin_token(x_gugabobo_admin_token: str | None = Header(default=None)) -> None:
     settings = get_settings()
     if settings.admin_token and x_gugabobo_admin_token != settings.admin_token:
@@ -125,6 +141,7 @@ def dashboard_data() -> dict[str, object]:
     status_data["memory_items"] = agent.store.count_memory_items()
     status_data["conversation_summaries"] = agent.store.count_conversation_summaries()
     status_data["access_rules"] = agent.store.count_access_rules()
+    status_data["audit_logs"] = agent.store.count_audit_logs()
     return {
         "status": status_data,
         "config": {
@@ -141,6 +158,7 @@ def dashboard_data() -> dict[str, object]:
         "memories": agent.store.list_memory_items(limit=20),
         "summaries": agent.store.list_conversation_summaries(limit=20),
         "access_rules": agent.store.list_access_rules(limit=50),
+        "audit_logs": agent.store.list_audit_logs(limit=50),
         "table_counts": agent.store.table_counts(),
         "runtime": RuntimeManager().status(),
         "qq_diagnostics": RuntimeManager().qq_diagnostics(agent.store),
@@ -223,6 +241,11 @@ def dashboard_control_update_config(
 ) -> dict[str, object]:
     updated = EnvFile(get_settings().config_file_path).update(request.values)
     get_settings.cache_clear()
+    add_dashboard_audit(
+        "config.update",
+        "env",
+        detail=",".join(sorted(updated.keys())),
+    )
     return {
         "updated": updated,
         "restart_recommended": True,
@@ -279,6 +302,11 @@ def access_rules(limit: int = 50) -> list[dict[str, object]]:
     return build_agent().store.list_access_rules(limit=limit)
 
 
+@app.get("/audit-logs")
+def audit_logs(limit: int = 50) -> list[dict[str, object]]:
+    return build_agent().store.list_audit_logs(limit=limit)
+
+
 @app.post("/feedbacks")
 def create_feedback(request: FeedbackCreateRequest) -> dict[str, int]:
     agent = build_agent()
@@ -319,6 +347,10 @@ def dashboard_control_chat(
             is_wake_triggered=True,
         ),
     )
+    add_dashboard_audit(
+        "chat.test",
+        request.conversation_id or f"dashboard:{request.user_id}",
+    )
     return {"reply": reply}
 
 
@@ -334,6 +366,7 @@ def dashboard_control_add_memory(
         importance=request.importance,
         source="dashboard",
     )
+    add_dashboard_audit("memory.create", f"memory:{memory_id}", detail=request.subject)
     return {"id": memory_id}
 
 
@@ -351,6 +384,7 @@ def dashboard_control_update_memory(
         importance=request.importance,
     ):
         raise HTTPException(status_code=404, detail="Memory not found")
+    add_dashboard_audit("memory.update", f"memory:{memory_id}", detail=request.subject)
     return {"id": memory_id}
 
 
@@ -361,6 +395,7 @@ def dashboard_control_delete_memory(
 ) -> dict[str, object]:
     if not build_agent().store.delete_memory_item(memory_id):
         raise HTTPException(status_code=404, detail="Memory not found")
+    add_dashboard_audit("memory.delete", f"memory:{memory_id}")
     return {"id": memory_id, "deleted": True}
 
 
@@ -374,6 +409,7 @@ def dashboard_control_set_summary(
         summary=request.summary,
         updated_until_message_id=request.updated_until_message_id,
     )
+    add_dashboard_audit("summary.upsert", request.conversation_id)
     return {"conversation_id": request.conversation_id}
 
 
@@ -384,6 +420,7 @@ def dashboard_control_delete_summary(
 ) -> dict[str, object]:
     if not build_agent().store.delete_conversation_summary(conversation_id):
         raise HTTPException(status_code=404, detail="Summary not found")
+    add_dashboard_audit("summary.delete", conversation_id)
     return {"conversation_id": conversation_id, "deleted": True}
 
 
@@ -393,6 +430,7 @@ def dashboard_control_clear_conversation_messages(
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
     deleted = build_agent().store.delete_conversation_messages(conversation_id)
+    add_dashboard_audit("conversation.messages.delete", conversation_id, detail=str(deleted))
     return {"conversation_id": conversation_id, "deleted": deleted}
 
 
@@ -411,6 +449,11 @@ def dashboard_control_upsert_access_rule(
         display_name=request.display_name,
         notes=request.notes,
     )
+    add_dashboard_audit(
+        "access_rule.upsert",
+        f"{request.platform}:{request.user_id}",
+        detail=request.role,
+    )
     return {"id": rule_id}
 
 
@@ -421,6 +464,7 @@ def dashboard_control_delete_access_rule(
 ) -> dict[str, object]:
     if not build_agent().store.delete_access_rule(rule_id):
         raise HTTPException(status_code=404, detail="Access rule not found")
+    add_dashboard_audit("access_rule.delete", f"access_rule:{rule_id}")
     return {"id": rule_id, "deleted": True}
 
 
@@ -428,35 +472,43 @@ def dashboard_control_delete_access_rule(
 def dashboard_control_start_telegram_polling(
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
-    return RuntimeManager().start_telegram_polling()
+    result = RuntimeManager().start_telegram_polling()
+    add_dashboard_audit("runtime.telegram.start", status=str(result.get("status", "ok")))
+    return result
 
 
 @app.post("/dashboard-control/runtime/telegram/stop")
 def dashboard_control_stop_telegram_polling(
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
-    return RuntimeManager().stop_telegram_polling()
+    result = RuntimeManager().stop_telegram_polling()
+    add_dashboard_audit("runtime.telegram.stop", status=str(result.get("status", "ok")))
+    return result
 
 
 @app.post("/dashboard-control/runtime/napcat/start")
 def dashboard_control_start_napcat(
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
-    return RuntimeManager().start_napcat()
+    result = RuntimeManager().start_napcat()
+    add_dashboard_audit("runtime.napcat.start", status=str(result.get("status", "ok")))
+    return result
 
 
 @app.post("/dashboard-control/runtime/napcat/stop")
 def dashboard_control_stop_napcat(
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
-    return RuntimeManager().stop_napcat()
+    result = RuntimeManager().stop_napcat()
+    add_dashboard_audit("runtime.napcat.stop", status=str(result.get("status", "ok")))
+    return result
 
 
 @app.post("/dashboard-control/diagnostics/onebot-test")
 def dashboard_control_onebot_test(
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
-    return onebot_event(
+    result = onebot_event(
         {
             "post_type": "message",
             "message_type": "private",
@@ -465,13 +517,15 @@ def dashboard_control_onebot_test(
             "message": "ping",
         }
     )
+    add_dashboard_audit("diagnostic.onebot_test", status=str(result.get("status", "ok")))
+    return result
 
 
 @app.post("/dashboard-control/diagnostics/telegram-test")
 def dashboard_control_telegram_test(
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
-    return handle_telegram_update(
+    result = handle_telegram_update(
         {
             "update_id": 1,
             "message": {
@@ -485,13 +539,21 @@ def dashboard_control_telegram_test(
         settings=get_settings(),
         send_reply=False,
     )
+    add_dashboard_audit("diagnostic.telegram_test", status=str(result.get("status", "ok")))
+    return result
 
 
 @app.post("/dashboard-control/diagnostics/telegram-getme")
 def dashboard_control_telegram_get_me(
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
-    return RuntimeManager().telegram_get_me()
+    result = RuntimeManager().telegram_get_me()
+    add_dashboard_audit(
+        "diagnostic.telegram_getme",
+        status=str(result.get("status", "ok")),
+        detail=str(result),
+    )
+    return result
 
 
 @app.patch("/dashboard-control/feedbacks/{feedback_id}")
@@ -500,7 +562,9 @@ def dashboard_control_update_feedback(
     request: FeedbackStatusRequest,
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
-    return update_feedback(feedback_id, request)
+    result = update_feedback(feedback_id, request)
+    add_dashboard_audit("feedback.update", f"feedback:{feedback_id}", detail=request.status)
+    return result
 
 
 @app.post("/onebot/v11/events")

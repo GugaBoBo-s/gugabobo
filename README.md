@@ -33,7 +33,7 @@ Open the local monitoring dashboard:
 http://127.0.0.1:8765/dashboard
 ```
 
-The dashboard can also run admin-controlled actions after entering `GUGABOBO_ADMIN_TOKEN`: send a test chat message, inspect QQ/NapCat and Telegram diagnostics, start/stop NapCat and Telegram polling, open NapCat WebUI, edit non-secret configuration, manage conversation context, add/filter/update/delete long-term memory, set/delete conversation summaries, update feedback status, and manage access rules. `blocked` QQ and Telegram users are ignored before reaching the core agent.
+The dashboard can also run admin-controlled actions after entering `GUGABOBO_ADMIN_TOKEN`: send a test chat message, inspect QQ/NapCat and Telegram diagnostics, start/stop NapCat and Telegram polling, open NapCat WebUI, edit non-secret configuration, manage conversation context, add/filter/update/delete long-term memory, set/delete conversation summaries, update feedback status, and manage access rules. Dashboard-controlled high-risk actions are recorded in audit logs with actor, action, target, status, detail, and timestamp. `blocked` QQ and Telegram users are ignored before reaching the core agent.
 
 Access roles are enforced before write operations from QQ and Telegram. `user` can chat only, `trusted` can also record feedback and explicit long-term memories, `owner` is reserved for administrative and future high-risk operations, and `blocked` is ignored.
 

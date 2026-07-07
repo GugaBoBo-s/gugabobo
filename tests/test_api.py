@@ -79,11 +79,13 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     assert "运行管理" in page_response.text
     assert "数据库表状态" in page_response.text
     assert "会话摘要" in page_response.text
+    assert "审计日志" in page_response.text
     assert '""":' not in page_response.text
     assert data_response.status_code == 200
     assert "status" in data_response.json()
     assert "messages" in data_response.json()
     assert "table_counts" in data_response.json()
+    assert "audit_logs" in data_response.json()
     assert "runtime" in data_response.json()
     assert "qq_diagnostics" in data_response.json()
     assert "telegram_diagnostics" in data_response.json()
@@ -341,6 +343,26 @@ def test_dashboard_control_memory_summary_and_feedback(tmp_path, monkeypatch):
     assert memory_response.status_code == 200
     assert summary_response.json()["conversation_id"] == "dashboard:test"
     assert feedback_response.json()["status"] == "triaged"
+    get_settings.cache_clear()
+
+
+def test_dashboard_control_writes_audit_logs(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    response = client.post(
+        "/dashboard-control/memories",
+        json={"subject": "global", "content": "审计测试"},
+        headers=admin_headers(),
+    )
+    logs_response = client.get("/audit-logs")
+
+    assert response.status_code == 200
+    logs = logs_response.json()
+    assert logs[0]["action"] == "memory.create"
+    assert logs[0]["target"] == f"memory:{response.json()['id']}"
+    assert logs[0]["actor_source"] == "dashboard"
+    assert logs[0]["actor_user_id"] == "admin"
     get_settings.cache_clear()
 
 
