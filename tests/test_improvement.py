@@ -39,6 +39,35 @@ class UnconfiguredGitHubClient(FakeGitHubClient):
     configured = False
 
 
+class FakeRunner:
+    def __init__(self, ok=True, output="ok", error="", configured=True):
+        self._ok = ok
+        self._output = output
+        self._error = error
+        self.configured = configured
+        self.calls = []
+
+    def run(self, prompt, cwd):
+        from gugabobo.infra.claude_runner import RunResult
+
+        self.calls.append({"prompt": prompt, "cwd": cwd})
+        return RunResult(ok=self._ok, output=self._output, error=self._error)
+
+
+class FakeSandbox:
+    def __init__(self, diff="", tmp_path=None):
+        self._diff = diff
+        self._tmp_path = tmp_path
+        self.prepared = []
+
+    def prepare(self, improvement_id, source_repo, branch):
+        self.prepared.append({"id": improvement_id, "branch": branch})
+        return self._tmp_path
+
+    def collect_diff(self, path):
+        return self._diff
+
+
 def make_store_with_feedback(tmp_path) -> tuple[MemoryStore, int]:
     store = MemoryStore(tmp_path / "improve.db")
     feedback_id = store.add_feedback(source="cli", user_id="local", content="回复太长")
@@ -142,4 +171,86 @@ def test_open_pull_request_requires_configured_token(tmp_path):
 
     with pytest.raises(ImprovementError):
         service.open_pull_request(created.improvement_id)
+    get_settings.cache_clear()
+
+
+def approved_improvement(tmp_path):
+    store, feedback_id = make_store_with_feedback(tmp_path)
+    service = ImprovementService(store, github_client=FakeGitHubClient())
+    created = service.create_from_feedback(feedback_id)
+    service.approve(created.improvement_id)
+    return store, service, created.improvement_id
+
+
+def test_run_improvement_requires_approval(tmp_path):
+    get_settings.cache_clear()
+    store, feedback_id = make_store_with_feedback(tmp_path)
+    service = ImprovementService(store, github_client=FakeGitHubClient())
+    created = service.create_from_feedback(feedback_id)
+
+    with pytest.raises(ImprovementError):
+        service.run_improvement(
+            created.improvement_id,
+            runner=FakeRunner(),
+            sandbox=FakeSandbox(tmp_path=tmp_path),
+        )
+    get_settings.cache_clear()
+
+
+def test_run_improvement_reports_changes_ready(tmp_path):
+    get_settings.cache_clear()
+    store, service, improvement_id = approved_improvement(tmp_path)
+    runner = FakeRunner(ok=True)
+    sandbox = FakeSandbox(diff="diff --git a/x b/x\n+change", tmp_path=tmp_path)
+
+    outcome = service.run_improvement(improvement_id, runner=runner, sandbox=sandbox)
+
+    assert outcome.status == "changes_ready"
+    assert "change" in outcome.diff
+    assert store.get_improvement_task(improvement_id)["runner_status"] == "changes_ready"
+    assert store.list_audit_logs()[0]["action"] == "improvement.run"
+    assert runner.calls[0]["cwd"] == tmp_path
+    get_settings.cache_clear()
+
+
+def test_run_improvement_reports_no_changes(tmp_path):
+    get_settings.cache_clear()
+    store, service, improvement_id = approved_improvement(tmp_path)
+
+    outcome = service.run_improvement(
+        improvement_id,
+        runner=FakeRunner(ok=True),
+        sandbox=FakeSandbox(diff="   \n", tmp_path=tmp_path),
+    )
+
+    assert outcome.status == "no_changes"
+    assert store.get_improvement_task(improvement_id)["runner_status"] == "no_changes"
+    get_settings.cache_clear()
+
+
+def test_run_improvement_reports_failure(tmp_path):
+    get_settings.cache_clear()
+    store, service, improvement_id = approved_improvement(tmp_path)
+
+    outcome = service.run_improvement(
+        improvement_id,
+        runner=FakeRunner(ok=False, error="claude failed"),
+        sandbox=FakeSandbox(diff="ignored", tmp_path=tmp_path),
+    )
+
+    assert outcome.status == "failed"
+    assert store.get_improvement_task(improvement_id)["runner_status"] == "failed"
+    get_settings.cache_clear()
+
+
+def test_run_improvement_requires_available_claude(tmp_path):
+    get_settings.cache_clear()
+    store, service, improvement_id = approved_improvement(tmp_path)
+
+    with pytest.raises(ImprovementError):
+        service.run_improvement(
+            improvement_id,
+            runner=FakeRunner(configured=False),
+            sandbox=FakeSandbox(tmp_path=tmp_path),
+        )
     get_settings.cache_clear()

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from gugabobo.config import get_settings
+from gugabobo.infra.claude_runner import ClaudeCodeRunner
 from gugabobo.infra.github_client import GitHubClient
+from gugabobo.infra.sandbox import SandboxManager
 from gugabobo.memory.store import MemoryStore
 
 
@@ -23,6 +26,14 @@ class PullRequestOpened:
     number: int
     url: str
     branch_name: str
+
+
+@dataclass(frozen=True)
+class RunOutcome:
+    status: str
+    branch_name: str
+    diff: str = ""
+    detail: str = ""
 
 
 class ImprovementService:
@@ -166,6 +177,91 @@ class ImprovementService:
             number=pull_request.number,
             url=pull_request.url,
             branch_name=branch_name,
+        )
+
+    def run_improvement(
+        self,
+        improvement_id: int,
+        runner: ClaudeCodeRunner | None = None,
+        sandbox: SandboxManager | None = None,
+        source_repo: Path | None = None,
+        actor_source: str = "cli",
+        actor_user_id: str = "local",
+    ) -> RunOutcome:
+        improvement = self.store.get_improvement_task(improvement_id)
+        if not improvement:
+            raise ImprovementError(f"improvement task #{improvement_id} not found")
+        if improvement["approval_status"] != "approved":
+            raise ImprovementError("improvement task must be approved before running")
+        runner = runner or ClaudeCodeRunner()
+        sandbox = sandbox or SandboxManager()
+        if not runner.configured:
+            raise ImprovementError("Claude Code (claude) is not available on this machine")
+        task = self.store.get_task(int(improvement["task_id"]))
+        branch_name = f"gugabobo/improvement-{improvement_id}"
+        self.store.update_improvement_task(improvement_id, runner_status="running")
+        try:
+            path = sandbox.prepare(
+                improvement_id,
+                source_repo or Path.cwd(),
+                branch_name,
+            )
+        except Exception as error:
+            self.store.update_improvement_task(improvement_id, runner_status="failed")
+            raise ImprovementError(f"sandbox preparation failed: {error}") from error
+        prompt = self._build_prompt(improvement, task)
+        result = runner.run(prompt, cwd=path)
+        if not result.ok:
+            self.store.update_improvement_task(improvement_id, runner_status="failed")
+            self._audit_run(actor_source, actor_user_id, improvement_id, "failed", result.error)
+            return RunOutcome(status="failed", branch_name=branch_name, detail=result.error[:500])
+        diff = sandbox.collect_diff(path)
+        if not diff.strip():
+            self.store.update_improvement_task(improvement_id, runner_status="no_changes")
+            self._audit_run(actor_source, actor_user_id, improvement_id, "no_changes", "")
+            return RunOutcome(status="no_changes", branch_name=branch_name)
+        self.store.update_improvement_task(
+            improvement_id,
+            runner_status="changes_ready",
+            branch_name=branch_name,
+        )
+        self._audit_run(
+            actor_source,
+            actor_user_id,
+            improvement_id,
+            "changes_ready",
+            f"diff {len(diff)} chars",
+        )
+        return RunOutcome(status="changes_ready", branch_name=branch_name, diff=diff)
+
+    def _audit_run(
+        self,
+        actor_source: str,
+        actor_user_id: str,
+        improvement_id: int,
+        status: str,
+        detail: str,
+    ) -> None:
+        self.store.add_audit_log(
+            actor_source=actor_source,
+            actor_user_id=actor_user_id,
+            action="improvement.run",
+            target=f"improvement:{improvement_id}",
+            status=status,
+            risk_level="high",
+            detail=detail[:1000],
+        )
+
+    def _build_prompt(self, improvement: dict, task: dict | None) -> str:
+        description = str(task["description"]) if task else ""
+        scope = improvement.get("scope", "") or "(unspecified)"
+        return (
+            "You are gugabobo's self-improvement runner working inside a sandboxed "
+            "clone of the repository. Implement the following improvement request by "
+            "editing the code directly. Keep the change minimal and aligned with the "
+            "existing style, and do not commit or push.\n\n"
+            f"Scope hint: {scope}\n\n"
+            f"Improvement request (from user feedback):\n{description}\n"
         )
 
     def _proposal_markdown(
