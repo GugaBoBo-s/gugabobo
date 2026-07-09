@@ -38,6 +38,15 @@ class RunOutcome:
     pr_url: str = ""
 
 
+@dataclass(frozen=True)
+class PullRequestStatus:
+    pull_request_id: int
+    number: int
+    status: str
+    checks_status: str
+    merged_at: str = ""
+
+
 class ImprovementService:
     def __init__(self, store: MemoryStore, github_client: GitHubClient | None = None) -> None:
         self.store = store
@@ -332,6 +341,48 @@ class ImprovementService:
             diff=diff,
             pr_number=pull_request.number,
             pr_url=pull_request.url,
+        )
+
+    def sync_pull_request(
+        self,
+        pull_request_id: int,
+        actor_source: str = "cli",
+        actor_user_id: str = "local",
+    ) -> PullRequestStatus:
+        record = self.store.get_pull_request(pull_request_id)
+        if not record:
+            raise ImprovementError(f"pull request #{pull_request_id} not found")
+        if not self.github.configured:
+            raise ImprovementError("GUGABOBO_GITHUB_TOKEN is not configured")
+        number = int(record["number"])
+        remote = self.github.get_pull_request(number)
+        merged = bool(remote.get("merged"))
+        state = str(remote.get("state", ""))
+        status = "merged" if merged else ("closed" if state == "closed" else "open")
+        merged_at = remote.get("merged_at")
+        head_sha = str(remote.get("head", {}).get("sha", ""))
+        checks_status = "unknown"
+        if head_sha:
+            checks_status = str(self.github.get_commit_status(head_sha).get("state", "unknown"))
+        self.store.update_pull_request(
+            pull_request_id,
+            status=status,
+            checks_status=checks_status,
+            merged_at=merged_at,
+        )
+        self.store.add_audit_log(
+            actor_source=actor_source,
+            actor_user_id=actor_user_id,
+            action="improvement.pr_sync",
+            target=f"pull_request:{number}",
+            detail=f"{status}/{checks_status}",
+        )
+        return PullRequestStatus(
+            pull_request_id=pull_request_id,
+            number=number,
+            status=status,
+            checks_status=checks_status,
+            merged_at=str(merged_at or ""),
         )
 
     def _audit_run(

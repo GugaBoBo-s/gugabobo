@@ -15,6 +15,14 @@ class FakeGitHubClient:
         self.created_branches: list[tuple[str, str]] = []
         self.put_files: list[dict[str, str]] = []
         self.created_pulls: list[dict[str, str]] = []
+        self.pull_state = {"state": "open", "merged": False, "head": {"sha": "abc"}}
+        self.checks_state = "success"
+
+    def get_pull_request(self, number):
+        return self.pull_state
+
+    def get_commit_status(self, ref):
+        return {"state": self.checks_state}
 
     def get_default_branch(self) -> str:
         return "main"
@@ -330,4 +338,88 @@ def test_ship_requires_configured_github(tmp_path):
             runner=FakeRunner(),
             sandbox=FakeSandbox(diff="x", tmp_path=tmp_path),
         )
+    get_settings.cache_clear()
+
+
+def test_sync_pull_request_updates_open_and_checks(tmp_path):
+    get_settings.cache_clear()
+    store = MemoryStore(tmp_path / "sync.db")
+    github = FakeGitHubClient()
+    github.pull_state = {"state": "open", "merged": False, "head": {"sha": "abc"}}
+    github.checks_state = "success"
+    pr_id = store.add_pull_request(
+        improvement_task_id=1,
+        github_owner="GugaBoBo-s",
+        github_repo="gugabobo",
+        number=7,
+        url="https://github.com/x/y/pull/7",
+        branch_name="gugabobo/improvement-1",
+    )
+    service = ImprovementService(store, github_client=github)
+
+    status = service.sync_pull_request(pr_id)
+
+    assert status.status == "open"
+    assert status.checks_status == "success"
+    stored = store.get_pull_request(pr_id)
+    assert stored["status"] == "open"
+    assert stored["checks_status"] == "success"
+    assert store.list_audit_logs()[0]["action"] == "improvement.pr_sync"
+    get_settings.cache_clear()
+
+
+def test_sync_pull_request_marks_merged(tmp_path):
+    get_settings.cache_clear()
+    store = MemoryStore(tmp_path / "sync2.db")
+    github = FakeGitHubClient()
+    github.pull_state = {
+        "state": "closed",
+        "merged": True,
+        "merged_at": "2026-07-09T10:00:00Z",
+        "head": {"sha": "def"},
+    }
+    github.checks_state = "success"
+    pr_id = store.add_pull_request(
+        improvement_task_id=1,
+        github_owner="GugaBoBo-s",
+        github_repo="gugabobo",
+        number=8,
+        url="https://github.com/x/y/pull/8",
+        branch_name="gugabobo/improvement-1",
+    )
+    service = ImprovementService(store, github_client=github)
+
+    status = service.sync_pull_request(pr_id)
+
+    assert status.status == "merged"
+    assert status.merged_at == "2026-07-09T10:00:00Z"
+    assert store.get_pull_request(pr_id)["merged_at"] == "2026-07-09T10:00:00Z"
+    get_settings.cache_clear()
+
+
+def test_sync_pull_request_rejects_missing(tmp_path):
+    get_settings.cache_clear()
+    store = MemoryStore(tmp_path / "sync3.db")
+    service = ImprovementService(store, github_client=FakeGitHubClient())
+
+    with pytest.raises(ImprovementError):
+        service.sync_pull_request(999)
+    get_settings.cache_clear()
+
+
+def test_sync_pull_request_requires_github(tmp_path):
+    get_settings.cache_clear()
+    store = MemoryStore(tmp_path / "sync4.db")
+    pr_id = store.add_pull_request(
+        improvement_task_id=1,
+        github_owner="GugaBoBo-s",
+        github_repo="gugabobo",
+        number=9,
+        url="https://github.com/x/y/pull/9",
+        branch_name="b",
+    )
+    service = ImprovementService(store, github_client=UnconfiguredGitHubClient())
+
+    with pytest.raises(ImprovementError):
+        service.sync_pull_request(pr_id)
     get_settings.cache_clear()

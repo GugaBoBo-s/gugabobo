@@ -100,7 +100,12 @@ class GitHubClient:
         )
 
     def get_pull_request(self, number: int) -> dict:
-        return self._request("GET", f"/pulls/{number}")
+        result = self._request("GET", f"/pulls/{number}")
+        return dict(result) if isinstance(result, dict) else {}
+
+    def get_commit_status(self, ref: str) -> dict:
+        result = self._request("GET", f"/commits/{ref}/status")
+        return dict(result) if isinstance(result, dict) else {}
 
     def list_pull_requests(self, state: str = "open") -> list[dict]:
         data = self._request("GET", f"/pulls?state={state}")
