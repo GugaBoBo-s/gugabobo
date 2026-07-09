@@ -530,6 +530,99 @@ def test_dashboard_control_manages_access_rules(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
+class FakeGitHubClient:
+    configured = True
+    owner = "GugaBoBo-s"
+    repo = "gugabobo"
+
+    def get_default_branch(self):
+        return "main"
+
+    def get_branch_sha(self, branch):
+        return "sha"
+
+    def create_branch(self, branch, from_sha):
+        return {}
+
+    def put_file(self, path, content, message, branch):
+        return {}
+
+    def create_pull_request(self, title, head, base, body=""):
+        from gugabobo.infra.github_client import PullRequestResult
+
+        return PullRequestResult(number=11, url="https://github.com/x/y/pull/11", branch_name=head)
+
+
+def test_improvement_endpoints_require_admin_token(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    response = client.post("/improvements", json={"feedback_id": 1})
+
+    assert response.status_code == 401
+    get_settings.cache_clear()
+
+
+def test_improvement_create_approve_and_open_pr(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    monkeypatch.setattr("gugabobo.core.improvement.GitHubClient", FakeGitHubClient)
+    client = TestClient(app)
+    feedback_id = client.post("/feedbacks", json={"content": "回复太长"}).json()["id"]
+
+    create_response = client.post(
+        "/improvements",
+        json={"feedback_id": feedback_id, "scope": "chat", "risk_level": "low"},
+        headers=admin_headers(),
+    )
+    improvement_id = create_response.json()["improvement_id"]
+    approve_response = client.post(
+        f"/improvements/{improvement_id}/approve",
+        headers=admin_headers(),
+    )
+    missing_confirm = client.post(
+        f"/improvements/{improvement_id}/pull-request",
+        headers=admin_headers(),
+    )
+    pr_response = client.post(
+        f"/improvements/{improvement_id}/pull-request",
+        json={"confirm_text": "OPEN"},
+        headers=admin_headers(),
+    )
+    prs_response = client.get("/prs")
+    audit_response = client.get("/audit-logs")
+
+    assert create_response.status_code == 200
+    assert approve_response.json()["approval_status"] == "approved"
+    assert missing_confirm.status_code == 400
+    assert pr_response.status_code == 200
+    assert pr_response.json()["number"] == 11
+    assert prs_response.json()[0]["number"] == 11
+    assert audit_response.json()[0]["action"] == "improvement.pr_open"
+    assert audit_response.json()[0]["risk_level"] == "high"
+    get_settings.cache_clear()
+
+
+def test_open_pr_before_approval_fails(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    monkeypatch.setattr("gugabobo.core.improvement.GitHubClient", FakeGitHubClient)
+    client = TestClient(app)
+    feedback_id = client.post("/feedbacks", json={"content": "回复太长"}).json()["id"]
+    improvement_id = client.post(
+        "/improvements",
+        json={"feedback_id": feedback_id},
+        headers=admin_headers(),
+    ).json()["improvement_id"]
+
+    response = client.post(
+        f"/improvements/{improvement_id}/pull-request",
+        json={"confirm_text": "OPEN"},
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 400
+    get_settings.cache_clear()
+
+
 def test_feedback_status_endpoint(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     client = TestClient(app)

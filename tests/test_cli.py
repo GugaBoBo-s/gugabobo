@@ -76,6 +76,37 @@ def test_memory_commands(tmp_path, monkeypatch):
     get_logger.cache_clear()
 
 
+def test_improvement_cli_flow(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+
+    add_feedback = runner.invoke(app, ["feedback", "add", "回复太长"])
+    create_result = runner.invoke(app, ["improve", "create", "1", "--scope", "chat"])
+    list_result = runner.invoke(app, ["improve", "list"])
+    approve_result = runner.invoke(app, ["improve", "approve", "1"])
+    tasks_result = runner.invoke(app, ["tasks", "list"])
+
+    assert add_feedback.exit_code == 0
+    assert create_result.exit_code == 0
+    assert "已创建改进任务 #1" in create_result.output
+    assert list_result.exit_code == 0
+    assert "pending" in list_result.output
+    assert approve_result.exit_code == 0
+    assert tasks_result.exit_code == 0
+    assert "self_improvement" in tasks_result.output
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
+def test_improve_create_rejects_missing_feedback(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+
+    result = runner.invoke(app, ["improve", "create", "999"])
+
+    assert result.exit_code != 0
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
 def test_summary_commands(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
 

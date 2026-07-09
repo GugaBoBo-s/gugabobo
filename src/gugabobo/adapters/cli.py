@@ -6,6 +6,7 @@ import uvicorn
 from gugabobo.adapters.telegram_runtime import handle_telegram_update
 from gugabobo.config import get_settings
 from gugabobo.core.channel import ChannelContext
+from gugabobo.core.improvement import ImprovementError, ImprovementService
 from gugabobo.infra.telegram_client import TelegramClient
 from gugabobo.infra.logs import get_logger
 from gugabobo.infra.runtime import build_agent
@@ -18,6 +19,9 @@ db_app = typer.Typer(help="Database commands")
 memory_app = typer.Typer(help="Long-term memory commands")
 summary_app = typer.Typer(help="Conversation summary commands")
 telegram_app = typer.Typer(help="Telegram adapter commands")
+tasks_app = typer.Typer(help="Task commands")
+improve_app = typer.Typer(help="Self-improvement commands")
+pr_app = typer.Typer(help="Pull request commands")
 app.add_typer(feedback_app, name="feedback")
 app.add_typer(messages_app, name="messages")
 app.add_typer(config_app, name="config")
@@ -25,6 +29,9 @@ app.add_typer(db_app, name="db")
 app.add_typer(memory_app, name="memory")
 app.add_typer(summary_app, name="summary")
 app.add_typer(telegram_app, name="telegram")
+app.add_typer(tasks_app, name="tasks")
+app.add_typer(improve_app, name="improve")
+app.add_typer(pr_app, name="pr")
 
 
 def echo_mapping(data: dict[str, object]) -> None:
@@ -188,6 +195,98 @@ def telegram_poll(
             typer.echo(f"telegram update {update_id}: {result}")
 
 
+@tasks_app.command("list")
+def tasks_list(limit: int = 50) -> None:
+    """List tasks."""
+    for item in build_agent().store.list_tasks(limit=limit):
+        typer.echo(f"#{item['id']} [{item['status']}] {item['title']} ({item['assigned_skill']})")
+
+
+@tasks_app.command("show")
+def tasks_show(task_id: int) -> None:
+    """Show one task."""
+    task = build_agent().store.get_task(task_id)
+    if not task:
+        raise typer.BadParameter(f"task #{task_id} not found")
+    echo_mapping(task)
+
+
+@improve_app.command("create")
+def improve_create(
+    feedback_id: int,
+    scope: str = "",
+    risk: str = typer.Option("normal", help="Risk level."),
+) -> None:
+    """Create an improvement task from a feedback item."""
+    service = ImprovementService(build_agent().store)
+    try:
+        result = service.create_from_feedback(feedback_id, scope=scope, risk_level=risk)
+    except ImprovementError as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(
+        f"已创建改进任务 #{result.improvement_id}（task #{result.task_id}），来自反馈 #{feedback_id}。"
+    )
+
+
+@improve_app.command("list")
+def improve_list(limit: int = 50) -> None:
+    """List improvement tasks."""
+    for item in build_agent().store.list_improvement_tasks(limit=limit):
+        typer.echo(
+            f"#{item['id']} [{item['approval_status']}/{item['runner_status']}] "
+            f"{item['repo']} feedback=#{item['feedback_id']}"
+        )
+
+
+@improve_app.command("approve")
+def improve_approve(improvement_id: int) -> None:
+    """Approve an improvement task."""
+    try:
+        ImprovementService(build_agent().store).approve(improvement_id)
+    except ImprovementError as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(f"已批准改进任务 #{improvement_id}。")
+
+
+@improve_app.command("reject")
+def improve_reject(improvement_id: int) -> None:
+    """Reject an improvement task."""
+    try:
+        ImprovementService(build_agent().store).reject(improvement_id)
+    except ImprovementError as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(f"已拒绝改进任务 #{improvement_id}。")
+
+
+@improve_app.command("pr")
+def improve_pr(improvement_id: int) -> None:
+    """Open a pull request for an approved improvement task."""
+    try:
+        result = ImprovementService(build_agent().store).open_pull_request(improvement_id)
+    except ImprovementError as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(f"已创建 PR #{result.number}: {result.url}")
+
+
+@pr_app.command("list")
+def pr_list(limit: int = 50) -> None:
+    """List recorded pull requests."""
+    for item in build_agent().store.list_pull_requests(limit=limit):
+        typer.echo(
+            f"#{item['id']} PR#{item['number']} [{item['status']}] "
+            f"{item['github_owner']}/{item['github_repo']} {item['url']}"
+        )
+
+
+@pr_app.command("show")
+def pr_show(pr_id: int) -> None:
+    """Show one recorded pull request."""
+    pull_request = build_agent().store.get_pull_request(pr_id)
+    if not pull_request:
+        raise typer.BadParameter(f"pull request #{pr_id} not found")
+    echo_mapping(pull_request)
+
+
 @config_app.command("show")
 def config_show() -> None:
     """Show effective configuration."""
@@ -215,6 +314,10 @@ def config_show() -> None:
             "telegram_webhook_secret": "***" if settings.telegram_webhook_secret else "",
             "telegram_reply_enabled": settings.telegram_reply_enabled,
             "telegram_group_wake_words": settings.telegram_group_wake_words,
+            "github_token": "***" if settings.github_token else "",
+            "github_owner": settings.github_owner,
+            "github_repo": settings.github_repo,
+            "github_api_url": settings.github_api_url,
             "llm_provider": settings.llm_provider,
             "moonshot_base_url": settings.moonshot_base_url,
             "moonshot_model": settings.moonshot_model,

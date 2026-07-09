@@ -66,6 +66,48 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     detail TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    priority TEXT NOT NULL DEFAULT 'normal',
+    created_by TEXT NOT NULL DEFAULT '',
+    assigned_skill TEXT NOT NULL DEFAULT '',
+    requires_approval INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS improvement_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL DEFAULT 0,
+    feedback_id INTEGER NOT NULL DEFAULT 0,
+    repo TEXT NOT NULL DEFAULT '',
+    branch_name TEXT NOT NULL DEFAULT '',
+    scope TEXT NOT NULL DEFAULT '',
+    risk_level TEXT NOT NULL DEFAULT 'normal',
+    approval_status TEXT NOT NULL DEFAULT 'pending',
+    runner_status TEXT NOT NULL DEFAULT 'idle',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pull_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    improvement_task_id INTEGER NOT NULL DEFAULT 0,
+    github_owner TEXT NOT NULL DEFAULT '',
+    github_repo TEXT NOT NULL DEFAULT '',
+    number INTEGER NOT NULL DEFAULT 0,
+    url TEXT NOT NULL DEFAULT '',
+    branch_name TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    checks_status TEXT NOT NULL DEFAULT 'unknown',
+    merged_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -406,6 +448,217 @@ class MemoryStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def add_task(
+        self,
+        title: str,
+        description: str = "",
+        status: str = "open",
+        priority: str = "normal",
+        created_by: str = "",
+        assigned_skill: str = "",
+        requires_approval: bool = True,
+    ) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "INSERT INTO tasks "
+                "(title, description, status, priority, created_by, assigned_skill, "
+                "requires_approval) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    title,
+                    description,
+                    status,
+                    priority,
+                    created_by,
+                    assigned_skill,
+                    int(requires_approval),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def get_task(self, task_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id, title, description, status, priority, created_by, "
+                "assigned_skill, requires_approval, created_at, updated_at "
+                "FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_tasks(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, title, description, status, priority, created_by, "
+                "assigned_skill, requires_approval, created_at, updated_at "
+                "FROM tasks ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_task_status(self, task_id: int, status: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (status, task_id),
+            )
+            return cursor.rowcount > 0
+
+    def add_improvement_task(
+        self,
+        task_id: int,
+        feedback_id: int = 0,
+        repo: str = "",
+        branch_name: str = "",
+        scope: str = "",
+        risk_level: str = "normal",
+        approval_status: str = "pending",
+        runner_status: str = "idle",
+    ) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "INSERT INTO improvement_tasks "
+                "(task_id, feedback_id, repo, branch_name, scope, risk_level, "
+                "approval_status, runner_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    task_id,
+                    feedback_id,
+                    repo,
+                    branch_name,
+                    scope,
+                    risk_level,
+                    approval_status,
+                    runner_status,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def get_improvement_task(self, improvement_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id, task_id, feedback_id, repo, branch_name, scope, risk_level, "
+                "approval_status, runner_status, created_at, updated_at "
+                "FROM improvement_tasks WHERE id = ?",
+                (improvement_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_improvement_tasks(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, task_id, feedback_id, repo, branch_name, scope, risk_level, "
+                "approval_status, runner_status, created_at, updated_at "
+                "FROM improvement_tasks ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_improvement_task(
+        self,
+        improvement_id: int,
+        approval_status: str | None = None,
+        runner_status: str | None = None,
+        branch_name: str | None = None,
+    ) -> bool:
+        fields: list[str] = []
+        values: list[Any] = []
+        if approval_status is not None:
+            fields.append("approval_status = ?")
+            values.append(approval_status)
+        if runner_status is not None:
+            fields.append("runner_status = ?")
+            values.append(runner_status)
+        if branch_name is not None:
+            fields.append("branch_name = ?")
+            values.append(branch_name)
+        if not fields:
+            return False
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        values.append(improvement_id)
+        with self.connect() as conn:
+            cursor = conn.execute(
+                f"UPDATE improvement_tasks SET {', '.join(fields)} WHERE id = ?",
+                values,
+            )
+            return cursor.rowcount > 0
+
+    def add_pull_request(
+        self,
+        improvement_task_id: int,
+        github_owner: str,
+        github_repo: str,
+        number: int,
+        url: str,
+        branch_name: str,
+        status: str = "open",
+        checks_status: str = "unknown",
+    ) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "INSERT INTO pull_requests "
+                "(improvement_task_id, github_owner, github_repo, number, url, "
+                "branch_name, status, checks_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    improvement_task_id,
+                    github_owner,
+                    github_repo,
+                    number,
+                    url,
+                    branch_name,
+                    status,
+                    checks_status,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def get_pull_request(self, pr_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id, improvement_task_id, github_owner, github_repo, number, url, "
+                "branch_name, status, checks_status, merged_at, created_at, updated_at "
+                "FROM pull_requests WHERE id = ?",
+                (pr_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_pull_requests(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, improvement_task_id, github_owner, github_repo, number, url, "
+                "branch_name, status, checks_status, merged_at, created_at, updated_at "
+                "FROM pull_requests ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_pull_request(
+        self,
+        pr_id: int,
+        status: str | None = None,
+        checks_status: str | None = None,
+        merged_at: str | None = None,
+    ) -> bool:
+        fields: list[str] = []
+        values: list[Any] = []
+        if status is not None:
+            fields.append("status = ?")
+            values.append(status)
+        if checks_status is not None:
+            fields.append("checks_status = ?")
+            values.append(checks_status)
+        if merged_at is not None:
+            fields.append("merged_at = ?")
+            values.append(merged_at)
+        if not fields:
+            return False
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        values.append(pr_id)
+        with self.connect() as conn:
+            cursor = conn.execute(
+                f"UPDATE pull_requests SET {', '.join(fields)} WHERE id = ?",
+                values,
+            )
+            return cursor.rowcount > 0
+
     def add_feedback(self, source: str, user_id: str, content: str) -> int:
         with self.connect() as conn:
             cursor = conn.execute(
@@ -413,6 +666,15 @@ class MemoryStore:
                 (source, user_id, content),
             )
             return int(cursor.lastrowid)
+
+    def get_feedback(self, feedback_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id, source, user_id, content, status, created_at "
+                "FROM feedbacks WHERE id = ?",
+                (feedback_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def list_feedbacks(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.connect() as conn:
@@ -463,6 +725,9 @@ class MemoryStore:
             "conversation_summaries",
             "access_rules",
             "audit_logs",
+            "tasks",
+            "improvement_tasks",
+            "pull_requests",
         ]
         with self.connect() as conn:
             return [
