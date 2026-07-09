@@ -272,6 +272,20 @@ def improve_run(improvement_id: int) -> None:
         typer.echo(f"失败详情：{outcome.detail}")
 
 
+@improve_app.command("ship")
+def improve_ship(improvement_id: int) -> None:
+    """Run Claude Code in a sandbox, gate on checks, then push a pull request."""
+    try:
+        outcome = ImprovementService(build_agent().store).run_and_open_pull_request(improvement_id)
+    except ImprovementError as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(f"改进任务 #{improvement_id} 结果：{outcome.status}（分支 {outcome.branch_name}）")
+    if outcome.status == "pr_open":
+        typer.echo(f"已创建 PR #{outcome.pr_number}: {outcome.pr_url}")
+    elif outcome.status == "checks_failed":
+        typer.echo("沙箱检查未通过，未开 PR。")
+
+
 @improve_app.command("pr")
 def improve_pr(improvement_id: int) -> None:
     """Open a pull request for an approved improvement task."""
