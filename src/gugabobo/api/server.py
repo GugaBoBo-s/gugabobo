@@ -366,6 +366,26 @@ def pull_request(pr_id: int) -> dict[str, object]:
     return result
 
 
+@app.post("/prs/{pr_id}/sync")
+def sync_pull_request(
+    pr_id: int,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    try:
+        status = ImprovementService(build_agent().store).sync_pull_request(
+            pr_id, actor_source="dashboard", actor_user_id="admin"
+        )
+    except ImprovementError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return {
+        "pull_request_id": status.pull_request_id,
+        "number": status.number,
+        "status": status.status,
+        "checks_status": status.checks_status,
+        "merged_at": status.merged_at,
+    }
+
+
 @app.post("/improvements")
 def create_improvement(
     request: ImprovementCreateRequest,

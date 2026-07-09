@@ -264,6 +264,13 @@ Current behavior:
   dependencies will fail the checks until they are installed
 - runs and pull requests are high-risk actions recorded in audit logs
 
+`pr sync` refreshes a recorded pull request's state (open / merged / closed) and
+CI checks (`checks_status`) from GitHub:
+
+```bash
+gugabobo pr sync 1
+```
+
 Current behavior:
 
 - an improvement task must be approved before a pull request can be opened

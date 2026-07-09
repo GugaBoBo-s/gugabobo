@@ -315,6 +315,19 @@ def pr_show(pr_id: int) -> None:
     echo_mapping(pull_request)
 
 
+@pr_app.command("sync")
+def pr_sync(pr_id: int) -> None:
+    """Refresh a pull request's status and checks from GitHub."""
+    try:
+        status = ImprovementService(build_agent().store).sync_pull_request(pr_id)
+    except ImprovementError as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(
+        f"PR #{status.number} 状态：{status.status}，检查：{status.checks_status}"
+        + (f"，合并于 {status.merged_at}" if status.merged_at else "")
+    )
+
+
 @config_app.command("show")
 def config_show() -> None:
     """Show effective configuration."""

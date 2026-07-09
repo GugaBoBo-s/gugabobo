@@ -552,6 +552,13 @@ class FakeGitHubClient:
 
         return PullRequestResult(number=11, url="https://github.com/x/y/pull/11", branch_name=head)
 
+    def get_pull_request(self, number):
+        return {"state": "closed", "merged": True, "merged_at": "2026-07-09T10:00:00Z",
+                "head": {"sha": "abc"}}
+
+    def get_commit_status(self, ref):
+        return {"state": "success"}
+
 
 def test_improvement_endpoints_require_admin_token(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
@@ -599,6 +606,35 @@ def test_improvement_create_approve_and_open_pr(tmp_path, monkeypatch):
     assert prs_response.json()[0]["number"] == 11
     assert audit_response.json()[0]["action"] == "improvement.pr_open"
     assert audit_response.json()[0]["risk_level"] == "high"
+    get_settings.cache_clear()
+
+
+def test_sync_pull_request_endpoint(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    monkeypatch.setattr("gugabobo.core.improvement.GitHubClient", FakeGitHubClient)
+    client = TestClient(app)
+    feedback_id = client.post("/feedbacks", json={"content": "回复太长"}).json()["id"]
+    improvement_id = client.post(
+        "/improvements",
+        json={"feedback_id": feedback_id},
+        headers=admin_headers(),
+    ).json()["improvement_id"]
+    client.post(f"/improvements/{improvement_id}/approve", headers=admin_headers())
+    client.post(
+        f"/improvements/{improvement_id}/pull-request",
+        json={"confirm_text": "OPEN"},
+        headers=admin_headers(),
+    )
+    pr_id = client.get("/prs").json()[0]["id"]
+
+    unauth = client.post(f"/prs/{pr_id}/sync")
+    sync_response = client.post(f"/prs/{pr_id}/sync", headers=admin_headers())
+
+    assert unauth.status_code == 401
+    assert sync_response.status_code == 200
+    assert sync_response.json()["status"] == "merged"
+    assert sync_response.json()["checks_status"] == "success"
+    assert client.get(f"/prs/{pr_id}").json()["status"] == "merged"
     get_settings.cache_clear()
 
 
