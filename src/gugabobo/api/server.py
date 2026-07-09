@@ -8,6 +8,7 @@ from gugabobo.api.dashboard import dashboard_html
 from gugabobo.config import get_settings
 from gugabobo.core.access import context_with_access_role, evaluate_access, role_can_use_skill
 from gugabobo.core.channel import ChannelContext
+from gugabobo.core.improvement import ImprovementError, ImprovementService
 from gugabobo.infra.env_file import EnvFile
 from gugabobo.infra.logs import get_logger, read_log_lines
 from gugabobo.infra.napcat_client import NapCatClient
@@ -76,6 +77,12 @@ class ConfigUpdateRequest(BaseModel):
 
 class DangerousActionRequest(BaseModel):
     confirm_text: str = ""
+
+
+class ImprovementCreateRequest(BaseModel):
+    feedback_id: int
+    scope: str = ""
+    risk_level: str = "normal"
 
 
 def add_dashboard_audit(
@@ -231,6 +238,9 @@ def dashboard_control_config(_: None = Depends(require_admin_token)) -> dict[str
             "GUGABOBO_TELEGRAM_BOT_USERNAME": settings.telegram_bot_username,
             "GUGABOBO_TELEGRAM_REPLY_ENABLED": settings.telegram_reply_enabled,
             "GUGABOBO_TELEGRAM_GROUP_WAKE_WORDS": settings.telegram_group_wake_words,
+            "GUGABOBO_GITHUB_OWNER": settings.github_owner,
+            "GUGABOBO_GITHUB_REPO": settings.github_repo,
+            "GUGABOBO_GITHUB_API_URL": settings.github_api_url,
             "GUGABOBO_LLM_PROVIDER": settings.llm_provider,
             "GUGABOBO_MOONSHOT_BASE_URL": settings.moonshot_base_url,
             "GUGABOBO_MOONSHOT_MODEL": settings.moonshot_model,
@@ -242,6 +252,7 @@ def dashboard_control_config(_: None = Depends(require_admin_token)) -> dict[str
         },
         "secrets": {
             "GUGABOBO_ADMIN_TOKEN": bool(settings.admin_token),
+            "GUGABOBO_GITHUB_TOKEN": bool(settings.github_token),
             "GUGABOBO_NAPCAT_ACCESS_TOKEN": bool(settings.napcat_access_token),
             "GUGABOBO_TELEGRAM_BOT_TOKEN": bool(settings.telegram_bot_token),
             "GUGABOBO_TELEGRAM_WEBHOOK_SECRET": bool(settings.telegram_webhook_secret),
@@ -322,6 +333,106 @@ def access_rules(limit: int = 50) -> list[dict[str, object]]:
 @app.get("/audit-logs")
 def audit_logs(limit: int = 50) -> list[dict[str, object]]:
     return build_agent().store.list_audit_logs(limit=limit)
+
+
+@app.get("/tasks")
+def tasks(limit: int = 50) -> list[dict[str, object]]:
+    return build_agent().store.list_tasks(limit=limit)
+
+
+@app.get("/tasks/{task_id}")
+def task(task_id: int) -> dict[str, object]:
+    result = build_agent().store.get_task(task_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return result
+
+
+@app.get("/improvements")
+def improvements(limit: int = 50) -> list[dict[str, object]]:
+    return build_agent().store.list_improvement_tasks(limit=limit)
+
+
+@app.get("/prs")
+def pull_requests(limit: int = 50) -> list[dict[str, object]]:
+    return build_agent().store.list_pull_requests(limit=limit)
+
+
+@app.get("/prs/{pr_id}")
+def pull_request(pr_id: int) -> dict[str, object]:
+    result = build_agent().store.get_pull_request(pr_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Pull request not found")
+    return result
+
+
+@app.post("/improvements")
+def create_improvement(
+    request: ImprovementCreateRequest,
+    _: None = Depends(require_admin_token),
+) -> dict[str, int]:
+    service = ImprovementService(build_agent().store)
+    try:
+        result = service.create_from_feedback(
+            request.feedback_id,
+            scope=request.scope,
+            risk_level=request.risk_level,
+            actor_source="dashboard",
+            actor_user_id="admin",
+        )
+    except ImprovementError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return {"task_id": result.task_id, "improvement_id": result.improvement_id}
+
+
+@app.post("/improvements/{improvement_id}/approve")
+def approve_improvement(
+    improvement_id: int,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    try:
+        ImprovementService(build_agent().store).approve(
+            improvement_id, actor_source="dashboard", actor_user_id="admin"
+        )
+    except ImprovementError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return {"improvement_id": improvement_id, "approval_status": "approved"}
+
+
+@app.post("/improvements/{improvement_id}/reject")
+def reject_improvement(
+    improvement_id: int,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    try:
+        ImprovementService(build_agent().store).reject(
+            improvement_id, actor_source="dashboard", actor_user_id="admin"
+        )
+    except ImprovementError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return {"improvement_id": improvement_id, "approval_status": "rejected"}
+
+
+@app.post("/improvements/{improvement_id}/pull-request")
+def open_improvement_pull_request(
+    improvement_id: int,
+    request: DangerousActionRequest | None = None,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    require_danger_confirmation(request, "OPEN")
+    try:
+        result = ImprovementService(build_agent().store).open_pull_request(
+            improvement_id, actor_source="dashboard", actor_user_id="admin"
+        )
+    except ImprovementError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {
+        "improvement_id": improvement_id,
+        "pull_request_id": result.pull_request_id,
+        "number": result.number,
+        "url": result.url,
+        "branch_name": result.branch_name,
+    }
 
 
 @app.post("/feedbacks")

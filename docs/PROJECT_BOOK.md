@@ -1821,18 +1821,21 @@ reflection recorded after outcome
 Recommended next milestone:
 
 ```text
-P1 QQ integration
+P5 feedback-driven self-improvement
 ```
 
 Recommended tasks:
 
 ```text
-1. Select the QQ gateway.
-2. Define the normalized QQ message schema.
-3. Add owner permission configuration.
-4. Implement private message ingestion.
-5. Implement group mention and wake-word behavior.
-6. Add adapter tests.
+1. Add a sandbox clone and test runner around the P4 GitHub client.
+2. Introduce a Claude Code / LLM runner that produces real code diffs.
+3. Replace the proposal-file commit with the runner's actual changes.
+4. Read GitHub Actions status back into pull_requests.checks_status.
+5. Add reflection records after merge or rejection.
 ```
 
-P0.5 is complete. Proceed to P1 QQ integration when ready.
+P0 through P3 are complete. P4 delivered the self-improvement foundation:
+GitHub PAT client, tasks / improvement_tasks / pull_requests tables, an
+approval-gated proposal pull request flow, and CLI plus API surfaces. Actual
+AI-generated code changes and sandbox runners remain intentionally out of scope
+until P5.

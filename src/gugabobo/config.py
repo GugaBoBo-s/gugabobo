@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     telegram_webhook_secret: str = Field(default="", repr=False)
     telegram_reply_enabled: bool = False
     telegram_group_wake_words: str = "gugabobo,咕嘎BoBo"
+    github_token: str = Field(default="", repr=False)
+    github_owner: str = "GugaBoBo-s"
+    github_repo: str = "gugabobo"
+    github_api_url: str = "https://api.github.com"
     llm_provider: str = "moonshot"
     moonshot_api_key: str = Field(default="", repr=False)
     moonshot_base_url: str = "https://api.moonshot.ai/v1"

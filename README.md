@@ -24,6 +24,11 @@ gugabobo feedback resolve 1
 gugabobo messages list
 gugabobo config show
 gugabobo db path
+gugabobo improve create 1 --scope chat --risk low
+gugabobo improve approve 1
+gugabobo improve pr 1
+gugabobo tasks list
+gugabobo pr list
 gugabobo api
 ```
 
@@ -198,6 +203,54 @@ gugabobo summary show qq:user:241398668
 ```
 
 When a user explicitly says `记住...`, `请记住...`, `你要记住...`, `帮我记住...`, or `remember...`, gugabobo records the content as a long-term memory for the current conversation automatically.
+
+## GitHub self-improvement (P4 foundation)
+
+P4 starts the self-improvement loop foundation. Feedback can be turned into an
+improvement task that, after owner approval, opens a pull request against the
+repository. Authentication uses a Personal Access Token.
+
+```env
+GUGABOBO_GITHUB_TOKEN=
+GUGABOBO_GITHUB_OWNER=GugaBoBo-s
+GUGABOBO_GITHUB_REPO=gugabobo
+GUGABOBO_GITHUB_API_URL=https://api.github.com
+```
+
+Flow:
+
+```bash
+gugabobo feedback add "希望回复更简洁"
+gugabobo improve create 1 --scope chat --risk low
+gugabobo improve approve 1
+gugabobo improve pr 1
+gugabobo pr list
+```
+
+Current behavior:
+
+- an improvement task must be approved before a pull request can be opened
+- the pull request commits a proposal file `improvements/<id>.md`; it records
+  intent only and does not modify source code yet
+- opening a pull request is a high-risk action recorded in audit logs
+- API write endpoints require `GUGABOBO_ADMIN_TOKEN`, and opening a pull request
+  requires `confirm_text=OPEN`
+- automatic AI code changes and sandbox runners are intentionally out of scope
+  at this stage; the owner still approves whether a proposal becomes real
+
+API endpoints:
+
+```text
+GET  /tasks
+GET  /tasks/{id}
+GET  /improvements
+POST /improvements
+POST /improvements/{id}/approve
+POST /improvements/{id}/reject
+POST /improvements/{id}/pull-request
+GET  /prs
+GET  /prs/{id}
+```
 
 ## Configuration
 
