@@ -359,6 +359,8 @@ def config_show() -> None:
             "github_owner": settings.github_owner,
             "github_repo": settings.github_repo,
             "github_api_url": settings.github_api_url,
+            "git_author_name": settings.git_author_name,
+            "git_author_email": settings.git_author_email,
             "sandbox_dir": settings.sandbox_dir,
             "claude_bin": settings.claude_bin,
             "claude_permission_mode": settings.claude_permission_mode,

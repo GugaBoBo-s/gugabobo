@@ -89,6 +89,14 @@ def test_commit_all_commits_changes(tmp_path, monkeypatch):
         check=True,
     )
     assert "feat: add file" in log.stdout
+    author = subprocess.run(
+        ["git", "log", "-1", "--pretty=%an <%ae>"],
+        cwd=path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert author.stdout.strip() == "GuGabobo <263493647+GuGabobo@users.noreply.github.com>"
     diff_after = manager.collect_diff(path)
     assert diff_after.strip() == ""
     get_settings.cache_clear()

@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     github_owner: str = "GugaBoBo-s"
     github_repo: str = "gugabobo"
     github_api_url: str = "https://api.github.com"
+    git_author_name: str = "GuGabobo"
+    git_author_email: str = "263493647+GuGabobo@users.noreply.github.com"
     sandbox_dir: Path = Path(".gugabobo/sandbox")
     claude_bin: str = "claude"
     claude_permission_mode: str = "bypassPermissions"
