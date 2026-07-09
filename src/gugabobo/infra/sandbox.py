@@ -81,9 +81,9 @@ class SandboxManager:
         self._git(
             [
                 "-c",
-                "user.email=bot@gugabobo.local",
+                f"user.email={self.settings.git_author_email}",
                 "-c",
-                "user.name=gugabobo",
+                f"user.name={self.settings.git_author_name}",
                 "commit",
                 "-q",
                 "-m",

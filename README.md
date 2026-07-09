@@ -215,7 +215,16 @@ GUGABOBO_GITHUB_TOKEN=
 GUGABOBO_GITHUB_OWNER=GugaBoBo-s
 GUGABOBO_GITHUB_REPO=gugabobo
 GUGABOBO_GITHUB_API_URL=https://api.github.com
+GUGABOBO_GIT_AUTHOR_NAME=GuGabobo
+GUGABOBO_GIT_AUTHOR_EMAIL=263493647+GuGabobo@users.noreply.github.com
 ```
+
+gugabobo has its own GitHub account, [GuGabobo](https://github.com/GuGabobo).
+Sandbox self-improvement commits are authored as `GUGABOBO_GIT_AUTHOR_NAME` /
+`GUGABOBO_GIT_AUTHOR_EMAIL`, defaulting to that account's GitHub noreply email so
+commits link back to it. This is independent of the developer's local git
+identity. On the server, set `GUGABOBO_GITHUB_TOKEN` to a token from the GuGabobo
+account so pull requests are opened by the bot rather than the owner.
 
 Flow:
 
