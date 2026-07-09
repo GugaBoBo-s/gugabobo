@@ -34,6 +34,8 @@ class RunOutcome:
     branch_name: str
     diff: str = ""
     detail: str = ""
+    pr_number: int | None = None
+    pr_url: str = ""
 
 
 class ImprovementService:
@@ -233,6 +235,104 @@ class ImprovementService:
             f"diff {len(diff)} chars",
         )
         return RunOutcome(status="changes_ready", branch_name=branch_name, diff=diff)
+
+    def run_and_open_pull_request(
+        self,
+        improvement_id: int,
+        runner: ClaudeCodeRunner | None = None,
+        sandbox: SandboxManager | None = None,
+        source_repo: Path | None = None,
+        actor_source: str = "cli",
+        actor_user_id: str = "local",
+    ) -> RunOutcome:
+        improvement = self.store.get_improvement_task(improvement_id)
+        if not improvement:
+            raise ImprovementError(f"improvement task #{improvement_id} not found")
+        if improvement["approval_status"] != "approved":
+            raise ImprovementError("improvement task must be approved before running")
+        runner = runner or ClaudeCodeRunner()
+        sandbox = sandbox or SandboxManager()
+        if not runner.configured:
+            raise ImprovementError("Claude Code (claude) is not available on this machine")
+        if not self.github.configured:
+            raise ImprovementError("GUGABOBO_GITHUB_TOKEN is not configured")
+        task = self.store.get_task(int(improvement["task_id"]))
+        title = str(task["title"]) if task else f"Improvement #{improvement_id}"
+        branch_name = f"gugabobo/improvement-{improvement_id}"
+        self.store.update_improvement_task(improvement_id, runner_status="running")
+        try:
+            path = sandbox.prepare(improvement_id, source_repo or Path.cwd(), branch_name)
+        except Exception as error:
+            self.store.update_improvement_task(improvement_id, runner_status="failed")
+            raise ImprovementError(f"sandbox preparation failed: {error}") from error
+        result = runner.run(self._build_prompt(improvement, task), cwd=path)
+        if not result.ok:
+            self.store.update_improvement_task(improvement_id, runner_status="failed")
+            self._audit_run(actor_source, actor_user_id, improvement_id, "failed", result.error)
+            return RunOutcome(status="failed", branch_name=branch_name, detail=result.error[:500])
+        diff = sandbox.collect_diff(path)
+        if not diff.strip():
+            self.store.update_improvement_task(improvement_id, runner_status="no_changes")
+            self._audit_run(actor_source, actor_user_id, improvement_id, "no_changes", "")
+            return RunOutcome(status="no_changes", branch_name=branch_name)
+        checks = sandbox.run_checks(path)
+        if not checks.passed:
+            self.store.update_improvement_task(
+                improvement_id,
+                runner_status="checks_failed",
+                branch_name=branch_name,
+            )
+            self._audit_run(
+                actor_source,
+                actor_user_id,
+                improvement_id,
+                "checks_failed",
+                checks.output[-500:],
+            )
+            return RunOutcome(
+                status="checks_failed",
+                branch_name=branch_name,
+                diff=diff,
+                detail=checks.output[-2000:],
+            )
+        sandbox.commit_all(path, f"feat(improvement): #{improvement_id} via Claude Code")
+        sandbox.push_branch(path, self.github.push_url, branch_name)
+        base_branch = self.github.get_default_branch()
+        pull_request = self.github.create_pull_request(
+            title=title,
+            head=branch_name,
+            base=base_branch,
+            body=self._proposal_markdown(improvement_id, improvement, task),
+        )
+        self.store.add_pull_request(
+            improvement_task_id=improvement_id,
+            github_owner=self.github.owner,
+            github_repo=self.github.repo,
+            number=pull_request.number,
+            url=pull_request.url,
+            branch_name=branch_name,
+        )
+        self.store.update_improvement_task(
+            improvement_id,
+            runner_status="pr_open",
+            branch_name=branch_name,
+        )
+        self.store.add_audit_log(
+            actor_source=actor_source,
+            actor_user_id=actor_user_id,
+            action="improvement.pr_open",
+            target=f"pull_request:{pull_request.number}",
+            risk_level="high",
+            detail=pull_request.url,
+        )
+        sandbox.cleanup(improvement_id)
+        return RunOutcome(
+            status="pr_open",
+            branch_name=branch_name,
+            diff=diff,
+            pr_number=pull_request.number,
+            pr_url=pull_request.url,
+        )
 
     def _audit_run(
         self,

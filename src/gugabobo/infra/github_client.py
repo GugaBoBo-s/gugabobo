@@ -31,6 +31,13 @@ class GitHubClient:
     def repo(self) -> str:
         return self.settings.github_repo
 
+    @property
+    def push_url(self) -> str:
+        return (
+            f"https://x-access-token:{self.settings.github_token}"
+            f"@github.com/{self.owner}/{self.repo}.git"
+        )
+
     def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self.settings.github_token}",

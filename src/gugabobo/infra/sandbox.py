@@ -4,6 +4,8 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from gugabobo.config import Settings, get_settings
@@ -11,6 +13,12 @@ from gugabobo.config import Settings, get_settings
 
 class SandboxError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class CheckResult:
+    passed: bool
+    output: str
 
 
 def _force_rmtree(path: Path) -> None:
@@ -48,6 +56,53 @@ class SandboxManager:
         self._git(["add", "-A"], cwd=path)
         result = self._git(["diff", "--cached"], cwd=path)
         return result.stdout
+
+    def run_checks(self, path: Path) -> CheckResult:
+        steps = [
+            [sys.executable, "-m", "ruff", "check", "."],
+            [sys.executable, "-m", "pytest", "-q"],
+        ]
+        outputs: list[str] = []
+        for command in steps:
+            result = subprocess.run(
+                command,
+                cwd=str(path),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            outputs.append(f"$ {' '.join(command[1:])}\n{result.stdout}{result.stderr}")
+            if result.returncode != 0:
+                return CheckResult(passed=False, output="\n".join(outputs))
+        return CheckResult(passed=True, output="\n".join(outputs))
+
+    def commit_all(self, path: Path, message: str) -> None:
+        self._git(["add", "-A"], cwd=path)
+        self._git(
+            [
+                "-c",
+                "user.email=bot@gugabobo.local",
+                "-c",
+                "user.name=gugabobo",
+                "commit",
+                "-q",
+                "-m",
+                message,
+            ],
+            cwd=path,
+        )
+
+    def push_branch(self, path: Path, remote_url: str, branch: str) -> None:
+        result = subprocess.run(
+            ["git", "push", remote_url, f"HEAD:refs/heads/{branch}"],
+            cwd=str(path),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            message = result.stderr.strip().replace(remote_url, "<remote>")
+            raise SandboxError(f"git push failed: {message}")
 
     def cleanup(self, improvement_id: int) -> None:
         target = self.path_for(improvement_id)

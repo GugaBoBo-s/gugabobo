@@ -34,6 +34,10 @@ class FakeGitHubClient:
         self.created_pulls.append({"title": title, "head": head, "base": base})
         return PullRequestResult(number=7, url="https://github.com/x/y/pull/7", branch_name=head)
 
+    @property
+    def push_url(self) -> str:
+        return "https://x-access-token:tok@github.com/GugaBoBo-s/gugabobo.git"
+
 
 class UnconfiguredGitHubClient(FakeGitHubClient):
     configured = False
@@ -55,10 +59,14 @@ class FakeRunner:
 
 
 class FakeSandbox:
-    def __init__(self, diff="", tmp_path=None):
+    def __init__(self, diff="", tmp_path=None, checks_passed=True):
         self._diff = diff
         self._tmp_path = tmp_path
+        self._checks_passed = checks_passed
         self.prepared = []
+        self.committed = []
+        self.pushed = []
+        self.cleaned = []
 
     def prepare(self, improvement_id, source_repo, branch):
         self.prepared.append({"id": improvement_id, "branch": branch})
@@ -66,6 +74,20 @@ class FakeSandbox:
 
     def collect_diff(self, path):
         return self._diff
+
+    def run_checks(self, path):
+        from gugabobo.infra.sandbox import CheckResult
+
+        return CheckResult(passed=self._checks_passed, output="checks output")
+
+    def commit_all(self, path, message):
+        self.committed.append(message)
+
+    def push_branch(self, path, remote_url, branch):
+        self.pushed.append({"remote_url": remote_url, "branch": branch})
+
+    def cleanup(self, improvement_id):
+        self.cleaned.append(improvement_id)
 
 
 def make_store_with_feedback(tmp_path) -> tuple[MemoryStore, int]:
@@ -252,5 +274,60 @@ def test_run_improvement_requires_available_claude(tmp_path):
             improvement_id,
             runner=FakeRunner(configured=False),
             sandbox=FakeSandbox(tmp_path=tmp_path),
+        )
+    get_settings.cache_clear()
+
+
+def test_ship_opens_pull_request_when_checks_pass(tmp_path):
+    get_settings.cache_clear()
+    store, service, improvement_id = approved_improvement(tmp_path)
+    runner = FakeRunner(ok=True)
+    sandbox = FakeSandbox(diff="diff --git a/x b/x\n+change", tmp_path=tmp_path, checks_passed=True)
+
+    outcome = service.run_and_open_pull_request(improvement_id, runner=runner, sandbox=sandbox)
+
+    assert outcome.status == "pr_open"
+    assert outcome.pr_number == 7
+    assert sandbox.committed and sandbox.pushed
+    assert sandbox.pushed[0]["branch"] == f"gugabobo/improvement-{improvement_id}"
+    assert sandbox.cleaned == [improvement_id]
+    assert store.get_improvement_task(improvement_id)["runner_status"] == "pr_open"
+    assert store.list_pull_requests()[0]["number"] == 7
+    actions = [log["action"] for log in store.list_audit_logs()]
+    assert "improvement.pr_open" in actions
+    get_settings.cache_clear()
+
+
+def test_ship_stops_when_checks_fail(tmp_path):
+    get_settings.cache_clear()
+    store, service, improvement_id = approved_improvement(tmp_path)
+    sandbox = FakeSandbox(diff="diff --git a/x b/x\n+change", tmp_path=tmp_path, checks_passed=False)
+
+    outcome = service.run_and_open_pull_request(
+        improvement_id,
+        runner=FakeRunner(ok=True),
+        sandbox=sandbox,
+    )
+
+    assert outcome.status == "checks_failed"
+    assert not sandbox.committed
+    assert not sandbox.pushed
+    assert store.get_improvement_task(improvement_id)["runner_status"] == "checks_failed"
+    assert store.list_pull_requests() == []
+    get_settings.cache_clear()
+
+
+def test_ship_requires_configured_github(tmp_path):
+    get_settings.cache_clear()
+    store, feedback_id = make_store_with_feedback(tmp_path)
+    service = ImprovementService(store, github_client=UnconfiguredGitHubClient())
+    created = service.create_from_feedback(feedback_id)
+    service.approve(created.improvement_id)
+
+    with pytest.raises(ImprovementError):
+        service.run_and_open_pull_request(
+            created.improvement_id,
+            runner=FakeRunner(),
+            sandbox=FakeSandbox(diff="x", tmp_path=tmp_path),
         )
     get_settings.cache_clear()

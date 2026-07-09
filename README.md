@@ -241,15 +241,28 @@ GUGABOBO_CLAUDE_PERMISSION_MODE=bypassPermissions
 GUGABOBO_CLAUDE_TIMEOUT_SECONDS=900
 ```
 
+`improve run` produces the diff only. `improve ship` goes further: it gates the
+diff on sandbox checks (`ruff` + `pytest`), then commits, pushes the branch, and
+opens a real pull request.
+
+```bash
+gugabobo improve ship 1
+```
+
 Current behavior:
 
 - the improvement task must be approved before it can run
 - the sandbox is a git clone under `GUGABOBO_SANDBOX_DIR`; Claude Code only edits
   the sandbox copy, never the working tree or `main`
-- `runner_status` moves through `running` → `changes_ready` / `no_changes` / `failed`
-- runs are high-risk actions recorded in audit logs
-- pushing the sandbox diff to a real branch and pull request is the next P5 step;
-  for now `improve run` produces and records the diff only
+- `improve run` moves `runner_status` through `running` → `changes_ready` /
+  `no_changes` / `failed`
+- `improve ship` additionally runs `ruff` and `pytest` inside the sandbox; if they
+  fail, `runner_status` becomes `checks_failed` and no pull request is opened
+- a passing `improve ship` pushes the branch and opens a pull request, sets
+  `runner_status` to `pr_open`, and records it in `pull_requests`
+- sandbox checks run with the host interpreter, so a change that adds new
+  dependencies will fail the checks until they are installed
+- runs and pull requests are high-risk actions recorded in audit logs
 
 Current behavior:
 
