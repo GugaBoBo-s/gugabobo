@@ -223,9 +223,33 @@ Flow:
 gugabobo feedback add "希望回复更简洁"
 gugabobo improve create 1 --scope chat --risk low
 gugabobo improve approve 1
+gugabobo improve run 1
 gugabobo improve pr 1
 gugabobo pr list
 ```
+
+### Claude Code runner (P5 foundation)
+
+gugabobo does not implement its own coding agent. Its code-editing ability comes
+from calling Claude Code. `gugabobo improve run <id>` clones the repository into a
+sandbox and runs Claude Code headless to edit the code, then collects the diff.
+
+```env
+GUGABOBO_SANDBOX_DIR=.gugabobo/sandbox
+GUGABOBO_CLAUDE_BIN=claude
+GUGABOBO_CLAUDE_PERMISSION_MODE=bypassPermissions
+GUGABOBO_CLAUDE_TIMEOUT_SECONDS=900
+```
+
+Current behavior:
+
+- the improvement task must be approved before it can run
+- the sandbox is a git clone under `GUGABOBO_SANDBOX_DIR`; Claude Code only edits
+  the sandbox copy, never the working tree or `main`
+- `runner_status` moves through `running` → `changes_ready` / `no_changes` / `failed`
+- runs are high-risk actions recorded in audit logs
+- pushing the sandbox diff to a real branch and pull request is the next P5 step;
+  for now `improve run` produces and records the diff only
 
 Current behavior:
 

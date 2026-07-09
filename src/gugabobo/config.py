@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     github_owner: str = "GugaBoBo-s"
     github_repo: str = "gugabobo"
     github_api_url: str = "https://api.github.com"
+    sandbox_dir: Path = Path(".gugabobo/sandbox")
+    claude_bin: str = "claude"
+    claude_permission_mode: str = "bypassPermissions"
+    claude_timeout_seconds: int = 900
     llm_provider: str = "moonshot"
     moonshot_api_key: str = Field(default="", repr=False)
     moonshot_base_url: str = "https://api.moonshot.ai/v1"

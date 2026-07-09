@@ -258,6 +258,20 @@ def improve_reject(improvement_id: int) -> None:
     typer.echo(f"已拒绝改进任务 #{improvement_id}。")
 
 
+@improve_app.command("run")
+def improve_run(improvement_id: int) -> None:
+    """Run Claude Code in a sandbox for an approved improvement task."""
+    try:
+        outcome = ImprovementService(build_agent().store).run_improvement(improvement_id)
+    except ImprovementError as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(f"改进任务 #{improvement_id} 运行结果：{outcome.status}（分支 {outcome.branch_name}）")
+    if outcome.status == "changes_ready":
+        typer.echo(f"生成 diff 长度：{len(outcome.diff)} 字符")
+    elif outcome.status == "failed" and outcome.detail:
+        typer.echo(f"失败详情：{outcome.detail}")
+
+
 @improve_app.command("pr")
 def improve_pr(improvement_id: int) -> None:
     """Open a pull request for an approved improvement task."""
@@ -318,6 +332,10 @@ def config_show() -> None:
             "github_owner": settings.github_owner,
             "github_repo": settings.github_repo,
             "github_api_url": settings.github_api_url,
+            "sandbox_dir": settings.sandbox_dir,
+            "claude_bin": settings.claude_bin,
+            "claude_permission_mode": settings.claude_permission_mode,
+            "claude_timeout_seconds": settings.claude_timeout_seconds,
             "llm_provider": settings.llm_provider,
             "moonshot_base_url": settings.moonshot_base_url,
             "moonshot_model": settings.moonshot_model,
