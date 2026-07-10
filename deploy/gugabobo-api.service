@@ -1,0 +1,18 @@
+[Unit]
+Description=gugabobo management API and dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/gugabobo/repo
+EnvironmentFile=/opt/gugabobo/repo/.env
+ExecStart=/opt/gugabobo/repo/.venv/bin/gugabobo api
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
