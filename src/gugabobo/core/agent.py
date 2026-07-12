@@ -7,6 +7,7 @@ from gugabobo.memory.store import MemoryStore
 from gugabobo.skills.chat import ChatSkill
 from gugabobo.skills.feedback import FeedbackSkill
 from gugabobo.skills.memory import MemorySkill
+from gugabobo.skills.outbound import OutboundSkill
 
 
 class CoreAgent:
@@ -22,6 +23,7 @@ class CoreAgent:
         self.chat_skill = ChatSkill(self.persona)
         self.feedback_skill = FeedbackSkill(store)
         self.memory_skill = MemorySkill(store)
+        self.outbound_skill = OutboundSkill(self.chat_skill.llm_client)
 
     def handle_message(
         self,
@@ -88,12 +90,18 @@ class CoreAgent:
         elif route.skill == "memory":
             response = self.memory_skill.record(text, subject=context.conversation_id)
         else:
-            response = self.chat_skill.reply(
-                text,
-                history=llm_history,
-                system_context=system_context,
-                images=images,
-            )
+            outbound_reply = None
+            if access_role == "owner" and not images:
+                outbound_reply = self.outbound_skill.handle(text)
+            if outbound_reply is not None:
+                response = outbound_reply
+            else:
+                response = self.chat_skill.reply(
+                    text,
+                    history=llm_history,
+                    system_context=system_context,
+                    images=images,
+                )
         self.store.add_message(
             source=context.source,
             user_id="gugabobo",

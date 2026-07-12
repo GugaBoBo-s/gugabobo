@@ -64,6 +64,25 @@ class OpenAICompatibleClient:
         content = choice["message"]["content"]
         return LLMResult(content=str(content).strip(), model=str(response.get("model", "")))
 
+    def complete(self, messages: list[dict[str, str]], temperature: float = 0.0) -> str:
+        if not self.configured:
+            raise RuntimeError(f"{self.provider_name} API key is not configured")
+        url = f"{self.base_url.rstrip('/')}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        with httpx.Client(timeout=self.settings.llm_timeout_seconds) as client:
+            response = client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+        return str(data["choices"][0]["message"]["content"]).strip()
+
     def _post_chat_completion(
         self,
         text: str,
