@@ -318,8 +318,8 @@ def _make_summary_agent(tmp_path):
 def test_summary_not_triggered_below_threshold(tmp_path, monkeypatch):
     monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
     monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
-    monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_TRIGGER_MESSAGES", "40")
-    monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_KEEP_RECENT", "20")
+    # High token budget: day-to-day chat stays verbatim, never summarized.
+    monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_TRIGGER_TOKENS", "24000")
     get_settings.cache_clear()
     agent, client = _make_summary_agent(tmp_path)
 
@@ -334,12 +334,12 @@ def test_summary_not_triggered_below_threshold(tmp_path, monkeypatch):
 def test_summary_triggered_and_advances_boundary(tmp_path, monkeypatch):
     monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
     monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
-    monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_TRIGGER_MESSAGES", "10")
-    monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_KEEP_RECENT", "4")
+    # Low token thresholds so a handful of short turns crosses the trigger.
+    monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_TRIGGER_TOKENS", "40")
+    monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_KEEP_RECENT_TOKENS", "16")
     get_settings.cache_clear()
     agent, client = _make_summary_agent(tmp_path)
 
-    # each handle_message stores 2 messages (user + assistant); 6 turns = 12 messages > 10
     for i in range(6):
         agent.handle_message(f"消息{i}", source="qq_private", user_id="a", conversation_id="qq:user:a")
 
@@ -355,8 +355,8 @@ def test_summary_triggered_and_advances_boundary(tmp_path, monkeypatch):
 def test_history_excludes_summarized_messages(tmp_path, monkeypatch):
     monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
     monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
-    monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_TRIGGER_MESSAGES", "10")
-    monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_KEEP_RECENT", "4")
+    monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_TRIGGER_TOKENS", "40")
+    monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_KEEP_RECENT_TOKENS", "16")
     get_settings.cache_clear()
     agent, client = _make_summary_agent(tmp_path)
 
@@ -392,3 +392,29 @@ def test_summarizer_skill_merges_previous_summary(tmp_path):
     user_msg = sent[-1]["content"]
     assert "用户叫小明" in user_msg
     assert "你好" in user_msg
+
+
+def test_trim_history_keeps_recent_within_budget(tmp_path):
+    store = MemoryStore(tmp_path / "trim.db")
+    agent = CoreAgent(store)
+    history = [
+        {"role": "user", "content": "很久以前的消息" * 50},
+        {"role": "assistant", "content": "很久以前的回复" * 50},
+        {"role": "user", "content": "最近的问题"},
+        {"role": "assistant", "content": "最近的回复"},
+    ]
+
+    trimmed = agent._trim_history_to_budget(history, token_budget=60)
+
+    # oldest large messages dropped, most recent kept
+    assert history[-1] in trimmed
+    assert history[-2] in trimmed
+    assert history[0] not in trimmed
+
+
+def test_trim_history_zero_budget_returns_all(tmp_path):
+    store = MemoryStore(tmp_path / "trim2.db")
+    agent = CoreAgent(store)
+    history = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
+
+    assert agent._trim_history_to_budget(history, token_budget=0) == history
