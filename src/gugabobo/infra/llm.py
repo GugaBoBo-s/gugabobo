@@ -111,8 +111,26 @@ class DeepSeekClient(OpenAICompatibleClient):
         return self.settings.deepseek_model
 
 
+class OpenAIClient(OpenAICompatibleClient):
+    provider_name = "openai"
+
+    @property
+    def api_key(self) -> str:
+        return self.settings.openai_api_key
+
+    @property
+    def base_url(self) -> str:
+        return self.settings.openai_base_url
+
+    @property
+    def model(self) -> str:
+        return self.settings.openai_model
+
+
 def build_llm_client(settings: Settings | None = None) -> OpenAICompatibleClient:
     resolved_settings = settings or get_settings()
+    if resolved_settings.llm_provider == "openai":
+        return OpenAIClient(resolved_settings)
     if resolved_settings.llm_provider == "deepseek":
         return DeepSeekClient(resolved_settings)
     return MoonshotClient(resolved_settings)

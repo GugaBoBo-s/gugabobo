@@ -2,7 +2,7 @@ from gugabobo.core.agent import CoreAgent
 from gugabobo.core.channel import ChannelContext
 from gugabobo.core.persona import Persona
 from gugabobo.config import get_settings
-from gugabobo.infra.llm import DeepSeekClient, MoonshotClient, build_llm_client
+from gugabobo.infra.llm import DeepSeekClient, MoonshotClient, OpenAIClient, build_llm_client
 from gugabobo.memory.store import MemoryStore
 from gugabobo.skills.chat import ChatSkill
 
@@ -240,4 +240,19 @@ def test_build_llm_client_defaults_to_moonshot(monkeypatch):
 
     assert isinstance(client, MoonshotClient)
     assert client.model == "kimi-k2.6"
+    get_settings.cache_clear()
+
+
+def test_build_llm_client_uses_openai_provider(monkeypatch):
+    monkeypatch.setenv("GUGABOBO_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("GUGABOBO_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GUGABOBO_OPENAI_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("GUGABOBO_OPENAI_MODEL", "gpt-5.6")
+    get_settings.cache_clear()
+
+    client = build_llm_client()
+
+    assert isinstance(client, OpenAIClient)
+    assert client.base_url == "https://api.example.com/v1"
+    assert client.model == "gpt-5.6"
     get_settings.cache_clear()

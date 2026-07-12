@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     deepseek_api_key: str = Field(default="", repr=False)
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-flash"
+    openai_api_key: str = Field(default="", repr=False)
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_model: str = "gpt-5.6"
     llm_timeout_seconds: int = 60
     llm_context_messages: int = 40
     llm_memory_items: int = 12
