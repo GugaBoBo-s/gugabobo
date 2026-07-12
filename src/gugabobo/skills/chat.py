@@ -13,8 +13,9 @@ class ChatSkill:
         text: str,
         history: list[dict[str, str]] | None = None,
         system_context: list[str] | None = None,
+        images: list[str] | None = None,
     ) -> str:
-        if not text.strip():
+        if not text.strip() and not images:
             return "我在。"
         if self.llm_client.configured:
             try:
@@ -23,9 +24,12 @@ class ChatSkill:
                     self.persona,
                     history=history,
                     system_context=system_context,
+                    images=images,
                 )
                 if result.content:
                     return result.content
             except Exception as exc:
                 get_logger().warning("llm chat failed: %s", exc)
+        if images and not text:
+            return f"我是 {self.persona.name}，收到了图片，但现在看不了。"
         return f"我是 {self.persona.name}，已收到：{text}"

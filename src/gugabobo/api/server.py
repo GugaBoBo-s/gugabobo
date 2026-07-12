@@ -10,6 +10,7 @@ from gugabobo.core.access import context_with_access_role, evaluate_access, role
 from gugabobo.core.channel import ChannelContext
 from gugabobo.core.improvement import ImprovementError, ImprovementService
 from gugabobo.infra.env_file import EnvFile
+from gugabobo.infra.images import urls_to_data_uris
 from gugabobo.infra.logs import get_logger, read_log_lines
 from gugabobo.infra.napcat_client import NapCatClient
 from gugabobo.infra.runtime import RuntimeManager, build_agent
@@ -748,7 +749,8 @@ def onebot_event(payload: dict[str, object]) -> dict[str, object]:
     if event.post_type != "message":
         return {"status": "ignored", "reason": "non-message event"}
     text = event.text_content()
-    if not text:
+    image_urls = event.image_urls()
+    if not text and not image_urls:
         return {"status": "ignored", "reason": "empty message"}
     agent = build_agent()
     context = event.to_channel_context(
@@ -779,7 +781,8 @@ def onebot_event(payload: dict[str, object]) -> dict[str, object]:
             logger.info("onebot feedback recorded id=%s source=%s", feedback_id, context.source)
             return {"status": "recorded", "feedback_id": feedback_id}
         return {"status": "ignored", "reason": "reply not allowed"}
-    reply = agent.handle_context_message(text, context)
+    images = urls_to_data_uris(image_urls) if image_urls else None
+    reply = agent.handle_context_message(text, context, images=images)
     if settings.napcat_reply_enabled:
         client = NapCatClient()
         if context.channel_type == "private":

@@ -103,7 +103,7 @@ def test_regular_chat_does_not_record_long_term_memory(tmp_path, monkeypatch):
 class FakeLLMClient:
     configured = True
 
-    def chat(self, text, persona, history=None, system_context=None):
+    def chat(self, text, persona, history=None, system_context=None, images=None):
         return type("Result", (), {"content": f"kimi reply: {text}", "model": "kimi-k2.6"})()
 
 
@@ -113,10 +113,12 @@ class HistoryCapturingLLMClient:
     def __init__(self):
         self.histories = []
         self.system_contexts = []
+        self.images = []
 
-    def chat(self, text, persona, history=None, system_context=None):
+    def chat(self, text, persona, history=None, system_context=None, images=None):
         self.histories.append(history or [])
         self.system_contexts.append(system_context or [])
+        self.images.append(images or [])
         return type("Result", (), {"content": f"reply: {text}", "model": "test-model"})()
 
 
@@ -241,6 +243,35 @@ def test_build_llm_client_defaults_to_moonshot(monkeypatch):
     assert isinstance(client, MoonshotClient)
     assert client.model == "kimi-k2.6"
     get_settings.cache_clear()
+
+
+def test_build_user_content_plain_text_without_images():
+    from gugabobo.infra.llm import _build_user_content
+
+    assert _build_user_content("你好", []) == "你好"
+
+
+def test_build_user_content_multimodal_with_images():
+    from gugabobo.infra.llm import _build_user_content
+
+    content = _build_user_content("看图", ["data:image/png;base64,Zm9v"])
+
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "看图"}
+    assert content[1] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,Zm9v"},
+    }
+
+
+def test_build_user_content_image_only_omits_empty_text():
+    from gugabobo.infra.llm import _build_user_content
+
+    content = _build_user_content("", ["data:image/png;base64,Zm9v"])
+
+    assert isinstance(content, list)
+    assert len(content) == 1
+    assert content[0]["type"] == "image_url"
 
 
 def test_build_llm_client_uses_openai_provider(monkeypatch):
