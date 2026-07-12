@@ -50,10 +50,14 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-5.6"
     llm_timeout_seconds: int = 60
-    llm_context_messages: int = 40
+    llm_context_messages: int = 400
     llm_memory_items: int = 12
     llm_summary_trigger_messages: int = 40
     llm_summary_keep_recent: int = 20
+    # Token-based context management (primary). Message counts above are safety caps.
+    llm_history_token_budget: int = 24000
+    llm_summary_trigger_tokens: int = 24000
+    llm_summary_keep_recent_tokens: int = 8000
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)

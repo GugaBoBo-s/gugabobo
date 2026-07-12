@@ -3,6 +3,7 @@ from gugabobo.core.access import context_access_role, role_can_use_skill
 from gugabobo.core.persona import Persona
 from gugabobo.core.router import Router
 from gugabobo.config import Settings, get_settings
+from gugabobo.infra.tokens import estimate_message_tokens
 from gugabobo.memory.store import MemoryStore
 from gugabobo.skills.chat import ChatSkill
 from gugabobo.skills.feedback import FeedbackSkill
@@ -61,11 +62,14 @@ class CoreAgent:
             context.conversation_id,
             after_message_id=summarized_until,
         )
-        llm_history = [
-            {"role": str(item["role"]), "content": str(item["content"])}
-            for item in history
-            if item["role"] in {"user", "assistant"}
-        ]
+        llm_history = self._trim_history_to_budget(
+            [
+                {"role": str(item["role"]), "content": str(item["content"])}
+                for item in history
+                if item["role"] in {"user", "assistant"}
+            ],
+            token_budget=settings.llm_history_token_budget,
+        )
         system_context = self.build_system_context(
             conversation_id=context.conversation_id,
             memory_limit=settings.llm_memory_items,
@@ -116,16 +120,55 @@ class CoreAgent:
         self.maybe_summarize(context.conversation_id, settings)
         return response
 
+    def _trim_history_to_budget(
+        self,
+        history: list[dict[str, str]],
+        token_budget: int,
+    ) -> list[dict[str, str]]:
+        # Keep the most recent messages that fit within the token budget. Older
+        # messages beyond the budget are dropped from the live window (they are
+        # preserved in the rolling summary once maybe_summarize runs).
+        if token_budget <= 0:
+            return history
+        kept: list[dict[str, str]] = []
+        running = 0
+        for item in reversed(history):
+            running += estimate_message_tokens(item["role"], item["content"])
+            if running > token_budget and kept:
+                break
+            kept.insert(0, item)
+        return kept
+
     def maybe_summarize(self, conversation_id: str, settings: Settings) -> None:
         summary = self.store.get_conversation_summary(conversation_id)
         summarized_until = int(summary["updated_until_message_id"]) if summary else 0
-        pending = self.store.count_messages_after(conversation_id, summarized_until)
-        if pending < settings.llm_summary_trigger_messages:
+        unsummarized = [
+            item
+            for item in self.store.list_messages_after(conversation_id, summarized_until)
+            if item["role"] in {"user", "assistant"}
+        ]
+        if not unsummarized:
             return
-        unsummarized = self.store.list_messages_after(conversation_id, summarized_until)
-        keep_recent = settings.llm_summary_keep_recent
-        batch = unsummarized[:-keep_recent] if keep_recent > 0 else unsummarized
-        batch = [item for item in batch if item["role"] in {"user", "assistant"}]
+        pending_tokens = sum(
+            estimate_message_tokens(str(item["role"]), str(item["content"]))
+            for item in unsummarized
+        )
+        # Only summarize when unsummarized content approaches the budget. Day-to-day
+        # conversations stay well under this and are kept verbatim (ChatGPT-like).
+        if pending_tokens < settings.llm_summary_trigger_tokens:
+            return
+        # Keep the most recent messages (by token budget) verbatim; summarize the
+        # older remainder into the rolling summary.
+        keep_tokens = settings.llm_summary_keep_recent_tokens
+        kept: list[dict[str, object]] = []
+        running = 0
+        for item in reversed(unsummarized):
+            running += estimate_message_tokens(str(item["role"]), str(item["content"]))
+            if running > keep_tokens and kept:
+                break
+            kept.insert(0, item)
+        keep_count = len(kept)
+        batch = unsummarized[:-keep_count] if keep_count > 0 else unsummarized
         if not batch:
             return
         transcript = [
