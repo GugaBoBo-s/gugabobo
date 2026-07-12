@@ -242,6 +242,32 @@ class MemoryStore:
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
 
+    def list_messages_after(
+        self,
+        conversation_id: str,
+        after_message_id: int = 0,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            query = (
+                "SELECT id, conversation_id, source, user_id, role, content, created_at "
+                "FROM messages WHERE conversation_id = ? AND id > ? ORDER BY id ASC"
+            )
+            params: list[Any] = [conversation_id, after_message_id]
+            if limit is not None:
+                query += " LIMIT ?"
+                params.append(limit)
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_messages_after(self, conversation_id: str, after_message_id: int = 0) -> int:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ? AND id > ?",
+                (conversation_id, after_message_id),
+            ).fetchone()
+        return int(row["c"]) if row else 0
+
     def delete_conversation_messages(self, conversation_id: str) -> int:
         with self.connect() as conn:
             cursor = conn.execute(

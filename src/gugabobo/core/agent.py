@@ -2,12 +2,13 @@ from gugabobo.core.channel import ChannelContext
 from gugabobo.core.access import context_access_role, role_can_use_skill
 from gugabobo.core.persona import Persona
 from gugabobo.core.router import Router
-from gugabobo.config import get_settings
+from gugabobo.config import Settings, get_settings
 from gugabobo.memory.store import MemoryStore
 from gugabobo.skills.chat import ChatSkill
 from gugabobo.skills.feedback import FeedbackSkill
 from gugabobo.skills.memory import MemorySkill
 from gugabobo.skills.outbound import OutboundSkill
+from gugabobo.skills.summarizer import SummarizerSkill
 
 
 class CoreAgent:
@@ -24,6 +25,7 @@ class CoreAgent:
         self.feedback_skill = FeedbackSkill(store)
         self.memory_skill = MemorySkill(store)
         self.outbound_skill = OutboundSkill(self.chat_skill.llm_client)
+        self.summarizer_skill = SummarizerSkill(self.chat_skill.llm_client)
 
     def handle_message(
         self,
@@ -53,9 +55,11 @@ class CoreAgent:
         images: list[str] | None = None,
     ) -> str:
         settings = get_settings()
-        history = self.store.list_conversation_messages(
+        summary_row = self.store.get_conversation_summary(context.conversation_id)
+        summarized_until = int(summary_row["updated_until_message_id"]) if summary_row else 0
+        history = self.store.list_messages_after(
             context.conversation_id,
-            limit=settings.llm_context_messages,
+            after_message_id=summarized_until,
         )
         llm_history = [
             {"role": str(item["role"]), "content": str(item["content"])}
@@ -109,7 +113,34 @@ class CoreAgent:
             content=response,
             conversation_id=context.conversation_id,
         )
+        self.maybe_summarize(context.conversation_id, settings)
         return response
+
+    def maybe_summarize(self, conversation_id: str, settings: Settings) -> None:
+        summary = self.store.get_conversation_summary(conversation_id)
+        summarized_until = int(summary["updated_until_message_id"]) if summary else 0
+        pending = self.store.count_messages_after(conversation_id, summarized_until)
+        if pending < settings.llm_summary_trigger_messages:
+            return
+        unsummarized = self.store.list_messages_after(conversation_id, summarized_until)
+        keep_recent = settings.llm_summary_keep_recent
+        batch = unsummarized[:-keep_recent] if keep_recent > 0 else unsummarized
+        batch = [item for item in batch if item["role"] in {"user", "assistant"}]
+        if not batch:
+            return
+        transcript = [
+            {"role": str(item["role"]), "content": str(item["content"])}
+            for item in batch
+        ]
+        previous = summary["summary"] if summary else ""
+        new_summary = self.summarizer_skill.summarize(transcript, previous_summary=previous)
+        if not new_summary:
+            return
+        self.store.upsert_conversation_summary(
+            conversation_id=conversation_id,
+            summary=new_summary,
+            updated_until_message_id=int(batch[-1]["id"]),
+        )
 
     def permission_denied_response(self, skill: str, role: str) -> str:
         if skill == "memory":

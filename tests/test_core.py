@@ -5,6 +5,7 @@ from gugabobo.config import get_settings
 from gugabobo.infra.llm import DeepSeekClient, MoonshotClient, OpenAIClient, build_llm_client
 from gugabobo.memory.store import MemoryStore
 from gugabobo.skills.chat import ChatSkill
+from gugabobo.skills.summarizer import SummarizerSkill
 
 
 def test_chat_records_messages(tmp_path, monkeypatch):
@@ -287,3 +288,107 @@ def test_build_llm_client_uses_openai_provider(monkeypatch):
     assert client.base_url == "https://api.example.com/v1"
     assert client.model == "gpt-5.6"
     get_settings.cache_clear()
+
+
+class SummaryCapableLLMClient:
+    configured = True
+
+    def __init__(self):
+        self.chat_calls = []
+        self.complete_calls = []
+
+    def chat(self, text, persona, history=None, system_context=None, images=None):
+        self.chat_calls.append({"history": history or [], "system_context": system_context or []})
+        return type("Result", (), {"content": f"reply: {text}", "model": "test-model"})()
+
+    def complete(self, messages, temperature=0.3):
+        self.complete_calls.append(messages)
+        return "滚动摘要：用户与咕嘎BoBo进行了多轮对话。"
+
+
+def _make_summary_agent(tmp_path):
+    store = MemoryStore(tmp_path / "summary.db")
+    agent = CoreAgent(store)
+    client = SummaryCapableLLMClient()
+    agent.chat_skill = ChatSkill(Persona(), llm_client=client)
+    agent.summarizer_skill = SummarizerSkill(client)
+    return agent, client
+
+
+def test_summary_not_triggered_below_threshold(tmp_path, monkeypatch):
+    monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
+    monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
+    monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_TRIGGER_MESSAGES", "40")
+    monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_KEEP_RECENT", "20")
+    get_settings.cache_clear()
+    agent, client = _make_summary_agent(tmp_path)
+
+    for i in range(5):
+        agent.handle_message(f"消息{i}", source="qq_private", user_id="a", conversation_id="qq:user:a")
+
+    assert client.complete_calls == []
+    assert agent.store.get_conversation_summary("qq:user:a") is None
+    get_settings.cache_clear()
+
+
+def test_summary_triggered_and_advances_boundary(tmp_path, monkeypatch):
+    monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
+    monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
+    monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_TRIGGER_MESSAGES", "10")
+    monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_KEEP_RECENT", "4")
+    get_settings.cache_clear()
+    agent, client = _make_summary_agent(tmp_path)
+
+    # each handle_message stores 2 messages (user + assistant); 6 turns = 12 messages > 10
+    for i in range(6):
+        agent.handle_message(f"消息{i}", source="qq_private", user_id="a", conversation_id="qq:user:a")
+
+    summary = agent.store.get_conversation_summary("qq:user:a")
+    assert summary is not None
+    assert summary["summary"].startswith("滚动摘要")
+    # boundary advanced past 0, keeping the most recent messages unsummarized
+    assert summary["updated_until_message_id"] > 0
+    assert len(client.complete_calls) >= 1
+    get_settings.cache_clear()
+
+
+def test_history_excludes_summarized_messages(tmp_path, monkeypatch):
+    monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
+    monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
+    monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_TRIGGER_MESSAGES", "10")
+    monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_KEEP_RECENT", "4")
+    get_settings.cache_clear()
+    agent, client = _make_summary_agent(tmp_path)
+
+    for i in range(6):
+        agent.handle_message(f"消息{i}", source="qq_private", user_id="a", conversation_id="qq:user:a")
+
+    summary = agent.store.get_conversation_summary("qq:user:a")
+    boundary = summary["updated_until_message_id"]
+    # next turn should only load history after the boundary
+    agent.handle_message("最新消息", source="qq_private", user_id="a", conversation_id="qq:user:a")
+    last_chat = client.chat_calls[-1]
+    history_contents = [m["content"] for m in last_chat["history"]]
+    assert "消息0" not in history_contents
+    assert all(
+        row["id"] > boundary
+        for row in agent.store.list_messages_after("qq:user:a", boundary)
+    )
+    get_settings.cache_clear()
+
+
+def test_summarizer_skill_merges_previous_summary(tmp_path):
+    client = SummaryCapableLLMClient()
+    skill = SummarizerSkill(client)
+
+    result = skill.summarize(
+        [{"role": "user", "content": "你好"}, {"role": "assistant", "content": "你好呀"}],
+        previous_summary="用户叫小明。",
+    )
+
+    assert result is not None
+    assert len(client.complete_calls) == 1
+    sent = client.complete_calls[0]
+    user_msg = sent[-1]["content"]
+    assert "用户叫小明" in user_msg
+    assert "你好" in user_msg
