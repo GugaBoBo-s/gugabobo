@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 60
     llm_context_messages: int = 40
     llm_memory_items: int = 12
+    llm_summary_trigger_messages: int = 40
+    llm_summary_keep_recent: int = 20
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
