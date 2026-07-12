@@ -14,6 +14,17 @@ class LLMResult:
     model: str
 
 
+def _build_user_content(text: str, images: list[str]) -> object:
+    if not images:
+        return text
+    parts: list[dict[str, object]] = []
+    if text:
+        parts.append({"type": "text", "text": text})
+    for image in images:
+        parts.append({"type": "image_url", "image_url": {"url": image}})
+    return parts
+
+
 class OpenAICompatibleClient:
     provider_name = "openai-compatible"
 
@@ -42,10 +53,13 @@ class OpenAICompatibleClient:
         persona: Persona,
         history: list[dict[str, str]] | None = None,
         system_context: list[str] | None = None,
+        images: list[str] | None = None,
     ) -> LLMResult:
         if not self.configured:
             raise RuntimeError(f"{self.provider_name} API key is not configured")
-        response = self._post_chat_completion(text, persona, history or [], system_context or [])
+        response = self._post_chat_completion(
+            text, persona, history or [], system_context or [], images or []
+        )
         choice = response["choices"][0]
         content = choice["message"]["content"]
         return LLMResult(content=str(content).strip(), model=str(response.get("model", "")))
@@ -56,6 +70,7 @@ class OpenAICompatibleClient:
         persona: Persona,
         history: list[dict[str, str]],
         system_context: list[str],
+        images: list[str],
     ) -> dict[str, object]:
         url = f"{self.base_url.rstrip('/')}/chat/completions"
         headers = {
@@ -67,7 +82,7 @@ class OpenAICompatibleClient:
             if content.strip():
                 messages.append({"role": "system", "content": content})
         messages.extend(history)
-        messages.append({"role": "user", "content": text})
+        messages.append({"role": "user", "content": _build_user_content(text, images)})
         payload = {
             "model": self.model,
             "messages": messages,

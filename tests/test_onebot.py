@@ -295,3 +295,85 @@ def test_onebot_user_role_cannot_write_memory(tmp_path, monkeypatch):
     assert memories_response.json() == []
     get_settings.cache_clear()
     get_logger.cache_clear()
+
+
+def test_image_urls_extracted_from_message_segments():
+    event = OneBotMessageEvent.from_payload(
+        {
+            "post_type": "message",
+            "message_type": "private",
+            "user_id": 10001,
+            "raw_message": "[CQ:image,file=abc.jpg,url=https://example.com/a.jpg]",
+            "message": [
+                {"type": "image", "data": {"url": "https://example.com/a.jpg"}},
+            ],
+        }
+    )
+
+    assert event.image_urls() == ["https://example.com/a.jpg"]
+    assert event.text_content() == ""
+    assert event.has_content() is True
+
+
+def test_text_and_image_mixed_message():
+    event = OneBotMessageEvent.from_payload(
+        {
+            "post_type": "message",
+            "message_type": "private",
+            "user_id": 10001,
+            "raw_message": "看这个 [CQ:image,url=https://example.com/a.jpg]",
+            "message": [
+                {"type": "text", "data": {"text": "看这个"}},
+                {"type": "image", "data": {"url": "https://example.com/a.jpg"}},
+            ],
+        }
+    )
+
+    assert event.text_content() == "看这个"
+    assert event.image_urls() == ["https://example.com/a.jpg"]
+
+
+def test_raw_message_cq_codes_are_stripped_from_text():
+    event = OneBotMessageEvent.from_payload(
+        {
+            "post_type": "message",
+            "message_type": "private",
+            "user_id": 10001,
+            "raw_message": "你好[CQ:face,id=1]",
+            "message": "你好[CQ:face,id=1]",
+        }
+    )
+
+    assert event.text_content() == "你好"
+
+
+def test_onebot_image_only_message_is_not_ignored(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("GUGABOBO_NAPCAT_PASSIVE_REPLY_ENABLED", "true")
+    monkeypatch.setattr(
+        "gugabobo.api.server.urls_to_data_uris",
+        lambda urls: ["data:image/png;base64,Zm9v"],
+    )
+    get_settings.cache_clear()
+    client = TestClient(app)
+
+    response = client.post(
+        "/onebot/v11/events",
+        json={
+            "post_type": "message",
+            "message_type": "private",
+            "user_id": 10001,
+            "raw_message": "[CQ:image,url=https://example.com/a.jpg]",
+            "message": [
+                {"type": "image", "data": {"url": "https://example.com/a.jpg"}},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["passive_reply"] is True
+    assert "图片" in body["reply"]
+    get_settings.cache_clear()
+    get_logger.cache_clear()

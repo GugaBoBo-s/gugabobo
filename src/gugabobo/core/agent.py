@@ -44,7 +44,12 @@ class CoreAgent:
             )
         return self.handle_context_message(text, context)
 
-    def handle_context_message(self, text: str, context: ChannelContext) -> str:
+    def handle_context_message(
+        self,
+        text: str,
+        context: ChannelContext,
+        images: list[str] | None = None,
+    ) -> str:
         settings = get_settings()
         history = self.store.list_conversation_messages(
             context.conversation_id,
@@ -59,11 +64,15 @@ class CoreAgent:
             conversation_id=context.conversation_id,
             memory_limit=settings.llm_memory_items,
         )
+        stored_text = text
+        if images:
+            image_note = f"[图片x{len(images)}]"
+            stored_text = f"{text} {image_note}".strip() if text else image_note
         self.store.add_message(
             source=context.source,
             user_id=context.user_id,
             role="user",
-            content=text,
+            content=stored_text,
             conversation_id=context.conversation_id,
         )
         route = self.router.route(text)
@@ -83,6 +92,7 @@ class CoreAgent:
                 text,
                 history=llm_history,
                 system_context=system_context,
+                images=images,
             )
         self.store.add_message(
             source=context.source,

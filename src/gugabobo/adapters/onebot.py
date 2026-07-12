@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -43,17 +44,34 @@ class OneBotMessageEvent:
         return f"qq:user:{self.user_id}"
 
     def text_content(self) -> str:
-        if self.raw_message:
-            return self.raw_message.strip()
-        if isinstance(self.message, str):
-            return self.message.strip()
         if isinstance(self.message, list):
-            return "".join(
+            text = "".join(
                 str(segment.get("data", {}).get("text", ""))
                 for segment in self.message
                 if segment.get("type") == "text"
             ).strip()
+            if text:
+                return text
+        if self.raw_message:
+            return _strip_cq_codes(self.raw_message).strip()
+        if isinstance(self.message, str):
+            return _strip_cq_codes(self.message).strip()
         return ""
+
+    def image_urls(self) -> list[str]:
+        urls: list[str] = []
+        if isinstance(self.message, list):
+            for segment in self.message:
+                if segment.get("type") != "image":
+                    continue
+                data = segment.get("data", {})
+                url = data.get("url") or data.get("file")
+                if url:
+                    urls.append(str(url))
+        return urls
+
+    def has_content(self) -> bool:
+        return bool(self.text_content() or self.image_urls())
 
     def mentions_self(self) -> bool:
         if not self.self_id or not isinstance(self.message, list):
@@ -89,6 +107,10 @@ class OneBotMessageEvent:
             is_wake_triggered=should_reply_to_event(self, wake_words),
             metadata={"self_id": self.self_id, "message_type": self.message_type},
         )
+
+
+def _strip_cq_codes(text: str) -> str:
+    return re.sub(r"\[CQ:[^\]]*\]", "", text)
 
 
 def should_reply_to_event(event: OneBotMessageEvent, group_wake_words: list[str]) -> bool:
