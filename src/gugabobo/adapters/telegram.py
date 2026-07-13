@@ -15,6 +15,7 @@ class TelegramMessageEvent:
     user_id: str
     text: str
     username: str | None = None
+    photo_file_ids: tuple[str, ...] = ()
     raw_message: dict[str, Any] | None = None
 
     @classmethod
@@ -24,14 +25,17 @@ class TelegramMessageEvent:
         user = message.get("from") or {}
         chat_id = str(chat.get("id", ""))
         user_id = str(user.get("id", chat_id))
+        # A photo caption arrives as `caption`, not `text`.
+        text = str(message.get("text") or message.get("caption") or "").strip()
         return cls(
             update_id=str(payload.get("update_id", "")),
             message_id=str(message.get("message_id", "")),
             chat_id=chat_id,
             chat_type=str(chat.get("type", "")),
             user_id=user_id,
-            text=str(message.get("text", "")).strip(),
+            text=text,
             username=str(user["username"]) if user.get("username") is not None else None,
+            photo_file_ids=_extract_photo_file_ids(message),
             raw_message=message,
         )
 
@@ -63,8 +67,11 @@ class TelegramMessageEvent:
         normalized_username = bot_username.lstrip("@").lower()
         return f"@{normalized_username}" in self.text.lower()
 
+    def has_content(self) -> bool:
+        return bool(self.text or self.photo_file_ids)
+
     def should_reply(self, group_wake_words: list[str], bot_username: str = "") -> bool:
-        if not self.text:
+        if not self.has_content():
             return False
         if self.channel_type == "private":
             return True
@@ -100,3 +107,16 @@ class TelegramMessageEvent:
                 "username": self.username,
             },
         )
+
+
+def _extract_photo_file_ids(message: dict[str, Any]) -> tuple[str, ...]:
+    # Telegram sends a photo as an array of PhotoSize objects (same image at
+    # different resolutions). The largest is last; use it for best vision quality.
+    photo = message.get("photo")
+    if isinstance(photo, list) and photo:
+        largest = photo[-1]
+        if isinstance(largest, dict):
+            file_id = largest.get("file_id")
+            if file_id:
+                return (str(file_id),)
+    return ()
