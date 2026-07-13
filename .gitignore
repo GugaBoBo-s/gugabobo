@@ -10,3 +10,6 @@ __pycache__/
 .gugabobo/
 dist/
 build/
+
+# transient login QR codes
+*qrcode*.png
