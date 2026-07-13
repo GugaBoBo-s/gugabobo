@@ -247,3 +247,84 @@ def test_telegram_runtime_can_send_reply(tmp_path, monkeypatch):
     assert "已收到" in client.sent_messages[0]["text"]
     get_settings.cache_clear()
     get_logger.cache_clear()
+
+
+def photo_private_payload(caption: str | None = None) -> dict[str, object]:
+    message: dict[str, object] = {
+        "message_id": 30,
+        "from": {"id": 10001, "username": "owner"},
+        "chat": {"id": 10001, "type": "private"},
+        "photo": [
+            {"file_id": "small_id", "width": 90, "height": 90},
+            {"file_id": "large_id", "width": 800, "height": 800},
+        ],
+    }
+    if caption is not None:
+        message["caption"] = caption
+    return {"update_id": 3, "message": message}
+
+
+class ImageCapableFakeClient:
+    configured = True
+
+    def __init__(self):
+        self.sent_messages = []
+        self.downloaded_ids = []
+
+    def send_message(self, chat_id: str, text: str) -> None:
+        self.sent_messages.append({"chat_id": chat_id, "text": text})
+
+    def file_ids_to_data_uris(self, file_ids, timeout: float = 20.0):
+        self.downloaded_ids.extend(file_ids)
+        return [f"data:image/jpeg;base64,fake-{fid}" for fid in file_ids]
+
+
+def test_photo_event_extracts_largest_file_id():
+    event = TelegramMessageEvent.from_payload(photo_private_payload())
+
+    assert event.photo_file_ids == ("large_id",)
+    assert event.has_content() is True
+
+
+def test_photo_caption_becomes_text():
+    event = TelegramMessageEvent.from_payload(photo_private_payload(caption="这是什么"))
+
+    assert event.text == "这是什么"
+    assert event.photo_file_ids == ("large_id",)
+
+
+def test_photo_only_private_message_triggers_reply():
+    event = TelegramMessageEvent.from_payload(photo_private_payload())
+
+    assert event.should_reply(group_wake_words=[], bot_username="") is True
+
+
+def test_telegram_runtime_downloads_and_passes_images(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    settings = get_settings()
+    client = ImageCapableFakeClient()
+
+    result = handle_telegram_update(
+        photo_private_payload(caption="看看这个"),
+        agent=build_agent(),
+        settings=settings,
+        send_reply=True,
+        client=client,
+    )
+
+    assert result["status"] == "ok"
+    assert result["sent"] is True
+    assert client.downloaded_ids == ["large_id"]
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
+def test_bytes_to_data_uri_detects_png():
+    from gugabobo.infra.images import bytes_to_data_uri
+
+    png_header = b"\x89PNG\r\n\x1a\n" + b"rest"
+    result = bytes_to_data_uri(png_header)
+
+    assert result is not None
+    assert result.startswith("data:image/png;base64,")
+    assert bytes_to_data_uri(b"") is None

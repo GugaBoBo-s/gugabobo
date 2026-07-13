@@ -23,6 +23,14 @@ def _detect_mime(data: bytes) -> str:
     return "image/jpeg"
 
 
+def bytes_to_data_uri(content: bytes) -> str | None:
+    if not content:
+        return None
+    mime = _detect_mime(content)
+    encoded = base64.b64encode(content).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
 def url_to_data_uri(url: str, timeout: float = 20.0) -> str | None:
     try:
         with httpx.Client(timeout=timeout, follow_redirects=True) as client:
@@ -32,11 +40,7 @@ def url_to_data_uri(url: str, timeout: float = 20.0) -> str | None:
     except Exception as exc:
         get_logger().warning("image download failed url=%s error=%s", url, exc)
         return None
-    if not content:
-        return None
-    mime = _detect_mime(content)
-    encoded = base64.b64encode(content).decode("ascii")
-    return f"data:{mime};base64,{encoded}"
+    return bytes_to_data_uri(content)
 
 
 def urls_to_data_uris(urls: list[str], timeout: float = 20.0) -> list[str]:

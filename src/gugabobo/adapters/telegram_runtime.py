@@ -19,8 +19,9 @@ def handle_telegram_update(
 ) -> dict[str, object]:
     logger = get_logger()
     event = TelegramMessageEvent.from_payload(payload)
-    if not event.text:
+    if not event.has_content():
         return {"status": "ignored", "reason": "empty message"}
+    telegram_client = client or TelegramClient()
     context = event.to_channel_context(
         owner_ids=settings.owner_telegram_id_set,
         group_wake_words=settings.telegram_group_wake_word_list,
@@ -49,9 +50,11 @@ def handle_telegram_update(
             logger.info("telegram feedback recorded id=%s source=%s", feedback_id, context.source)
             return {"status": "recorded", "feedback_id": feedback_id}
         return {"status": "ignored", "reason": "reply not allowed"}
-    reply = agent.handle_context_message(event.text, context)
+    images = None
+    if event.photo_file_ids and telegram_client.configured:
+        images = telegram_client.file_ids_to_data_uris(list(event.photo_file_ids)) or None
+    reply = agent.handle_context_message(event.text, context, images=images)
     if send_reply:
-        telegram_client = client or TelegramClient()
         telegram_client.send_message(context.chat_id or context.user_id, reply)
         logger.info(
             "telegram message handled source=%s user_id=%s sent=true",
