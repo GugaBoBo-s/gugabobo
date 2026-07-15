@@ -1,0 +1,19 @@
+[Unit]
+Description=gugabobo Telegram polling
+After=network-online.target xray.service
+Wants=network-online.target
+Requires=xray.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/gugabobo/repo
+EnvironmentFile=/opt/gugabobo/repo/.env
+ExecStart=/opt/gugabobo/repo/.venv/bin/python -m gugabobo.main telegram poll --send
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

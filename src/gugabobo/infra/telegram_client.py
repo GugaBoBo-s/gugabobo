@@ -10,6 +10,7 @@ from gugabobo.infra.logs import get_logger
 class TelegramClient:
     def __init__(self) -> None:
         self.settings = get_settings()
+        self._client: httpx.Client | None = None
 
     @property
     def configured(self) -> bool:
@@ -21,12 +22,33 @@ class TelegramClient:
             raise RuntimeError("Telegram bot token is not configured")
         return f"https://api.telegram.org/bot{self.settings.telegram_bot_token}"
 
-    def call(self, method: str, payload: dict[str, object] | None = None) -> dict[str, object]:
+    @property
+    def _proxy(self) -> str | None:
+        return self.settings.telegram_proxy or None
+
+    @property
+    def client(self) -> httpx.Client:
+        # A single pooled client is reused across calls so long polling does not
+        # pay a fresh TLS (and SOCKS, when proxied) handshake on every request.
+        if self._client is None:
+            self._client = httpx.Client(proxy=self._proxy, follow_redirects=True)
+        return self._client
+
+    def close(self) -> None:
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+    def call(
+        self,
+        method: str,
+        payload: dict[str, object] | None = None,
+        timeout: float = 35.0,
+    ) -> dict[str, object]:
         url = f"{self.base_url}/{method}"
-        with httpx.Client(timeout=35) as client:
-            response = client.post(url, json=payload or {})
-            response.raise_for_status()
-            data = response.json()
+        response = self.client.post(url, json=payload or {}, timeout=timeout)
+        response.raise_for_status()
+        data = response.json()
         if not data.get("ok"):
             raise RuntimeError(f"Telegram API call failed: {data}")
         return dict(data)
@@ -44,7 +66,9 @@ class TelegramClient:
         }
         if offset is not None:
             payload["offset"] = offset
-        data = self.call("getUpdates", payload)
+        # Long polling holds the connection for `timeout` seconds server-side,
+        # so the client read timeout must exceed it or every poll would abort.
+        data = self.call("getUpdates", payload, timeout=timeout + 15)
         result = data.get("result", [])
         if not isinstance(result, list):
             return []
@@ -69,10 +93,9 @@ class TelegramClient:
                 return None
             token = self.settings.telegram_bot_token
             url = f"https://api.telegram.org/file/bot{token}/{file_path}"
-            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-                response = client.get(url)
-                response.raise_for_status()
-                return response.content
+            response = self.client.get(url, timeout=timeout)
+            response.raise_for_status()
+            return response.content
         except Exception as exc:
             get_logger().warning("telegram file download failed file_id=%s error=%s", file_id, exc)
             return None

@@ -418,3 +418,41 @@ def test_trim_history_zero_budget_returns_all(tmp_path):
     history = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
 
     assert agent._trim_history_to_budget(history, token_budget=0) == history
+
+
+# ── Router: prefix-only feedback matching ──────────────────────────────────
+def test_router_feedback_requires_prefix():
+    from gugabobo.core.router import Router
+    r = Router()
+    # These contain feedback keywords but mid-sentence → must go to chat
+    assert r.route("这问题挺难的").skill == "chat"
+    assert r.route("这电影我建议你看看").skill == "chat"
+    assert r.route("你太长知识渊博了").skill == "chat"
+    assert r.route("有个问题想请教").skill == "chat"
+
+
+def test_router_feedback_matches_on_prefix():
+    from gugabobo.core.router import Router
+    r = Router()
+    assert r.route("建议回复短一点").skill == "feedback"
+    assert r.route("反馈：响应太慢").skill == "feedback"
+    assert r.route("bug 有个错误").skill == "feedback"
+    assert r.route("回复太长了，能短一点吗").skill == "feedback"
+
+
+# ── Agent: background_summarize flag defaults off ──────────────────────────
+def test_agent_background_summarize_off_by_default(tmp_path):
+    store = MemoryStore(tmp_path / "bg.db")
+    agent = CoreAgent(store)
+    assert agent.background_summarize is False
+
+
+def test_build_agent_enables_background_summarize(tmp_path, monkeypatch):
+    monkeypatch.setenv("GUGABOBO_DB_PATH", str(tmp_path / "bg2.db"))
+    monkeypatch.setenv("GUGABOBO_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("GUGABOBO_LOG_DIR", str(tmp_path / "logs"))
+    get_settings.cache_clear()
+    from gugabobo.infra.runtime import build_agent as ba
+    agent = ba()
+    assert agent.background_summarize is True
+    get_settings.cache_clear()

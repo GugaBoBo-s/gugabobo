@@ -175,24 +175,52 @@ def telegram_poll(
     if not client.configured:
         raise typer.BadParameter("GUGABOBO_TELEGRAM_BOT_TOKEN is not configured")
     effective_send = send or settings.telegram_reply_enabled
+    # Build the agent once and reuse it across all updates in this session.
+    agent = build_agent()
+    agent.background_summarize = True
+    # Persist the offset between restarts so we never reprocess old updates.
+    offset_file = settings.data_dir / "telegram_offset"
     offset: int | None = None
+    if offset_file.exists():
+        try:
+            offset = int(offset_file.read_text(encoding="utf-8").strip())
+        except ValueError:
+            offset = None
     typer.echo(
         "telegram polling started "
-        f"(send={effective_send}, timeout={timeout}, bot={settings.telegram_bot_username or 'unknown'})"
+        f"(send={effective_send}, timeout={timeout}, "
+        f"bot={settings.telegram_bot_username or 'unknown'}, offset={offset})"
     )
-    while True:
-        updates = client.get_updates(offset=offset, timeout=timeout)
-        for update in updates:
-            update_id = int(update.get("update_id", 0))
-            offset = update_id + 1
-            result = handle_telegram_update(
-                update,
-                agent=build_agent(),
-                settings=settings,
-                send_reply=effective_send,
-                client=client,
-            )
-            typer.echo(f"telegram update {update_id}: {result}")
+    error_backoff = 1
+    try:
+        while True:
+            try:
+                updates = client.get_updates(offset=offset, timeout=timeout)
+                error_backoff = 1
+            except Exception as exc:
+                get_logger().warning("telegram get_updates failed: %s", exc)
+                time.sleep(min(error_backoff, 60))
+                error_backoff = min(error_backoff * 2, 60)
+                continue
+            for update in updates:
+                update_id = int(update.get("update_id", 0))
+                offset = update_id + 1
+                # Persist offset immediately so a crash after this point will
+                # not replay the current update on restart.
+                offset_file.write_text(str(offset), encoding="utf-8")
+                try:
+                    result = handle_telegram_update(
+                        update,
+                        agent=agent,
+                        settings=settings,
+                        send_reply=effective_send,
+                        client=client,
+                    )
+                    typer.echo(f"telegram update {update_id}: {result}")
+                except Exception as exc:
+                    get_logger().warning("telegram update %d failed: %s", update_id, exc)
+    finally:
+        client.close()
 
 
 @tasks_app.command("list")
