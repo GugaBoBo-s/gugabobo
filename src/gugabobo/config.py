@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     telegram_webhook_secret: str = Field(default="", repr=False)
     telegram_reply_enabled: bool = False
     telegram_group_wake_words: str = "gugabobo,咕嘎BoBo"
+    telegram_proxy: str = ""
     github_token: str = Field(default="", repr=False)
     github_owner: str = "GugaBoBo-s"
     github_repo: str = "gugabobo"

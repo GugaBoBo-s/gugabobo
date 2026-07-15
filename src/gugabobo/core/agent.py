@@ -1,8 +1,11 @@
+import threading
+
 from gugabobo.core.channel import ChannelContext
 from gugabobo.core.access import context_access_role, role_can_use_skill
 from gugabobo.core.persona import Persona
 from gugabobo.core.router import Router
 from gugabobo.config import Settings, get_settings
+from gugabobo.infra.logs import get_logger
 from gugabobo.infra.tokens import estimate_message_tokens
 from gugabobo.memory.store import MemoryStore
 from gugabobo.skills.chat import ChatSkill
@@ -27,6 +30,11 @@ class CoreAgent:
         self.memory_skill = MemorySkill(store)
         self.outbound_skill = OutboundSkill(self.chat_skill.llm_client)
         self.summarizer_skill = SummarizerSkill(self.chat_skill.llm_client)
+        # When True, summarization (which may call the LLM) runs in a background
+        # thread so it never delays the user-facing reply. Off by default so
+        # tests and the CLI observe summaries synchronously; long-running
+        # processes like Telegram polling opt in.
+        self.background_summarize = False
 
     def handle_message(
         self,
@@ -117,8 +125,25 @@ class CoreAgent:
             content=response,
             conversation_id=context.conversation_id,
         )
-        self.maybe_summarize(context.conversation_id, settings)
+        self._run_summarize(context.conversation_id, settings)
         return response
+
+    def _run_summarize(self, conversation_id: str, settings: Settings) -> None:
+        # Summarization can invoke the LLM again. When enabled, run it off the
+        # reply path in a background thread so the user is not blocked waiting
+        # for a second LLM round-trip. The store opens a fresh connection per
+        # call, so a background thread is safe.
+        if not self.background_summarize:
+            self.maybe_summarize(conversation_id, settings)
+            return
+
+        def _worker() -> None:
+            try:
+                self.maybe_summarize(conversation_id, settings)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                get_logger().warning("background summarize failed: %s", exc)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _trim_history_to_budget(
         self,
