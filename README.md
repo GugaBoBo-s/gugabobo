@@ -13,6 +13,7 @@
 - Token-budgeted context, rolling summaries, and explicit long-term memory
 - Dashboard administration and diagnostics
 - Isolated Claude Code changes with CI-gated pull requests
+- Organization-wide automated GitHub pull request reviews
 - Automated tests and GitHub Actions CI
 
 ## Quick start
@@ -33,6 +34,8 @@ gugabobo improve approve 1
 gugabobo improve pr 1
 gugabobo tasks list
 gugabobo pr list
+gugabobo review scan
+gugabobo review list
 gugabobo api
 ```
 
@@ -274,6 +277,19 @@ erDiagram
         string checks_status
     }
 
+    CODE_REVIEW_RUNS {
+        integer id PK
+        string github_owner
+        string github_repo
+        integer pr_number
+        string head_sha
+        string status
+        integer attempt_count
+        integer review_id
+        integer findings_count
+        string last_error
+    }
+
     MERGE_AUTHORIZATIONS {
         integer pull_request_id PK
         string decision
@@ -345,6 +361,9 @@ erDiagram
 `CONVERSATION` is a logical entity derived from `conversation_id`; it is not a separate SQLite
 table yet. The legacy private ids `qq:user:<id>` and `telegram:user:<id>` remain accepted as
 query aliases and resolve to the linked person's canonical conversation.
+`CODE_REVIEW_RUNS` is intentionally independent from `PULL_REQUESTS`: the former covers every
+accessible organization repository, while the latter tracks only self-improvement PRs created
+by gugabobo.
 
 Useful commands:
 
@@ -378,6 +397,52 @@ Sandbox self-improvement commits are authored as `GUGABOBO_GIT_AUTHOR_NAME` /
 commits link back to it. This is independent of the developer's local git
 identity. On the server, set `GUGABOBO_GITHUB_TOKEN` to a token from the GuGabobo
 account so pull requests are opened by the bot rather than the owner.
+
+### Organization-wide code review
+
+The lifecycle daemon can scan every repository visible to the bot account in one GitHub
+organization and publish a `COMMENT` review on every open pull request. A review run is unique
+for `(owner, repository, PR number, head SHA)`. Repeated scans and process restarts do not create
+duplicate reviews; pushing a new commit changes the head SHA and schedules a fresh review.
+
+```env
+GUGABOBO_GITHUB_REVIEW_ENABLED=true
+GUGABOBO_GITHUB_ORGANIZATION=GugaBoBo-s
+GUGABOBO_GITHUB_REVIEW_INTERVAL_SECONDS=300
+GUGABOBO_GITHUB_REVIEW_MAX_FILES=100
+GUGABOBO_GITHUB_REVIEW_MAX_PATCH_CHARS=120000
+```
+
+The GitHub token must be able to read organization repositories and pull requests and write pull
+request reviews in every target repository. Fine-grained tokens therefore need organization
+repository metadata read access plus repository pull request read/write access for all selected
+repositories. The configured LLM provider receives PR titles, descriptions, filenames, and diff
+patches, including data from private repositories. Use a provider and retention policy approved
+for that source code.
+
+```mermaid
+flowchart LR
+    D["Lifecycle daemon"] --> O["List organization repositories"]
+    O --> P["List open pull requests"]
+    P --> K{"Repository + PR + head SHA already reviewed?"}
+    K -->|Yes| S["Skip"]
+    K -->|No| F["Fetch bounded file patches"]
+    F --> L["LLM security and correctness review"]
+    L --> C["Submit GitHub COMMENT review"]
+    C --> R["Persist result in code_review_runs"]
+    C -->|Later scan sees new head SHA| P
+```
+
+Manual operation:
+
+```bash
+gugabobo review scan
+gugabobo review list
+```
+
+The Dashboard exposes the same configuration, a manual scan button, and the persisted run list.
+Automated reviews never use `APPROVE` or `REQUEST_CHANGES`, never authorize merging, and never
+override branch protection.
 
 Flow:
 
@@ -475,6 +540,8 @@ POST /improvements/{id}/ship
 POST /improvements/{id}/pull-request
 GET  /prs
 GET  /prs/{id}
+GET  /code-reviews
+POST /code-reviews/scan
 POST /prs/{id}/sync
 POST /prs/{id}/approve-merge
 POST /prs/{id}/reject-merge

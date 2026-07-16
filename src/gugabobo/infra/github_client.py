@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
+from urllib.parse import quote
 
 import httpx
 
@@ -20,6 +21,12 @@ class MergeResult:
     merged: bool
     sha: str
     message: str
+
+
+@dataclass(frozen=True)
+class ReviewResult:
+    review_id: int
+    url: str
 
 
 class GitHubClient:
@@ -61,17 +68,63 @@ class GitHubClient:
         }
 
     def _url(self, path: str) -> str:
-        return f"{self.settings.github_api_url.rstrip('/')}/repos/{self.owner}/{self.repo}{path}"
+        owner = quote(self.owner, safe="")
+        repo = quote(self.repo, safe="")
+        return f"{self.settings.github_api_url.rstrip('/')}/repos/{owner}/{repo}{path}"
 
-    def _request(self, method: str, path: str, payload: dict | None = None) -> object:
+    def _api_url(self, path: str) -> str:
+        return f"{self.settings.github_api_url.rstrip('/')}{path}"
+
+    def _request_url(
+        self,
+        method: str,
+        url: str,
+        payload: dict | None = None,
+        params: dict[str, object] | None = None,
+    ) -> object:
         if not self.configured:
             raise RuntimeError("GUGABOBO_GITHUB_TOKEN is not configured")
         with httpx.Client(timeout=30) as client:
-            response = client.request(method, self._url(path), headers=self._headers(), json=payload)
+            response = client.request(
+                method,
+                url,
+                headers=self._headers(),
+                json=payload,
+                params=params,
+            )
             response.raise_for_status()
             if response.status_code == 204 or not response.content:
                 return {}
             return response.json()
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        params: dict[str, object] | None = None,
+    ) -> object:
+        return self._request_url(method, self._url(path), payload, params)
+
+    def _paginate(
+        self,
+        url: str,
+        params: dict[str, object] | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        page = 1
+        items: list[dict] = []
+        while limit is None or len(items) < limit:
+            page_params = dict(params or {})
+            page_params.update({"per_page": 100, "page": page})
+            data = self._request_url("GET", url, params=page_params)
+            if not isinstance(data, list):
+                break
+            items.extend(dict(item) for item in data if isinstance(item, dict))
+            if len(data) < 100:
+                break
+            page += 1
+        return items if limit is None else items[:limit]
 
     def get_default_branch(self) -> str:
         data = self._request("GET", "")
@@ -163,8 +216,34 @@ class GitHubClient:
         conclusions = {str(item.get("conclusion", "")) for item in check_runs}
         return "success" if conclusions <= successful else "failure"
 
+    def list_organization_repositories(self, organization: str) -> list[dict]:
+        organization_name = quote(organization, safe="")
+        return self._paginate(
+            self._api_url(f"/orgs/{organization_name}/repos"),
+            {"type": "all", "sort": "full_name", "direction": "asc"},
+        )
+
     def list_pull_requests(self, state: str = "open") -> list[dict]:
-        data = self._request("GET", f"/pulls?state={state}")
-        if isinstance(data, list):
-            return [dict(item) for item in data]
-        return []
+        return self._paginate(self._url("/pulls"), {"state": state})
+
+    def list_pull_request_files(self, number: int, limit: int = 100) -> list[dict]:
+        return self._paginate(self._url(f"/pulls/{number}/files"), limit=limit)
+
+    def list_pull_request_reviews(self, number: int) -> list[dict]:
+        return self._paginate(self._url(f"/pulls/{number}/reviews"))
+
+    def create_pull_request_review(
+        self,
+        number: int,
+        body: str,
+        commit_id: str,
+    ) -> ReviewResult:
+        data = self._request(
+            "POST",
+            f"/pulls/{number}/reviews",
+            {"body": body, "commit_id": commit_id, "event": "COMMENT"},
+        )
+        return ReviewResult(
+            review_id=int(data["id"]),
+            url=str(data.get("html_url", "")),
+        )

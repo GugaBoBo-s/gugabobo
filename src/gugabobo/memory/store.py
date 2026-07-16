@@ -150,6 +150,29 @@ CREATE TABLE IF NOT EXISTS pull_requests (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS code_review_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    github_owner TEXT NOT NULL,
+    github_repo TEXT NOT NULL,
+    pr_number INTEGER NOT NULL,
+    pr_url TEXT NOT NULL DEFAULT '',
+    head_sha TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'processing',
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    review_id INTEGER NOT NULL DEFAULT 0,
+    review_url TEXT NOT NULL DEFAULT '',
+    findings_count INTEGER NOT NULL DEFAULT 0,
+    summary TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(github_owner, github_repo, pr_number, head_sha)
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_review_runs_status_updated
+ON code_review_runs(status, updated_at);
+
 CREATE TABLE IF NOT EXISTS merge_authorizations (
     pull_request_id INTEGER PRIMARY KEY,
     decision TEXT NOT NULL,
@@ -1224,6 +1247,90 @@ class MemoryStore:
             )
             return cursor.rowcount > 0
 
+    def begin_code_review(
+        self,
+        github_owner: str,
+        github_repo: str,
+        pr_number: int,
+        pr_url: str,
+        head_sha: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT id, status FROM code_review_runs WHERE github_owner = ? "
+                "AND github_repo = ? AND pr_number = ? AND head_sha = ?",
+                (github_owner, github_repo, pr_number, head_sha),
+            ).fetchone()
+            if row is None:
+                cursor = conn.execute(
+                    "INSERT INTO code_review_runs "
+                    "(github_owner, github_repo, pr_number, pr_url, head_sha) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (github_owner, github_repo, pr_number, pr_url, head_sha),
+                )
+                review_id = int(cursor.lastrowid)
+            else:
+                cursor = conn.execute(
+                    "UPDATE code_review_runs SET status = 'processing', "
+                    "attempt_count = attempt_count + 1, pr_url = ?, last_error = '', "
+                    "updated_at = CURRENT_TIMESTAMP WHERE id = ? AND "
+                    "(status = 'failed' OR (status = 'processing' AND "
+                    "updated_at < datetime('now', '-30 minutes')))",
+                    (pr_url, int(row["id"])),
+                )
+                if cursor.rowcount == 0:
+                    return None
+                review_id = int(row["id"])
+            claimed = conn.execute(
+                "SELECT * FROM code_review_runs WHERE id = ?",
+                (review_id,),
+            ).fetchone()
+        return dict(claimed) if claimed else None
+
+    def complete_code_review(
+        self,
+        code_review_id: int,
+        review_id: int,
+        review_url: str,
+        findings_count: int,
+        summary: str,
+    ) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE code_review_runs SET status = 'completed', review_id = ?, "
+                "review_url = ?, findings_count = ?, summary = ?, last_error = '', "
+                "updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP "
+                "WHERE id = ?",
+                (review_id, review_url, findings_count, summary[:4000], code_review_id),
+            )
+            return cursor.rowcount > 0
+
+    def fail_code_review(self, code_review_id: int, error: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE code_review_runs SET status = 'failed', last_error = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (error[:1000], code_review_id),
+            )
+            return cursor.rowcount > 0
+
+    def get_code_review(self, code_review_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM code_review_runs WHERE id = ?",
+                (code_review_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_code_reviews(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM code_review_runs ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def upsert_merge_authorization(
         self,
         pull_request_id: int,
@@ -1656,6 +1763,7 @@ class MemoryStore:
             "tasks",
             "improvement_tasks",
             "pull_requests",
+            "code_review_runs",
             "merge_authorizations",
             "improvement_reflections",
             "deployment_records",

@@ -8,6 +8,7 @@ from gugabobo.api.dashboard import dashboard_html
 from gugabobo.config import get_settings
 from gugabobo.core.access import context_with_access_role, evaluate_access, role_can_use_skill
 from gugabobo.core.channel import ChannelContext
+from gugabobo.core.code_review import OrganizationCodeReviewService
 from gugabobo.core.deployment import DeploymentError, DeploymentService
 from gugabobo.core.improvement import ImprovementError, ImprovementService
 from gugabobo.core.lifecycle import (
@@ -199,6 +200,8 @@ def dashboard_data() -> dict[str, object]:
             "napcat_reply_enabled": settings.napcat_reply_enabled,
             "napcat_passive_reply_enabled": settings.napcat_passive_reply_enabled,
             "telegram_reply_enabled": settings.telegram_reply_enabled,
+            "github_review_enabled": settings.github_review_enabled,
+            "github_organization": settings.github_organization,
         },
         "conversations": agent.store.list_conversations(limit=20),
         "messages": agent.store.list_messages(limit=20),
@@ -210,6 +213,7 @@ def dashboard_data() -> dict[str, object]:
         "tasks": agent.store.list_tasks(limit=50),
         "improvements": agent.store.list_improvement_tasks(limit=50),
         "pull_requests": agent.store.list_pull_requests(limit=50),
+        "code_reviews": agent.store.list_code_reviews(limit=50),
         "merge_authorizations": agent.store.list_merge_authorizations(limit=50),
         "improvement_reflections": agent.store.list_improvement_reflections(limit=50),
         "deployment_records": agent.store.list_deployment_records(limit=50),
@@ -277,6 +281,11 @@ def dashboard_control_config(_: None = Depends(require_admin_token)) -> dict[str
             "GUGABOBO_GITHUB_OWNER": settings.github_owner,
             "GUGABOBO_GITHUB_REPO": settings.github_repo,
             "GUGABOBO_GITHUB_API_URL": settings.github_api_url,
+            "GUGABOBO_GITHUB_REVIEW_ENABLED": settings.github_review_enabled,
+            "GUGABOBO_GITHUB_ORGANIZATION": settings.github_organization,
+            "GUGABOBO_GITHUB_REVIEW_INTERVAL_SECONDS": settings.github_review_interval_seconds,
+            "GUGABOBO_GITHUB_REVIEW_MAX_FILES": settings.github_review_max_files,
+            "GUGABOBO_GITHUB_REVIEW_MAX_PATCH_CHARS": settings.github_review_max_patch_chars,
             "GUGABOBO_LLM_PROVIDER": settings.llm_provider,
             "GUGABOBO_MOONSHOT_BASE_URL": settings.moonshot_base_url,
             "GUGABOBO_MOONSHOT_MODEL": settings.moonshot_model,
@@ -402,6 +411,28 @@ def improvements(limit: int = 50) -> list[dict[str, object]]:
 @app.get("/prs")
 def pull_requests(limit: int = 50) -> list[dict[str, object]]:
     return build_agent().store.list_pull_requests(limit=limit)
+
+
+@app.get("/code-reviews")
+def code_reviews(limit: int = 50) -> list[dict[str, object]]:
+    return build_agent().store.list_code_reviews(limit=limit)
+
+
+@app.post("/code-reviews/scan")
+def scan_code_reviews(
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    result = OrganizationCodeReviewService(build_agent().store).tick()
+    add_dashboard_audit(
+        "code_review.scan",
+        get_settings().github_organization,
+        status=str(result["status"]),
+        detail=(
+            f"repositories={result['repositories']},pull_requests={result['pull_requests']},"
+            f"reviewed={result['reviewed']},errors={result['errors']}"
+        ),
+    )
+    return result
 
 
 @app.get("/prs/{pr_id}")

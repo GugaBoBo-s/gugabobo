@@ -7,6 +7,7 @@ import uvicorn
 from gugabobo.adapters.telegram_runtime import handle_telegram_update
 from gugabobo.config import get_settings
 from gugabobo.core.channel import ChannelContext
+from gugabobo.core.code_review import OrganizationCodeReviewService
 from gugabobo.core.deployment import DeploymentError, DeploymentService
 from gugabobo.core.improvement import ImprovementError, ImprovementService
 from gugabobo.core.lifecycle import LifecycleError, PullRequestLifecycleService
@@ -26,6 +27,7 @@ tasks_app = typer.Typer(help="Task commands")
 improve_app = typer.Typer(help="Self-improvement commands")
 pr_app = typer.Typer(help="Pull request commands")
 deployment_app = typer.Typer(help="Deployment commands")
+review_app = typer.Typer(help="Organization code review commands")
 app.add_typer(feedback_app, name="feedback")
 app.add_typer(messages_app, name="messages")
 app.add_typer(config_app, name="config")
@@ -37,6 +39,7 @@ app.add_typer(tasks_app, name="tasks")
 app.add_typer(improve_app, name="improve")
 app.add_typer(pr_app, name="pr")
 app.add_typer(deployment_app, name="deployment")
+app.add_typer(review_app, name="review")
 
 
 def echo_mapping(data: dict[str, object]) -> None:
@@ -435,6 +438,23 @@ def deployment_list(limit: int = 50) -> None:
         )
 
 
+@review_app.command("scan")
+def review_scan() -> None:
+    """Scan organization pull requests and submit pending reviews."""
+    echo_mapping(OrganizationCodeReviewService(build_agent().store).tick())
+
+
+@review_app.command("list")
+def review_list(limit: int = 50) -> None:
+    """List recent organization code review runs."""
+    for item in build_agent().store.list_code_reviews(limit=limit):
+        typer.echo(
+            f"#{item['id']} [{item['status']}] {item['github_owner']}/"
+            f"{item['github_repo']} PR #{item['pr_number']} {str(item['head_sha'])[:12]} "
+            f"findings={item['findings_count']}"
+        )
+
+
 @config_app.command("show")
 def config_show() -> None:
     """Show effective configuration."""
@@ -467,6 +487,11 @@ def config_show() -> None:
             "github_owner": settings.github_owner,
             "github_repo": settings.github_repo,
             "github_api_url": settings.github_api_url,
+            "github_review_enabled": settings.github_review_enabled,
+            "github_organization": settings.github_organization,
+            "github_review_interval_seconds": settings.github_review_interval_seconds,
+            "github_review_max_files": settings.github_review_max_files,
+            "github_review_max_patch_chars": settings.github_review_max_patch_chars,
             "git_author_name": settings.git_author_name,
             "git_author_email": settings.git_author_email,
             "sandbox_dir": settings.sandbox_dir,
@@ -517,11 +542,18 @@ def daemon(interval: int = 30) -> None:
     logger = get_logger()
     agent = build_agent()
     lifecycle = PullRequestLifecycleService(agent.store)
+    code_reviews = OrganizationCodeReviewService(agent.store)
+    next_review_scan = 0.0
     logger.info("daemon started interval=%s", interval)
     typer.echo("gugabobo daemon started")
     while True:
         status_data = agent.status()
         lifecycle_result = lifecycle.tick()
+        now = time.monotonic()
+        review_result: dict[str, object] | None = None
+        if now >= next_review_scan:
+            review_result = code_reviews.tick()
+            next_review_scan = now + code_reviews.settings.github_review_interval_seconds
         logger.info(
             "daemon heartbeat messages=%s feedbacks=%s prs=%s merged=%s errors=%s notifications=%s",
             status_data["messages"],
@@ -531,6 +563,16 @@ def daemon(interval: int = 30) -> None:
             lifecycle_result["errors"],
             lifecycle_result["notifications_sent"],
         )
+        if review_result is not None:
+            logger.info(
+                "daemon code review status=%s repos=%s prs=%s reviewed=%s skipped=%s errors=%s",
+                review_result["status"],
+                review_result["repositories"],
+                review_result["pull_requests"],
+                review_result["reviewed"],
+                review_result["skipped"],
+                review_result["errors"],
+            )
         typer.echo(
             f"heartbeat messages={status_data['messages']} feedbacks={status_data['feedbacks']} "
             f"prs={lifecycle_result['processed']} merged={lifecycle_result['merged']} "

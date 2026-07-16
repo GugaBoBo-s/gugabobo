@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     github_owner: str = "GugaBoBo-s"
     github_repo: str = "gugabobo"
     github_api_url: str = "https://api.github.com"
+    github_review_enabled: bool = False
+    github_organization: str = "GugaBoBo-s"
+    github_review_interval_seconds: int = Field(default=300, ge=30)
+    github_review_max_files: int = Field(default=100, ge=1, le=3000)
+    github_review_max_patch_chars: int = Field(default=120000, ge=1000, le=1000000)
     git_author_name: str = "GuGabobo"
     git_author_email: str = "263493647+GuGabobo@users.noreply.github.com"
     sandbox_dir: Path = Path(".gugabobo/sandbox")

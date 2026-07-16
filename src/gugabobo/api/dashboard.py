@@ -275,6 +275,11 @@ def dashboard_html() -> str:
                   <input id="configRunnerRuntime" placeholder="Container runtime">
                   <input id="configRunnerImage" placeholder="Runner image">
                   <input id="configClaudeBaseUrl" placeholder="Claude gateway base URL">
+                  <label><input id="configGithubReviewEnabled" type="checkbox"> 自动审查组织 PR</label>
+                  <input id="configGithubOrganization" placeholder="GitHub organization">
+                  <input id="configGithubReviewInterval" type="number" min="30" placeholder="审查扫描周期（秒）">
+                  <input id="configGithubReviewMaxFiles" type="number" min="1" max="3000" placeholder="单个 PR 最大文件数">
+                  <input id="configGithubReviewMaxPatchChars" type="number" min="1000" max="1000000" placeholder="单个 PR diff 字符预算">
                   <div id="configSecrets" class="muted"></div>
                   <button id="loadConfigButton" type="button">加载配置</button>
                   <button id="saveConfigButton" type="button">保存配置</button>
@@ -287,6 +292,10 @@ def dashboard_html() -> str:
                   <button id="startNapcatButton" type="button">启动 NapCat</button>
                   <button id="stopNapcatButton" class="danger" type="button">停止 NapCat</button>
                   <button id="openNapcatWebuiButton" type="button">打开 NapCat WebUI</button>
+                </div>
+                <div class="control-box">
+                  <h3>组织 Code Review</h3>
+                  <button id="scanCodeReviewsButton" type="button">立即扫描开放 PR</button>
                 </div>
                 <div class="control-box">
                   <h3>发送测试消息</h3>
@@ -501,6 +510,15 @@ def dashboard_html() -> str:
               </table>
             </section>
             <section>
+              <h2>组织 Code Reviews</h2>
+              <table>
+                <thead>
+                  <tr><th style="width: 54px;">ID</th><th>仓库</th><th style="width: 70px;">PR</th><th style="width: 110px;">Head</th><th style="width: 100px;">状态</th><th style="width: 70px;">发现</th><th style="width: 70px;">尝试</th><th style="width: 90px;">链接</th><th>错误</th><th style="width: 150px;">时间</th></tr>
+                </thead>
+                <tbody id="codeReviews"></tbody>
+              </table>
+            </section>
+            <section>
               <h2>合并授权</h2>
               <table>
                 <thead>
@@ -628,6 +646,11 @@ def dashboard_html() -> str:
             byId("configRunnerRuntime").value = values.GUGABOBO_RUNNER_CONTAINER_RUNTIME || "docker";
             byId("configRunnerImage").value = values.GUGABOBO_RUNNER_CONTAINER_IMAGE || "gugabobo-runner:local";
             byId("configClaudeBaseUrl").value = values.GUGABOBO_CLAUDE_BASE_URL || "";
+            byId("configGithubReviewEnabled").checked = Boolean(values.GUGABOBO_GITHUB_REVIEW_ENABLED);
+            byId("configGithubOrganization").value = values.GUGABOBO_GITHUB_ORGANIZATION || "GugaBoBo-s";
+            byId("configGithubReviewInterval").value = values.GUGABOBO_GITHUB_REVIEW_INTERVAL_SECONDS || 300;
+            byId("configGithubReviewMaxFiles").value = values.GUGABOBO_GITHUB_REVIEW_MAX_FILES || 100;
+            byId("configGithubReviewMaxPatchChars").value = values.GUGABOBO_GITHUB_REVIEW_MAX_PATCH_CHARS || 120000;
             byId("configSecrets").innerHTML = Object.entries(config.secrets)
               .map(([key, configured]) => `${esc(key.replace("GUGABOBO_", ""))}: ${pill(configured ? "configured" : "missing", configured)}`)
               .join("<br>");
@@ -660,7 +683,12 @@ def dashboard_html() -> str:
               GUGABOBO_TELEGRAM_PROXY: byId("configTelegramProxy").value,
               GUGABOBO_RUNNER_CONTAINER_RUNTIME: byId("configRunnerRuntime").value,
               GUGABOBO_RUNNER_CONTAINER_IMAGE: byId("configRunnerImage").value,
-              GUGABOBO_CLAUDE_BASE_URL: byId("configClaudeBaseUrl").value
+              GUGABOBO_CLAUDE_BASE_URL: byId("configClaudeBaseUrl").value,
+              GUGABOBO_GITHUB_REVIEW_ENABLED: byId("configGithubReviewEnabled").checked,
+              GUGABOBO_GITHUB_ORGANIZATION: byId("configGithubOrganization").value,
+              GUGABOBO_GITHUB_REVIEW_INTERVAL_SECONDS: Number(byId("configGithubReviewInterval").value || 300),
+              GUGABOBO_GITHUB_REVIEW_MAX_FILES: Number(byId("configGithubReviewMaxFiles").value || 100),
+              GUGABOBO_GITHUB_REVIEW_MAX_PATCH_CHARS: Number(byId("configGithubReviewMaxPatchChars").value || 120000)
             };
           }
           async function loadEditableConfig() {
@@ -717,6 +745,7 @@ def dashboard_html() -> str:
               metric("权限", data.status.access_rules),
               metric("审计", data.status.audit_logs),
               metric("LLM", data.config.llm_provider),
+              metric("Code Review", data.config.github_review_enabled ? data.config.github_organization : "关闭", data.config.github_review_enabled ? "ok" : "warn"),
               metric("回复", data.config.napcat_passive_reply_enabled ? "被动" : (data.config.napcat_reply_enabled ? "主动" : "关闭"), data.config.napcat_passive_reply_enabled || data.config.napcat_reply_enabled ? "ok" : "warn"),
               metric("历史预算", data.config.llm_history_token_budget),
               metric("摘要阈值", data.config.llm_summary_trigger_tokens)
@@ -735,6 +764,7 @@ def dashboard_html() -> str:
               `<div>Claude gateway ${pill(data.runtime.self_improvement.claude_gateway_configured ? "configured" : "missing", data.runtime.self_improvement.claude_gateway_configured)}</div>`,
               `<div class="muted">${esc(data.runtime.self_improvement.claude_base_url || "default Anthropic endpoint")}</div>`,
               `<div>GitHub ${pill(data.runtime.self_improvement.github_configured ? "configured" : "missing", data.runtime.self_improvement.github_configured)}</div>`,
+              `<div>Code review ${pill(data.config.github_review_enabled ? `enabled ${data.config.github_organization}` : "disabled", data.config.github_review_enabled)}</div>`,
               `<div class="muted">${esc(data.runtime.napcat.api_url)}</div>`
             ].join("");
             const qq = data.qq_diagnostics;
@@ -841,6 +871,18 @@ def dashboard_html() -> str:
               esc(item.branch_name),
               githubLink(item.url)
             ])).join("");
+            byId("codeReviews").innerHTML = data.code_reviews.map((item) => row([
+              esc(item.id),
+              `${esc(item.github_owner)}/${esc(item.github_repo)}`,
+              esc(item.pr_number),
+              `<span class="muted">${esc(String(item.head_sha).slice(0, 12))}</span>`,
+              esc(item.status),
+              esc(item.findings_count),
+              esc(item.attempt_count),
+              githubLink(item.review_url || item.pr_url),
+              esc(item.last_error),
+              `<span class="muted">${esc(item.completed_at || item.updated_at)}</span>`
+            ])).join("");
             byId("mergeAuthorizations").innerHTML = data.merge_authorizations.map((item) => row([
               esc(item.pull_request_id),
               esc(item.decision),
@@ -899,6 +941,12 @@ def dashboard_html() -> str:
               headers: adminHeaders(),
               body: JSON.stringify({ values: collectEditableConfig() })
             }).then(() => loadEditableConfig()).catch((error) => showControlResult(error.message));
+          });
+          byId("scanCodeReviewsButton").addEventListener("click", () => {
+            controlFetch("/code-reviews/scan", {
+              method: "POST",
+              headers: adminHeaders()
+            }).catch((error) => showControlResult(error.message));
           });
           byId("chatButton").addEventListener("click", () => {
             controlFetch("/dashboard-control/chat", {

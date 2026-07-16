@@ -483,6 +483,20 @@ erDiagram
         string updated_at
     }
 
+    CODE_REVIEW_RUNS {
+        integer id PK
+        string github_owner
+        string github_repo
+        integer pr_number
+        string head_sha
+        string status
+        integer attempt_count
+        integer review_id
+        integer findings_count
+        string last_error
+        string completed_at
+    }
+
     CONVERSATION ||--o{ MESSAGES : "conversation_id"
     CONVERSATION ||--o| CONVERSATION_SUMMARIES : "conversation_id"
     CONVERSATION ||--o{ MEMORY_ITEMS : "subject"
@@ -497,6 +511,7 @@ Notes:
 - Linked QQ and Telegram private accounts use `person:<person_id>:direct`; legacy platform ids remain read/write aliases.
 - `memory_items.subject` can point to a canonical conversation id or the global subject `global`.
 - `feedbacks` currently records source and user id only. It is intentionally not tied to a single message yet.
+- `code_review_runs` is independent from the self-improvement `pull_requests` table because it covers PRs in every accessible organization repository.
 
 #### persons
 
@@ -1129,6 +1144,52 @@ Future plan:
 - require pull requests for `main`
 - require status checks before merge
 - keep owner as final reviewer
+- let gugabobo publish non-decisional `COMMENT` reviews on every open PR
+
+### 14.1 Organization-Wide Automated Code Review
+
+The lifecycle agent periodically enumerates every repository visible to the bot account in
+`GugaBoBo-s`, lists each repository's open pull requests, and reviews every previously unseen
+head SHA. The durable identity of a run is:
+
+```text
+(github_owner, github_repo, pr_number, head_sha)
+```
+
+```mermaid
+sequenceDiagram
+    participant D as Lifecycle daemon
+    participant G as GitHub API
+    participant S as SQLite
+    participant L as Configured LLM
+
+    D->>G: List organization repositories
+    loop Every accessible repository
+        D->>G: List open pull requests
+        loop Every open PR
+            D->>S: Claim repository + PR + head SHA
+            alt Already completed or active
+                S-->>D: Skip
+            else New or retryable
+                D->>G: Check marker and fetch bounded file patches
+                D->>L: Review untrusted PR data
+                L-->>D: Markdown findings
+                D->>G: Submit COMMENT review for head SHA
+                D->>S: Persist review URL, findings, and completion
+            end
+        end
+    end
+```
+
+Safety invariants:
+
+- PR titles, descriptions, filenames, code comments, and patches are untrusted prompt input.
+- Generated reviews use `COMMENT`; they never use `APPROVE` or `REQUEST_CHANGES`.
+- A review is not an owner merge authorization and cannot trigger the merge lifecycle.
+- Failed runs remain retryable; completed runs are deduplicated in SQLite and by a GitHub body marker.
+- New commits create a new head SHA and therefore a new review run.
+- Diff size and file count are bounded before sending content to the LLM.
+- Private repository content leaves GitHub and is sent to the explicitly configured LLM provider.
 
 Recommended branch protection:
 
@@ -2006,3 +2067,6 @@ single explicit owner authorization is persisted across channels and triggers an
 immediate GitHub merge request. GitHub-rejected merges remain queued for retry.
 Merge/rejection creates reflection records, and merged revisions are linked to
 deployment records visible in Dashboard.
+The lifecycle agent also performs organization-wide GitHub `COMMENT` code reviews,
+deduplicated by repository, PR number, and head SHA. Review history, failures, retries,
+and links are persisted and visible in Dashboard.

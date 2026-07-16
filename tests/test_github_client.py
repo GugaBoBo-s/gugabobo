@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -152,4 +154,59 @@ def test_merge_and_close_pull_request(monkeypatch):
     assert merged.sha == "abc"
     assert closed["state"] == "closed"
     assert [request.method for request in seen] == ["PUT", "PATCH"]
+    get_settings.cache_clear()
+
+
+def test_organization_pull_request_and_file_listing_are_paginated(monkeypatch):
+    configure_token(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        if request.url.path == "/orgs/GugaBoBo-s/repos":
+            items = [{"name": f"repo-{index}"} for index in range(100)] if page == 1 else []
+            if page == 2:
+                items = [{"name": "repo-100"}]
+            return httpx.Response(200, json=items)
+        if request.url.path.endswith("/pulls"):
+            items = [{"number": index} for index in range(100)] if page == 1 else []
+            if page == 2:
+                items = [{"number": 100}]
+            return httpx.Response(200, json=items)
+        if request.url.path.endswith("/pulls/7/files"):
+            return httpx.Response(200, json=[{"filename": "a.py"}, {"filename": "b.py"}])
+        return httpx.Response(404, json={})
+
+    seen = install_mock(monkeypatch, handler)
+    client = GitHubClient()
+
+    repositories = client.list_organization_repositories("GugaBoBo-s")
+    pull_requests = client.list_pull_requests()
+    files = client.list_pull_request_files(7, limit=1)
+
+    assert len(repositories) == 101
+    assert repositories[-1] == {"name": "repo-100"}
+    assert len(pull_requests) == 101
+    assert pull_requests[-1] == {"number": 100}
+    assert files == [{"filename": "a.py"}]
+    assert all(request.url.params["per_page"] == "100" for request in seen)
+    get_settings.cache_clear()
+
+
+def test_create_pull_request_review_uses_comment_event(monkeypatch):
+    configure_token(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"id": 9, "html_url": "https://github.com/GugaBoBo-s/gugabobo/pull/7#review-9"},
+        )
+
+    seen = install_mock(monkeypatch, handler)
+
+    result = GitHubClient().create_pull_request_review(7, "review body", "head-sha")
+    payload = json.loads(seen[0].content)
+
+    assert result.review_id == 9
+    assert seen[0].url.path.endswith("/pulls/7/reviews")
+    assert payload == {"body": "review body", "commit_id": "head-sha", "event": "COMMENT"}
     get_settings.cache_clear()

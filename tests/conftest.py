@@ -26,6 +26,7 @@ def isolate_runtime_settings(tmp_path, monkeypatch):
         "GUGABOBO_TELEGRAM_REPLY_ENABLED": "false",
         "GUGABOBO_TELEGRAM_PROXY": "",
         "GUGABOBO_GITHUB_TOKEN": "",
+        "GUGABOBO_GITHUB_REVIEW_ENABLED": "false",
         "GUGABOBO_SANDBOX_DIR": str(data_dir / "sandbox"),
         "GUGABOBO_RUNNER_HOME_DIR": str(data_dir / "claude-home"),
         "GUGABOBO_CLAUDE_BASE_URL": "",
