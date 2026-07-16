@@ -679,7 +679,7 @@ def dashboard_html() -> str:
             ].join("");
             byId("runtimePanel").innerHTML = [
               `<div>API ${pill(data.runtime.api.running ? `running pid=${data.runtime.api.pid}` : "stopped", data.runtime.api.running)}</div>`,
-              `<div>Telegram ${pill(data.runtime.telegram_polling.running ? `running pid=${data.runtime.telegram_polling.pid}` : "stopped", data.runtime.telegram_polling.running)}</div>`,
+              `<div>Telegram ${pill(data.runtime.telegram_polling.running ? `running pid=${data.runtime.telegram_polling.pid} (${data.runtime.telegram_polling.managed_by})` : "stopped", data.runtime.telegram_polling.running)}</div>`,
               `<div>Telegram token ${pill(data.runtime.telegram_polling.configured ? "configured" : "missing", data.runtime.telegram_polling.configured)}</div>`,
               `<div>Telegram send ${pill(data.runtime.telegram_polling.reply_enabled ? "enabled" : "disabled", data.runtime.telegram_polling.reply_enabled)}</div>`,
               `<div>NapCat ${pill(data.runtime.napcat.reply_enabled ? "active reply" : (data.runtime.napcat.passive_reply_enabled ? "passive reply" : "reply off"), data.runtime.napcat.reply_enabled || data.runtime.napcat.passive_reply_enabled)}</div>`,
@@ -709,7 +709,7 @@ def dashboard_html() -> str:
             byId("telegramDiagnostics").innerHTML = [
               diagnosticItem("Token", pill(tg.configured ? "configured" : "missing", tg.configured)),
               diagnosticItem("Bot", `<span class="muted">${esc(tg.bot_username || "unknown")}</span>`),
-              diagnosticItem("Polling", `${pill(tg.polling.running ? `running pid=${tg.polling.pid}` : "stopped", tg.polling.running)}<br><span class="muted">本地 getUpdates</span>`),
+              diagnosticItem("Polling", `${pill(tg.polling.running ? `running pid=${tg.polling.pid} (${tg.polling.managed_by})` : "stopped", tg.polling.running)}<br><span class="muted">本地 getUpdates</span>`),
               diagnosticItem("发送回复", pill(tg.reply_enabled ? "enabled" : "disabled", tg.reply_enabled)),
               diagnosticItem("群聊唤醒词", `<span class="muted">${esc(tg.group_wake_words)}</span>`),
               diagnosticItem("最近 Telegram 事件", tg.last_telegram_message

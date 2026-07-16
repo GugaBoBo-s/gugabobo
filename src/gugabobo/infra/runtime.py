@@ -34,11 +34,7 @@ class RuntimeManager:
         runner_image_available = (
             container_runtime.image_available if runner_runtime_configured else False
         )
-        telegram_pid = self._pid_value(state.get("telegram_polling_pid"))
-        telegram_running = bool(telegram_pid and self._process_exists(telegram_pid))
-        if telegram_pid and not telegram_running:
-            state.pop("telegram_polling_pid", None)
-            self._write_state(state)
+        telegram_status = self._telegram_polling_status(state)
         return {
             "api": {
                 "running": True,
@@ -47,8 +43,7 @@ class RuntimeManager:
                 "port": self.settings.api_port,
             },
             "telegram_polling": {
-                "running": telegram_running,
-                "pid": telegram_pid if telegram_running else None,
+                **telegram_status,
                 "configured": bool(self.settings.telegram_bot_token),
                 "reply_enabled": self.settings.telegram_reply_enabled,
                 "bot_username": self.settings.telegram_bot_username,
@@ -218,11 +213,63 @@ class RuntimeManager:
         if not pid or not self._process_exists(pid):
             state.pop("telegram_polling_pid", None)
             self._write_state(state)
+            external_pid = self._external_telegram_polling_pid()
+            if external_pid:
+                return {
+                    "status": "externally_managed",
+                    "pid": external_pid,
+                    "managed_by": "external",
+                }
             return {"status": "not_running", "pid": None}
         self._terminate_process(pid)
         state.pop("telegram_polling_pid", None)
         self._write_state(state)
         return {"status": "stopped", "pid": pid}
+
+    def _telegram_polling_status(self, state: dict[str, object]) -> dict[str, object]:
+        stored_pid = self._pid_value(state.get("telegram_polling_pid"))
+        if stored_pid and self._process_exists(stored_pid):
+            return {"running": True, "pid": stored_pid, "managed_by": "dashboard"}
+        if stored_pid:
+            state.pop("telegram_polling_pid", None)
+            self._write_state(state)
+        external_pid = self._external_telegram_polling_pid()
+        if external_pid:
+            return {"running": True, "pid": external_pid, "managed_by": "external"}
+        return {"running": False, "pid": None, "managed_by": "none"}
+
+    def _external_telegram_polling_pid(self) -> int | None:
+        if os.name == "nt":
+            return None
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            pid = int(entry.name)
+            if pid == os.getpid():
+                continue
+            try:
+                arguments = (entry / "cmdline").read_bytes().decode(errors="replace").split("\0")
+            except (OSError, PermissionError):
+                continue
+            if self._is_telegram_poll_command([item for item in arguments if item]):
+                return pid
+        return None
+
+    def _is_telegram_poll_command(self, arguments: list[str]) -> bool:
+        try:
+            module_index = arguments.index("gugabobo.main")
+        except ValueError:
+            module_index = -1
+        if module_index >= 0 and arguments[module_index + 1 : module_index + 3] == [
+            "telegram",
+            "poll",
+        ]:
+            return True
+        return bool(
+            arguments
+            and Path(arguments[0]).name in {"gugabobo", "gugabobo.exe"}
+            and arguments[1:3] == ["telegram", "poll"]
+        )
 
     def _read_state(self) -> dict[str, object]:
         if not self.runtime_path.exists():
