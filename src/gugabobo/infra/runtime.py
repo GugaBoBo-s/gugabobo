@@ -180,12 +180,12 @@ class RuntimeManager:
         }
 
     def start_telegram_polling(self) -> dict[str, object]:
+        if not self.settings.telegram_bot_token:
+            return {"status": "not_configured", "pid": None}
         status = self.status()
         current = status["telegram_polling"]
         if current["running"]:
             return {"status": "already_running", "pid": current["pid"]}
-        if not self.settings.telegram_bot_token:
-            return {"status": "not_configured", "pid": None}
         command = [
             sys.executable,
             "-m",
