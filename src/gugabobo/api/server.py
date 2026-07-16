@@ -692,6 +692,7 @@ def open_improvement_pull_request(
         "number": result.number,
         "url": result.url,
         "branch_name": result.branch_name,
+        "status": result.status,
     }
 
 

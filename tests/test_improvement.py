@@ -390,6 +390,37 @@ def test_ship_recovers_remote_pr_created_before_database_write(tmp_path):
     assert store.list_pull_requests()[0]["number"] == 19
 
 
+@pytest.mark.parametrize(
+    ("merged", "expected_status"),
+    [(False, "closed"), (True, "merged")],
+)
+def test_ship_recovers_finished_remote_pr_state(tmp_path, merged, expected_status):
+    get_settings.cache_clear()
+    store, service, improvement_id = approved_improvement(tmp_path)
+    github = service.github
+    branch = f"gugabobo/improvement-{improvement_id}-finished"
+    store.update_improvement_task(improvement_id, branch_name=branch)
+    github.remote_pull = {
+        "number": 20,
+        "html_url": "https://github.com/x/y/pull/20",
+        "state": "closed",
+        "merged": merged,
+        "merged_at": "2026-07-17T00:00:00Z" if merged else None,
+        "head": {"ref": branch},
+    }
+
+    outcome = service.run_and_open_pull_request(
+        improvement_id,
+        runner=FakeRunner(configured=False),
+        sandbox=FakeSandbox(),
+    )
+
+    assert outcome.status == f"pr_{expected_status}"
+    assert store.list_pull_requests()[0]["status"] == expected_status
+    assert store.get_improvement_task(improvement_id)["runner_status"] == f"pr_{expected_status}"
+    get_settings.cache_clear()
+
+
 def test_ship_recovers_pushed_branch_before_running_again(tmp_path):
     get_settings.cache_clear()
     store, service, improvement_id = approved_improvement(tmp_path)

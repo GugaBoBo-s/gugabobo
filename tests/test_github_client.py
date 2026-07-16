@@ -166,6 +166,7 @@ def test_authenticated_login_and_pull_request_recovery(monkeypatch):
             return httpx.Response(200, json={"login": "gugabobo-agent"})
         if request.url.path.endswith("/pulls"):
             assert request.url.params["head"] == "GugaBoBo-s:gugabobo/improvement-7"
+            assert request.url.params["state"] == "all"
             return httpx.Response(200, json=[{"number": 17, "html_url": "https://example/pr/17"}])
         if request.url.path.endswith("/git/ref/heads/missing"):
             return httpx.Response(404, json={"message": "Not Found"})

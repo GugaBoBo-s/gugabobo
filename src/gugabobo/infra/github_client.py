@@ -14,6 +14,8 @@ class PullRequestResult:
     number: int
     url: str
     branch_name: str
+    status: str = "open"
+    merged_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -245,7 +247,7 @@ class GitHubClient:
     def find_pull_request_by_head(self, branch: str) -> dict:
         pulls = self._paginate(
             self._url("/pulls"),
-            {"state": "open", "head": f"{self.owner}:{branch}"},
+            {"state": "all", "head": f"{self.owner}:{branch}"},
             limit=1,
         )
         return pulls[0] if pulls else {}

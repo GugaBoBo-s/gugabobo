@@ -29,6 +29,7 @@ class PullRequestOpened:
     number: int
     url: str
     branch_name: str
+    status: str = "open"
 
 
 @dataclass(frozen=True)
@@ -281,7 +282,7 @@ class ImprovementService:
         if existing:
             tracked = self._tracked_pull_request(existing, title)
             return RunOutcome(
-                status="pr_open",
+                status=f"pr_{tracked.status}",
                 branch_name=tracked.branch_name,
                 pr_number=tracked.number,
                 pr_url=tracked.url,
@@ -300,7 +301,7 @@ class ImprovementService:
         )
         if recovered:
             return RunOutcome(
-                status="pr_open",
+                status=f"pr_{recovered.status}",
                 branch_name=recovered.branch_name,
                 pr_number=recovered.number,
                 pr_url=recovered.url,
@@ -380,7 +381,7 @@ class ImprovementService:
                 )
                 sandbox.cleanup(improvement_id)
                 return RunOutcome(
-                    status="pr_open",
+                    status=f"pr_{recovered.status}",
                     branch_name=recovered.branch_name,
                     diff=diff,
                     pr_number=recovered.number,
@@ -403,7 +404,7 @@ class ImprovementService:
         )
         sandbox.cleanup(improvement_id)
         return RunOutcome(
-            status="pr_open",
+            status=f"pr_{opened.status}",
             branch_name=opened.branch_name,
             diff=diff,
             pr_number=opened.number,
@@ -520,12 +521,20 @@ class ImprovementService:
             number=pull_request.number,
             url=pull_request.url,
             branch_name=pull_request.branch_name,
+            status=pull_request.status,
         )
+        runner_status = f"pr_{pull_request.status}"
         self.store.update_improvement_task(
             improvement_id,
-            runner_status="pr_open",
+            runner_status=runner_status,
             branch_name=pull_request.branch_name,
         )
+        if pull_request.merged_at:
+            self.store.update_pull_request(
+                pull_request_id,
+                status=pull_request.status,
+                merged_at=pull_request.merged_at,
+            )
         if existing is None:
             self.store.add_audit_log(
                 actor_source=actor_source,
@@ -535,12 +544,14 @@ class ImprovementService:
                 risk_level="high",
                 detail=pull_request.url,
             )
-        self.notifier.notify_pr_opened(pull_request.number, pull_request.url, title)
+        if pull_request.status == "open":
+            self.notifier.notify_pr_opened(pull_request.number, pull_request.url, title)
         return PullRequestOpened(
             pull_request_id=pull_request_id,
             number=pull_request.number,
             url=pull_request.url,
             branch_name=pull_request.branch_name,
+            status=pull_request.status,
         )
 
     def _tracked_pull_request(
@@ -550,12 +561,13 @@ class ImprovementService:
     ) -> PullRequestOpened:
         improvement_id = int(record["improvement_task_id"])
         branch_name = str(record["branch_name"])
+        status = str(record["status"])
         self.store.update_improvement_task(
             improvement_id,
-            runner_status="pr_open",
+            runner_status=f"pr_{status}",
             branch_name=branch_name,
         )
-        if str(record["status"]) == "open":
+        if status == "open":
             self.notifier.notify_pr_opened(
                 int(record["number"]),
                 str(record["url"]),
@@ -566,6 +578,7 @@ class ImprovementService:
             number=int(record["number"]),
             url=str(record["url"]),
             branch_name=branch_name,
+            status=status,
         )
 
     def _pull_request_result(
@@ -573,10 +586,15 @@ class ImprovementService:
         remote: dict[str, object],
         branch_name: str,
     ) -> PullRequestResult:
+        merged = bool(remote.get("merged"))
+        state = str(remote.get("state", ""))
+        status = "merged" if merged else ("closed" if state == "closed" else "open")
         return PullRequestResult(
             number=int(remote["number"]),
             url=str(remote["html_url"]),
             branch_name=branch_name,
+            status=status,
+            merged_at=str(remote.get("merged_at") or ""),
         )
 
     def _audit_run(
