@@ -136,6 +136,33 @@ def test_onebot_private_webhook_handles_message(tmp_path, monkeypatch):
     get_logger.cache_clear()
 
 
+def test_onebot_owner_merge_command_bypasses_group_wake_word(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("GUGABOBO_OWNER_QQ_IDS", "10001")
+    get_settings.cache_clear()
+    client = TestClient(app)
+
+    response = client.post(
+        "/onebot/v11/events",
+        json={
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 999,
+            "group_id": 123,
+            "user_id": 10001,
+            "raw_message": "同意合并 PR #15",
+            "message": [{"type": "text", "data": {"text": "同意合并 PR #15"}}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    messages = client.get("/messages").json()
+    assert messages[0]["content"].startswith("PR 操作失败：")
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
 def test_onebot_private_webhook_can_return_passive_reply(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     monkeypatch.setenv("GUGABOBO_NAPCAT_PASSIVE_REPLY_ENABLED", "true")

@@ -35,6 +35,7 @@ class RuntimeManager:
             container_runtime.image_available if runner_runtime_configured else False
         )
         telegram_status = self._telegram_polling_status(state)
+        lifecycle_pid = self._external_lifecycle_pid()
         return {
             "api": {
                 "running": True,
@@ -47,6 +48,11 @@ class RuntimeManager:
                 "configured": bool(self.settings.telegram_bot_token),
                 "reply_enabled": self.settings.telegram_reply_enabled,
                 "bot_username": self.settings.telegram_bot_username,
+            },
+            "lifecycle_agent": {
+                "running": lifecycle_pid is not None,
+                "pid": lifecycle_pid,
+                "github_configured": bool(self.settings.github_token),
             },
             "napcat": {
                 "api_url": self.settings.napcat_api_url,
@@ -258,6 +264,37 @@ class RuntimeManager:
             if self._is_telegram_poll_command([item for item in arguments if item]):
                 return pid
         return None
+
+    def _external_lifecycle_pid(self) -> int | None:
+        if os.name == "nt":
+            return None
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            pid = int(entry.name)
+            if pid == os.getpid():
+                continue
+            try:
+                arguments = (entry / "cmdline").read_bytes().decode(errors="replace").split("\0")
+            except (OSError, PermissionError):
+                continue
+            values = [item for item in arguments if item]
+            if self._is_lifecycle_command(values):
+                return pid
+        return None
+
+    def _is_lifecycle_command(self, arguments: list[str]) -> bool:
+        try:
+            module_index = arguments.index("gugabobo.main")
+        except ValueError:
+            module_index = -1
+        if module_index >= 0 and arguments[module_index + 1 : module_index + 2] == ["daemon"]:
+            return True
+        return bool(
+            arguments
+            and Path(arguments[0]).name in {"gugabobo", "gugabobo.exe"}
+            and arguments[1:2] == ["daemon"]
+        )
 
     def _is_telegram_poll_command(self, arguments: list[str]) -> bool:
         try:

@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import BoundedSemaphore, Lock
 
 from gugabobo.core.channel import ChannelContext
+from gugabobo.core.lifecycle import LifecycleError, PullRequestLifecycleService
 from gugabobo.core.access import context_access_role, role_can_use_skill
 from gugabobo.core.persona import Persona
 from gugabobo.core.router import Router
@@ -37,6 +38,7 @@ class CoreAgent:
         self.memory_skill = MemorySkill(store)
         self.outbound_skill = OutboundSkill(self.chat_skill.llm_client, store)
         self.summarizer_skill = SummarizerSkill(self.chat_skill.llm_client)
+        self.lifecycle_service = PullRequestLifecycleService(store)
         self.background_summarize = False
 
     def handle_message(
@@ -97,9 +99,15 @@ class CoreAgent:
             content=stored_text,
             conversation_id=context.conversation_id,
         )
-        route = self.router.route(text)
         access_role = context_access_role(context)
-        if not role_can_use_skill(access_role, route.skill):
+        try:
+            lifecycle_response = self.lifecycle_service.handle_command(text, context)
+        except LifecycleError as error:
+            lifecycle_response = f"PR 操作失败：{error}"
+        route = self.router.route(text)
+        if lifecycle_response is not None:
+            response = lifecycle_response
+        elif not role_can_use_skill(access_role, route.skill):
             response = self.permission_denied_response(route.skill, access_role)
         elif route.skill == "feedback":
             response = self.feedback_skill.record(

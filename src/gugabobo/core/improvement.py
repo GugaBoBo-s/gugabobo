@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from gugabobo.config import get_settings
+from gugabobo.core.notifications import OwnerNotifier
 from gugabobo.infra.claude_runner import ClaudeCodeRunner
 from gugabobo.infra.github_client import GitHubClient
 from gugabobo.infra.redaction import redact_sensitive
@@ -50,9 +51,15 @@ class PullRequestStatus:
 
 
 class ImprovementService:
-    def __init__(self, store: MemoryStore, github_client: GitHubClient | None = None) -> None:
+    def __init__(
+        self,
+        store: MemoryStore,
+        github_client: GitHubClient | None = None,
+        notifier: OwnerNotifier | None = None,
+    ) -> None:
         self.store = store
         self.github = github_client or GitHubClient()
+        self.notifier = notifier or OwnerNotifier(store)
 
     def create_from_feedback(
         self,
@@ -193,6 +200,7 @@ class ImprovementService:
             risk_level="high",
             detail=pull_request.url,
         )
+        self.notifier.notify_pr_opened(pull_request.number, pull_request.url, title)
         return PullRequestOpened(
             pull_request_id=pull_request_id,
             number=pull_request.number,
@@ -376,6 +384,7 @@ class ImprovementService:
             risk_level="high",
             detail=pull_request.url,
         )
+        self.notifier.notify_pr_opened(pull_request.number, pull_request.url, title)
         sandbox.cleanup(improvement_id)
         return RunOutcome(
             status="pr_open",

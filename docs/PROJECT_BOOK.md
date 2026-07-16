@@ -28,7 +28,7 @@ gugabobo is a persistent cloud-side autonomous agent that can interact across pl
 
 - Full autonomy without owner approval.
 - Direct production code modification by the agent.
-- Automatic merge of self-generated pull requests.
+- Unattended merge without explicit authenticated owner authorization.
 - Public social posting without confirmation.
 - Complex distributed infrastructure before the core is stable.
 - Premature use of vector databases, Redis, Celery, Docker Compose, or Kubernetes.
@@ -659,6 +659,53 @@ erDiagram
         string updated_at
     }
 
+    MERGE_AUTHORIZATIONS {
+        integer pull_request_id PK
+        string decision
+        string status
+        string actor_platform
+        string actor_source
+        string actor_user_id
+        string command
+        string detail
+        string created_at
+        string updated_at
+    }
+
+    IMPROVEMENT_REFLECTIONS {
+        integer id PK
+        integer improvement_task_id FK
+        integer pull_request_id FK
+        string outcome
+        string summary
+        string lessons
+        string created_at
+        string updated_at
+    }
+
+    DEPLOYMENT_RECORDS {
+        integer id PK
+        integer pull_request_id FK
+        string environment
+        string target_revision
+        string deployed_revision
+        string status
+        string detail
+        string deployed_at
+    }
+
+    OWNER_NOTIFICATIONS {
+        integer id PK
+        string dedupe_key
+        string event_type
+        string platform
+        string recipient_id
+        string status
+        integer attempts
+        string last_error
+        string sent_at
+    }
+
     OUTBOUND_DRAFTS {
         integer id PK
         string conversation_id FK
@@ -710,6 +757,9 @@ erDiagram
     TASKS ||--o| IMPROVEMENT_TASKS : "may_become"
     FEEDBACKS ||--o{ IMPROVEMENT_TASKS : "informs"
     IMPROVEMENT_TASKS ||--o| PULL_REQUESTS : "opens"
+    PULL_REQUESTS ||--o| MERGE_AUTHORIZATIONS : "authorized_by"
+    PULL_REQUESTS ||--o| IMPROVEMENT_REFLECTIONS : "produces"
+    PULL_REQUESTS ||--o{ DEPLOYMENT_RECORDS : "deployed_as"
     TASKS ||--o{ TOOL_CALLS : "uses"
     CONVERSATIONS ||--o{ OUTBOUND_DRAFTS : "creates"
 ```
@@ -935,6 +985,7 @@ issue creation for low-risk feedback
 draft generation
 test execution in sandbox
 pull request creation from approved improvement tasks
+execution of a previously authorized merge after required checks succeed
 ```
 
 ### 12.3 Requires Owner Approval
@@ -947,14 +998,14 @@ permission changes
 secret changes
 database deletion
 external paid API usage above threshold
-merge pull request
+authorize pull request merge
 ```
 
 ### 12.4 Always Forbidden
 
 ```text
 push directly to main
-merge own pull request
+merge a pull request without explicit authenticated owner authorization
 disable tests to pass CI
 delete repository
 leak secrets
@@ -980,8 +1031,8 @@ external feedback
   -> pull request is opened
   -> GitHub Actions runs
   -> dashboard displays result
-  -> owner reviews
-  -> owner merges or rejects
+  -> owner approves or rejects from QQ, Telegram, Dashboard, or CLI
+  -> lifecycle agent merges only after successful required checks
   -> server deploys merged version
   -> Reflection Agent records outcome
 ```
@@ -989,7 +1040,9 @@ external feedback
 Important invariant:
 
 ```text
-gugabobo may propose surgery, but the owner approves whether it becomes real.
+gugabobo may prepare and submit work autonomously. The owner decides whether a
+pull request may merge; once authorized, gugabobo performs the merge only after
+required checks succeed. Deployment remains a separate recorded action.
 ```
 
 ## 14. GitHub Organization Strategy
@@ -1153,8 +1206,8 @@ Current local dashboard:
 ```text
 URL: http://127.0.0.1:8765/dashboard
 Refresh: polls /dashboard-data every 3 seconds
-Displays: status, token budgets, runtime diagnostics, conversations, messages, feedbacks, memories, summaries, access rules, audit logs, tasks, improvement tasks, pull requests, outbound drafts, database table counts, logs
-Controls: test chat, QQ/NapCat and Telegram runtime, non-secret config, conversation context, long-term memory, summaries, feedback status, access rules, improvement creation/approval/run/ship, proposal PR creation, PR status synchronization
+Displays: status, token budgets, runtime diagnostics, conversations, messages, feedbacks, memories, summaries, access rules, audit logs, tasks, improvement tasks, pull requests, merge authorizations, reflections, deployment records, owner notifications, outbound drafts, database table counts, logs
+Controls: test chat, QQ/NapCat and Telegram runtime, non-secret config, conversation context, long-term memory, summaries, feedback status, access rules, improvement creation/approval/run/ship, proposal PR creation, PR synchronization, owner-authorized merge/rejection, deployment verification
 Auth: admin actions require GUGABOBO_ADMIN_TOKEN through the X-Gugabobo-Admin-Token header
 ```
 
@@ -1742,7 +1795,8 @@ protected main
 owner review
 policy tests
 audit logs
-no automatic merge
+no merge without explicit owner authorization
+no merge unless GitHub checks report success
 ```
 
 ### 25.3 Secret Leakage Risk
@@ -1867,15 +1921,17 @@ P5 self-improvement hardening and post-merge reflection
 Recommended tasks:
 
 ```text
-1. Add reflection records after merge or rejection.
-2. Add a deployment record tied to the merged pull request and server revision.
-3. Add stale-run recovery and cancellation for long-running improvements.
-4. Add repository-level policy tests for generated diffs.
-5. Add structured cost and token usage records for coding runs.
+1. Add stale-run recovery and cancellation for long-running improvements.
+2. Add repository-level policy tests for generated diffs.
+3. Add structured cost and token usage records for coding runs.
 ```
 
 P0 through P4 are operational. The current P5 foundation includes approval-gated
 Claude Code execution in a restricted Docker container, network-disabled Ruff
 and pytest checks, tokenless Git remote URLs with askpass authentication, unique
 branches, GitHub Actions check-run synchronization, Dashboard controls, and
-audit records. Generated pull requests are never merged automatically.
+audit records. PR creation notifies all configured QQ and Telegram owners. A
+single explicit owner authorization is persisted across channels, and the
+lifecycle agent merges only when GitHub checks report success. Merge/rejection
+creates reflection records, and merged revisions are linked to deployment
+records visible in Dashboard.

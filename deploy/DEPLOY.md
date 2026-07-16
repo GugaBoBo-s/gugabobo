@@ -189,11 +189,22 @@ sudo systemctl enable --now gugabobo-telegram
 Use only one polling process. The Dashboard runtime controls do not manage the
 optional systemd polling unit.
 
+## Lifecycle agent
+
+Enable the persistent PR synchronization, notification retry, and authorized
+merge loop:
+
+```bash
+sudo systemctl enable --now gugabobo-agent
+sudo systemctl status gugabobo-agent --no-pager
+```
+
 ## Updates
 
 ```bash
 sudo bash /opt/gugabobo/repo/deploy/setup.sh
 sudo systemctl restart gugabobo-api
+sudo systemctl restart gugabobo-telegram gugabobo-agent
 curl --fail http://127.0.0.1:8765/health
 ```
 
@@ -208,4 +219,8 @@ reruns the complete test suite before the service is restarted.
 - Never enable `bypassPermissions` or a host-execution fallback.
 - Require owner approval and explicit confirmation before running or shipping an
   improvement.
-- Never auto-merge generated pull requests.
+- Never merge without explicit authenticated owner authorization.
+- Owner authorization may come from QQ, Telegram, Dashboard, or CLI, but the
+  lifecycle agent must still observe successful GitHub checks before merging.
+- Keep merge authorization separate from deployment; setup records the deployed
+  server revision after tests pass.

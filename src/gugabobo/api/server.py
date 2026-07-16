@@ -8,7 +8,13 @@ from gugabobo.api.dashboard import dashboard_html
 from gugabobo.config import get_settings
 from gugabobo.core.access import context_with_access_role, evaluate_access, role_can_use_skill
 from gugabobo.core.channel import ChannelContext
+from gugabobo.core.deployment import DeploymentError, DeploymentService
 from gugabobo.core.improvement import ImprovementError, ImprovementService
+from gugabobo.core.lifecycle import (
+    LifecycleError,
+    PullRequestLifecycleService,
+    is_merge_command,
+)
 from gugabobo.infra.env_file import EnvFile
 from gugabobo.infra.images import urls_to_data_uris
 from gugabobo.infra.logs import get_logger, read_log_lines
@@ -84,6 +90,18 @@ class ImprovementCreateRequest(BaseModel):
     feedback_id: int
     scope: str = ""
     risk_level: str = "normal"
+
+
+def dashboard_owner_context() -> ChannelContext:
+    return ChannelContext(
+        platform="web",
+        channel_type="webhook",
+        source="dashboard",
+        user_id="admin",
+        conversation_id="dashboard:admin",
+        is_owner=True,
+        is_wake_triggered=True,
+    )
 
 
 def add_dashboard_audit(
@@ -192,6 +210,10 @@ def dashboard_data() -> dict[str, object]:
         "tasks": agent.store.list_tasks(limit=50),
         "improvements": agent.store.list_improvement_tasks(limit=50),
         "pull_requests": agent.store.list_pull_requests(limit=50),
+        "merge_authorizations": agent.store.list_merge_authorizations(limit=50),
+        "improvement_reflections": agent.store.list_improvement_reflections(limit=50),
+        "deployment_records": agent.store.list_deployment_records(limit=50),
+        "owner_notifications": agent.store.list_owner_notifications(limit=50),
         "outbound_drafts": agent.store.list_outbound_drafts(limit=50),
         "table_counts": agent.store.table_counts(),
         "runtime": runtime_data,
@@ -390,6 +412,26 @@ def pull_request(pr_id: int) -> dict[str, object]:
     return result
 
 
+@app.get("/merge-authorizations")
+def merge_authorizations(limit: int = 50) -> list[dict[str, object]]:
+    return build_agent().store.list_merge_authorizations(limit=limit)
+
+
+@app.get("/improvement-reflections")
+def improvement_reflections(limit: int = 50) -> list[dict[str, object]]:
+    return build_agent().store.list_improvement_reflections(limit=limit)
+
+
+@app.get("/deployments")
+def deployments(limit: int = 50) -> list[dict[str, object]]:
+    return build_agent().store.list_deployment_records(limit=limit)
+
+
+@app.get("/owner-notifications")
+def owner_notifications(limit: int = 50) -> list[dict[str, object]]:
+    return build_agent().store.list_owner_notifications(limit=limit)
+
+
 @app.post("/prs/{pr_id}/sync")
 def sync_pull_request(
     pr_id: int,
@@ -407,6 +449,90 @@ def sync_pull_request(
         "status": status.status,
         "checks_status": status.checks_status,
         "merged_at": status.merged_at,
+    }
+
+
+@app.post("/prs/{pr_id}/approve-merge")
+def approve_pull_request_merge(
+    pr_id: int,
+    request: DangerousActionRequest | None = None,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    require_danger_confirmation(request, "MERGE")
+    agent = build_agent()
+    record = agent.store.get_pull_request(pr_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Pull request not found")
+    try:
+        outcome = PullRequestLifecycleService(agent.store).approve_merge(
+            int(record["number"]),
+            dashboard_owner_context(),
+            f"dashboard approve PR #{record['number']}",
+        )
+    except LifecycleError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {
+        "pull_request_id": pr_id,
+        "number": outcome.pr_number,
+        "status": outcome.status,
+        "checks_status": outcome.checks_status,
+        "message": outcome.message,
+    }
+
+
+@app.post("/prs/{pr_id}/reject-merge")
+def reject_pull_request_merge(
+    pr_id: int,
+    request: DangerousActionRequest | None = None,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    require_danger_confirmation(request, "REJECT")
+    agent = build_agent()
+    record = agent.store.get_pull_request(pr_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Pull request not found")
+    try:
+        outcome = PullRequestLifecycleService(agent.store).reject_merge(
+            int(record["number"]),
+            dashboard_owner_context(),
+            f"dashboard reject PR #{record['number']}",
+        )
+    except LifecycleError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {
+        "pull_request_id": pr_id,
+        "number": outcome.pr_number,
+        "status": outcome.status,
+        "checks_status": outcome.checks_status,
+        "message": outcome.message,
+    }
+
+
+@app.post("/prs/sync-all")
+def sync_all_pull_requests(
+    _: None = Depends(require_admin_token),
+) -> dict[str, int]:
+    return PullRequestLifecycleService(build_agent().store).tick()
+
+
+@app.post("/deployments/record-current")
+def record_current_deployment(
+    request: DangerousActionRequest | None = None,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    require_danger_confirmation(request, "DEPLOYED")
+    try:
+        outcome = DeploymentService(build_agent().store).record_current(
+            actor_source="dashboard",
+            actor_user_id="admin",
+        )
+    except DeploymentError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {
+        "current_revision": outcome.current_revision,
+        "examined": outcome.examined,
+        "deployed": outcome.deployed,
+        "pending": outcome.pending,
     }
 
 
@@ -841,7 +967,9 @@ def onebot_event(payload: dict[str, object]) -> dict[str, object]:
         )
         return {"status": "ignored", "reason": access.reason}
     context = context_with_access_role(context, access)
-    reply_allowed = context.is_wake_triggered
+    reply_allowed = context.is_wake_triggered or (
+        context.is_owner and is_merge_command(text)
+    )
     if not reply_allowed:
         route = agent.router.route(text)
         if route.skill == "feedback":

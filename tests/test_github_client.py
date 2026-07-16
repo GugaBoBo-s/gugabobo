@@ -130,3 +130,26 @@ def test_push_url_does_not_embed_token(monkeypatch):
     assert "ghp_secret_value" not in url
     assert url == "https://x-access-token@github.com/GugaBoBo-s/gugabobo.git"
     get_settings.cache_clear()
+
+
+def test_merge_and_close_pull_request(monkeypatch):
+    configure_token(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "PUT" and request.url.path.endswith("/pulls/15/merge"):
+            return httpx.Response(200, json={"merged": True, "sha": "abc", "message": "ok"})
+        if request.method == "PATCH" and request.url.path.endswith("/pulls/15"):
+            return httpx.Response(200, json={"number": 15, "state": "closed"})
+        return httpx.Response(404, json={})
+
+    seen = install_mock(monkeypatch, handler)
+    client = GitHubClient()
+
+    merged = client.merge_pull_request(15, "Merge PR #15")
+    closed = client.close_pull_request(15)
+
+    assert merged.merged is True
+    assert merged.sha == "abc"
+    assert closed["state"] == "closed"
+    assert [request.method for request in seen] == ["PUT", "PATCH"]
+    get_settings.cache_clear()

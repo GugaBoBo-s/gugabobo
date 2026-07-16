@@ -6,6 +6,7 @@ from gugabobo.adapters.telegram import TelegramMessageEvent
 from gugabobo.config import Settings
 from gugabobo.core.access import context_with_access_role, evaluate_access, role_can_use_skill
 from gugabobo.core.agent import CoreAgent
+from gugabobo.core.lifecycle import is_merge_command
 from gugabobo.infra.logs import get_logger
 from gugabobo.infra.telegram_client import TelegramClient
 
@@ -51,7 +52,8 @@ def handle_telegram_update(
             agent.store.complete_inbound_event("telegram", event_id, result)
         return result
     context = context_with_access_role(context, access)
-    if not context.is_wake_triggered:
+    owner_lifecycle_command = context.is_owner and is_merge_command(event.text)
+    if not context.is_wake_triggered and not owner_lifecycle_command:
         route = agent.router.route(event.text)
         if route.skill == "feedback":
             if not role_can_use_skill(access.role, "feedback"):

@@ -134,6 +134,33 @@ def test_store_task_improvement_and_pr_crud(tmp_path):
     assert counts["tasks"] == 1
     assert counts["improvement_tasks"] == 1
     assert counts["pull_requests"] == 1
+    store.upsert_merge_authorization(
+        pr_id,
+        "approved",
+        "waiting_checks",
+        "telegram",
+        "telegram_private",
+        "owner",
+    )
+    reflection_id = store.upsert_improvement_reflection(
+        improvement_id,
+        pr_id,
+        "merged",
+        "merged",
+    )
+    deployment_id = store.add_deployment_record(pr_id, "test", "abc")
+    notification_id = store.queue_owner_notification(
+        "pr:9:opened",
+        "pr_opened",
+        "telegram",
+        "owner",
+        "opened",
+    )
+    assert store.get_pull_request_by_number(9, "a", "b")["id"] == pr_id
+    assert store.get_merge_authorization(pr_id)["status"] == "waiting_checks"
+    assert store.list_improvement_reflections()[0]["id"] == reflection_id
+    assert store.list_deployment_records()[0]["id"] == deployment_id
+    assert store.list_owner_notifications()[0]["id"] == notification_id
 
 
 def test_create_from_feedback_creates_task_and_audit(tmp_path, monkeypatch):

@@ -7,7 +7,9 @@ import uvicorn
 from gugabobo.adapters.telegram_runtime import handle_telegram_update
 from gugabobo.config import get_settings
 from gugabobo.core.channel import ChannelContext
+from gugabobo.core.deployment import DeploymentError, DeploymentService
 from gugabobo.core.improvement import ImprovementError, ImprovementService
+from gugabobo.core.lifecycle import LifecycleError, PullRequestLifecycleService
 from gugabobo.infra.telegram_client import TelegramClient
 from gugabobo.infra.logs import get_logger
 from gugabobo.infra.runtime import build_agent
@@ -23,6 +25,7 @@ telegram_app = typer.Typer(help="Telegram adapter commands")
 tasks_app = typer.Typer(help="Task commands")
 improve_app = typer.Typer(help="Self-improvement commands")
 pr_app = typer.Typer(help="Pull request commands")
+deployment_app = typer.Typer(help="Deployment commands")
 app.add_typer(feedback_app, name="feedback")
 app.add_typer(messages_app, name="messages")
 app.add_typer(config_app, name="config")
@@ -33,6 +36,7 @@ app.add_typer(telegram_app, name="telegram")
 app.add_typer(tasks_app, name="tasks")
 app.add_typer(improve_app, name="improve")
 app.add_typer(pr_app, name="pr")
+app.add_typer(deployment_app, name="deployment")
 
 
 def echo_mapping(data: dict[str, object]) -> None:
@@ -370,6 +374,67 @@ def pr_sync(pr_id: int) -> None:
     )
 
 
+@pr_app.command("approve-merge")
+def pr_approve_merge(pr_number: int) -> None:
+    """Authorize and merge a pull request after successful checks."""
+    try:
+        outcome = PullRequestLifecycleService(build_agent().store).approve_merge(
+            pr_number,
+            ChannelContext.local(),
+            f"/merge {pr_number}",
+        )
+    except LifecycleError as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(outcome.message)
+
+
+@pr_app.command("reject-merge")
+def pr_reject_merge(pr_number: int) -> None:
+    """Reject and close a pull request."""
+    try:
+        outcome = PullRequestLifecycleService(build_agent().store).reject_merge(
+            pr_number,
+            ChannelContext.local(),
+            f"/reject-merge {pr_number}",
+        )
+    except LifecycleError as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(outcome.message)
+
+
+@pr_app.command("sync-all")
+def pr_sync_all() -> None:
+    """Synchronize open pull requests and retry owner notifications."""
+    echo_mapping(PullRequestLifecycleService(build_agent().store).tick())
+
+
+@deployment_app.command("record-current")
+def deployment_record_current(repo: Path = Path.cwd()) -> None:
+    """Mark merged revisions contained in the current deployment."""
+    try:
+        outcome = DeploymentService(build_agent().store).record_current(repo)
+    except DeploymentError as error:
+        raise typer.BadParameter(str(error)) from error
+    echo_mapping(
+        {
+            "current_revision": outcome.current_revision,
+            "examined": outcome.examined,
+            "deployed": outcome.deployed,
+            "pending": outcome.pending,
+        }
+    )
+
+
+@deployment_app.command("list")
+def deployment_list(limit: int = 50) -> None:
+    """List deployment records."""
+    for item in build_agent().store.list_deployment_records(limit=limit):
+        typer.echo(
+            f"#{item['id']} PR-local#{item['pull_request_id']} [{item['status']}] "
+            f"{item['environment']} {item['target_revision']}"
+        )
+
+
 @config_app.command("show")
 def config_show() -> None:
     """Show effective configuration."""
@@ -448,18 +513,30 @@ def db_init() -> None:
 
 @app.command()
 def daemon(interval: int = 30) -> None:
-    """Run a minimal long-lived daemon loop."""
+    """Run the persistent lifecycle and notification loop."""
     logger = get_logger()
+    agent = build_agent()
+    lifecycle = PullRequestLifecycleService(agent.store)
     logger.info("daemon started interval=%s", interval)
     typer.echo("gugabobo daemon started")
     while True:
-        status_data = build_agent().status()
+        status_data = agent.status()
+        lifecycle_result = lifecycle.tick()
         logger.info(
-            "daemon heartbeat messages=%s feedbacks=%s",
+            "daemon heartbeat messages=%s feedbacks=%s prs=%s merged=%s errors=%s notifications=%s",
             status_data["messages"],
             status_data["feedbacks"],
+            lifecycle_result["processed"],
+            lifecycle_result["merged"],
+            lifecycle_result["errors"],
+            lifecycle_result["notifications_sent"],
         )
-        typer.echo(f"heartbeat messages={status_data['messages']} feedbacks={status_data['feedbacks']}")
+        typer.echo(
+            f"heartbeat messages={status_data['messages']} feedbacks={status_data['feedbacks']} "
+            f"prs={lifecycle_result['processed']} merged={lifecycle_result['merged']} "
+            f"errors={lifecycle_result['errors']} "
+            f"notifications={lifecycle_result['notifications_sent']}"
+        )
         time.sleep(interval)
 
 

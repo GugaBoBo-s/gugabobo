@@ -124,6 +124,22 @@ def test_telegram_group_message_requires_wake_word(tmp_path, monkeypatch):
     get_logger.cache_clear()
 
 
+def test_telegram_owner_merge_command_bypasses_group_wake_word(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("GUGABOBO_OWNER_TELEGRAM_IDS", "10001")
+    get_settings.cache_clear()
+    client = TestClient(app)
+
+    response = client.post("/telegram/events", json=group_payload("同意合并 PR #15"))
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    messages = client.get("/messages").json()
+    assert messages[0]["content"].startswith("PR 操作失败：")
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
 def test_telegram_user_role_cannot_record_group_feedback(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     client = TestClient(app)

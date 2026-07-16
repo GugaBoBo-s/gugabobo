@@ -104,8 +104,15 @@ sudo -u "$RUN_USER" "$REPO_DIR/.venv/bin/python" -m ruff check "$REPO_DIR"
 
 cp "$REPO_DIR/deploy/gugabobo-api.service" /etc/systemd/system/gugabobo-api.service
 cp "$REPO_DIR/deploy/gugabobo-telegram.service" /etc/systemd/system/gugabobo-telegram.service
+cp "$REPO_DIR/deploy/gugabobo-agent.service" /etc/systemd/system/gugabobo-agent.service
 systemctl daemon-reload
 systemctl enable gugabobo-api.service
+systemctl enable gugabobo-agent.service
+
+(
+  cd "$REPO_DIR"
+  sudo -u "$RUN_USER" "$REPO_DIR/.venv/bin/gugabobo" deployment record-current
+)
 
 echo "[gugabobo] setup complete"
 echo "Edit $REPO_DIR/.env, configure runner credentials, then restart gugabobo-api."

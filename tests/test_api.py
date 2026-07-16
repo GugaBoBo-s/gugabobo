@@ -80,6 +80,10 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     assert "数据库表状态" in page_response.text
     assert "会话摘要" in page_response.text
     assert "审计日志" in page_response.text
+    assert "合并授权" in page_response.text
+    assert "改进反思" in page_response.text
+    assert "部署记录" in page_response.text
+    assert "主人通知" in page_response.text
     assert '""":' not in page_response.text
     assert data_response.status_code == 200
     assert "status" in data_response.json()
@@ -89,6 +93,10 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     assert "runtime" in data_response.json()
     assert "qq_diagnostics" in data_response.json()
     assert "telegram_diagnostics" in data_response.json()
+    assert "merge_authorizations" in data_response.json()
+    assert "improvement_reflections" in data_response.json()
+    assert "deployment_records" in data_response.json()
+    assert "owner_notifications" in data_response.json()
     assert data_response.json()["runtime"]["api"]["running"] is True
     get_settings.cache_clear()
 
@@ -572,6 +580,25 @@ class FakeGitHubClient:
         return "success"
 
 
+class FakeLifecycleGitHubClient(FakeGitHubClient):
+    def get_pull_request(self, number):
+        return {
+            "state": "open",
+            "merged": False,
+            "merged_at": None,
+            "merge_commit_sha": "",
+            "head": {"sha": "abc"},
+        }
+
+    def merge_pull_request(self, number, commit_title, merge_method="squash"):
+        from gugabobo.infra.github_client import MergeResult
+
+        return MergeResult(merged=True, sha="merge-sha", message="merged")
+
+    def close_pull_request(self, number):
+        return {"state": "closed", "number": number}
+
+
 def test_improvement_endpoints_require_admin_token(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     client = TestClient(app)
@@ -652,6 +679,55 @@ def test_sync_pull_request_endpoint(tmp_path, monkeypatch):
     assert sync_response.json()["status"] == "merged"
     assert sync_response.json()["checks_status"] == "success"
     assert client.get(f"/prs/{pr_id}").json()["status"] == "merged"
+    get_settings.cache_clear()
+
+
+def test_dashboard_can_authorize_ci_gated_merge(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("GUGABOBO_GITHUB_TOKEN", "token")
+    get_settings.cache_clear()
+    monkeypatch.setattr("gugabobo.core.improvement.GitHubClient", FakeGitHubClient)
+    monkeypatch.setattr("gugabobo.core.lifecycle.GitHubClient", FakeLifecycleGitHubClient)
+    client = TestClient(app)
+    feedback_id = client.post("/feedbacks", json={"content": "回复太长"}).json()["id"]
+    improvement_id = client.post(
+        "/improvements",
+        json={"feedback_id": feedback_id},
+        headers=admin_headers(),
+    ).json()["improvement_id"]
+    client.post(
+        f"/improvements/{improvement_id}/approve",
+        json={"confirm_text": "APPROVE"},
+        headers=admin_headers(),
+    )
+    client.post(
+        f"/improvements/{improvement_id}/pull-request",
+        json={"confirm_text": "OPEN"},
+        headers=admin_headers(),
+    )
+    pr_id = client.get("/prs").json()[0]["id"]
+
+    unauthenticated = client.post(
+        f"/prs/{pr_id}/approve-merge",
+        json={"confirm_text": "MERGE"},
+    )
+    missing_confirmation = client.post(
+        f"/prs/{pr_id}/approve-merge",
+        headers=admin_headers(),
+    )
+    approved = client.post(
+        f"/prs/{pr_id}/approve-merge",
+        json={"confirm_text": "MERGE"},
+        headers=admin_headers(),
+    )
+
+    assert unauthenticated.status_code == 401
+    assert missing_confirmation.status_code == 400
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "merged"
+    assert client.get("/merge-authorizations").json()[0]["status"] == "merged"
+    assert client.get("/improvement-reflections").json()[0]["outcome"] == "merged"
+    assert client.get("/deployments").json()[0]["target_revision"] == "merge-sha"
     get_settings.cache_clear()
 
 

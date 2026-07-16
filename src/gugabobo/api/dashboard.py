@@ -354,6 +354,10 @@ def dashboard_html() -> str:
                   <button id="openProposalPrButton" class="danger" type="button">仅创建提案 PR</button>
                   <input id="pullRequestId" type="number" min="1" placeholder="PR 记录 ID">
                   <button id="syncPullRequestButton" type="button">同步 PR 状态</button>
+                  <button id="approvePullRequestButton" class="danger" type="button">批准自动合并</button>
+                  <button id="rejectPullRequestButton" class="danger" type="button">拒绝并关闭</button>
+                  <button id="syncAllPullRequestsButton" type="button">同步全部 PR</button>
+                  <button id="recordDeploymentButton" class="danger" type="button">确认当前部署</button>
                 </div>
                 <div class="control-box">
                   <h3>访问权限</h3>
@@ -494,6 +498,42 @@ def dashboard_html() -> str:
                   <tr><th style="width: 54px;">ID</th><th style="width: 70px;">#</th><th style="width: 90px;">状态</th><th style="width: 90px;">检查</th><th>分支</th><th style="width: 100px;">链接</th></tr>
                 </thead>
                 <tbody id="pullRequests"></tbody>
+              </table>
+            </section>
+            <section>
+              <h2>合并授权</h2>
+              <table>
+                <thead>
+                  <tr><th style="width: 70px;">PR ID</th><th style="width: 90px;">决定</th><th style="width: 120px;">状态</th><th style="width: 180px;">授权人</th><th>详情</th><th style="width: 160px;">时间</th></tr>
+                </thead>
+                <tbody id="mergeAuthorizations"></tbody>
+              </table>
+            </section>
+            <section>
+              <h2>改进反思</h2>
+              <table>
+                <thead>
+                  <tr><th style="width: 70px;">PR ID</th><th style="width: 100px;">结果</th><th>总结</th><th>经验</th></tr>
+                </thead>
+                <tbody id="improvementReflections"></tbody>
+              </table>
+            </section>
+            <section>
+              <h2>部署记录</h2>
+              <table>
+                <thead>
+                  <tr><th style="width: 60px;">ID</th><th style="width: 70px;">PR ID</th><th style="width: 90px;">环境</th><th style="width: 100px;">状态</th><th>目标版本</th><th>部署版本</th><th style="width: 160px;">时间</th></tr>
+                </thead>
+                <tbody id="deploymentRecords"></tbody>
+              </table>
+            </section>
+            <section>
+              <h2>主人通知</h2>
+              <table>
+                <thead>
+                  <tr><th style="width: 60px;">ID</th><th style="width: 90px;">平台</th><th style="width: 120px;">接收者</th><th style="width: 120px;">事件</th><th style="width: 90px;">状态</th><th style="width: 70px;">尝试</th><th>错误</th><th style="width: 160px;">时间</th></tr>
+                </thead>
+                <tbody id="ownerNotifications"></tbody>
               </table>
             </section>
             <section>
@@ -669,6 +709,7 @@ def dashboard_html() -> str:
               metric("状态", data.status.status, "ok"),
               metric("API", data.runtime.api.running ? `运行 ${data.runtime.api.pid}` : "停止", data.runtime.api.running ? "ok" : "warn"),
               metric("Telegram", data.runtime.telegram_polling.running ? `运行 ${data.runtime.telegram_polling.pid}` : "停止", data.runtime.telegram_polling.running ? "ok" : "warn"),
+              metric("生命周期", data.runtime.lifecycle_agent.running ? `运行 ${data.runtime.lifecycle_agent.pid}` : "停止", data.runtime.lifecycle_agent.running ? "ok" : "warn"),
               metric("消息", data.status.messages),
               metric("反馈", data.status.feedbacks),
               metric("记忆", data.status.memory_items),
@@ -685,6 +726,7 @@ def dashboard_html() -> str:
               `<div>Telegram ${pill(data.runtime.telegram_polling.running ? `running pid=${data.runtime.telegram_polling.pid} (${data.runtime.telegram_polling.managed_by})` : "stopped", data.runtime.telegram_polling.running)}</div>`,
               `<div>Telegram token ${pill(data.runtime.telegram_polling.configured ? "configured" : "missing", data.runtime.telegram_polling.configured)}</div>`,
               `<div>Telegram send ${pill(data.runtime.telegram_polling.reply_enabled ? "enabled" : "disabled", data.runtime.telegram_polling.reply_enabled)}</div>`,
+              `<div>Lifecycle agent ${pill(data.runtime.lifecycle_agent.running ? `running pid=${data.runtime.lifecycle_agent.pid}` : "stopped", data.runtime.lifecycle_agent.running)}</div>`,
               `<div>NapCat ${pill(data.runtime.napcat.reply_enabled ? "active reply" : (data.runtime.napcat.passive_reply_enabled ? "passive reply" : "reply off"), data.runtime.napcat.reply_enabled || data.runtime.napcat.passive_reply_enabled)}</div>`,
               `<div>NapCat process ${pill(data.runtime.napcat.running ? `running ${data.runtime.napcat.pids.join(",")}` : "stopped", data.runtime.napcat.running)}</div>`,
               `<div>NapCat WebUI ${pill(data.runtime.napcat.webui.configured ? "configured" : "missing", data.runtime.napcat.webui.configured)}</div>`,
@@ -798,6 +840,39 @@ def dashboard_html() -> str:
               esc(item.checks_status),
               esc(item.branch_name),
               githubLink(item.url)
+            ])).join("");
+            byId("mergeAuthorizations").innerHTML = data.merge_authorizations.map((item) => row([
+              esc(item.pull_request_id),
+              esc(item.decision),
+              esc(item.status),
+              `${esc(item.actor_platform)}:${esc(item.actor_user_id)}`,
+              esc(item.detail),
+              `<span class="muted">${esc(item.updated_at)}</span>`
+            ])).join("");
+            byId("improvementReflections").innerHTML = data.improvement_reflections.map((item) => row([
+              esc(item.pull_request_id),
+              esc(item.outcome),
+              esc(item.summary),
+              esc(item.lessons)
+            ])).join("");
+            byId("deploymentRecords").innerHTML = data.deployment_records.map((item) => row([
+              esc(item.id),
+              esc(item.pull_request_id),
+              esc(item.environment),
+              esc(item.status),
+              `<span class="muted">${esc(item.target_revision)}</span>`,
+              `<span class="muted">${esc(item.deployed_revision)}</span>`,
+              `<span class="muted">${esc(item.deployed_at || item.updated_at)}</span>`
+            ])).join("");
+            byId("ownerNotifications").innerHTML = data.owner_notifications.map((item) => row([
+              esc(item.id),
+              esc(item.platform),
+              esc(item.recipient_id),
+              esc(item.event_type),
+              esc(item.status),
+              esc(item.attempts),
+              esc(item.last_error),
+              `<span class="muted">${esc(item.sent_at || item.updated_at)}</span>`
             ])).join("");
             byId("auditLogs").innerHTML = data.audit_logs.map((item) => row([
               esc(item.id),
@@ -1107,6 +1182,55 @@ def dashboard_html() -> str:
             controlFetch(`/prs/${pullRequestId}/sync`, {
               method: "POST",
               headers: adminHeaders()
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("approvePullRequestButton").addEventListener("click", () => {
+            const pullRequestId = byId("pullRequestId").value;
+            if (!pullRequestId) {
+              showControlResult("missing pull request id");
+              return;
+            }
+            const confirmation = requireConfirmText("MERGE", `批准 PR 记录 #${pullRequestId} 自动合并`);
+            if (!confirmation) {
+              return;
+            }
+            controlFetch(`/prs/${pullRequestId}/approve-merge`, {
+              method: "POST",
+              headers: adminHeaders(),
+              body: JSON.stringify(confirmation)
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("rejectPullRequestButton").addEventListener("click", () => {
+            const pullRequestId = byId("pullRequestId").value;
+            if (!pullRequestId) {
+              showControlResult("missing pull request id");
+              return;
+            }
+            const confirmation = requireConfirmText("REJECT", `拒绝 PR 记录 #${pullRequestId}`);
+            if (!confirmation) {
+              return;
+            }
+            controlFetch(`/prs/${pullRequestId}/reject-merge`, {
+              method: "POST",
+              headers: adminHeaders(),
+              body: JSON.stringify(confirmation)
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("syncAllPullRequestsButton").addEventListener("click", () => {
+            controlFetch("/prs/sync-all", {
+              method: "POST",
+              headers: adminHeaders()
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("recordDeploymentButton").addEventListener("click", () => {
+            const confirmation = requireConfirmText("DEPLOYED", "确认当前代码版本已部署");
+            if (!confirmation) {
+              return;
+            }
+            controlFetch("/deployments/record-current", {
+              method: "POST",
+              headers: adminHeaders(),
+              body: JSON.stringify(confirmation)
             }).catch((error) => showControlResult(error.message));
           });
           byId("accessRuleButton").addEventListener("click", () => {

@@ -225,6 +225,42 @@ erDiagram
         string checks_status
     }
 
+    MERGE_AUTHORIZATIONS {
+        integer pull_request_id PK
+        string decision
+        string status
+        string actor_platform
+        string actor_user_id
+        string detail
+    }
+
+    IMPROVEMENT_REFLECTIONS {
+        integer id PK
+        integer improvement_task_id
+        integer pull_request_id
+        string outcome
+        string summary
+        string lessons
+    }
+
+    DEPLOYMENT_RECORDS {
+        integer id PK
+        integer pull_request_id
+        string environment
+        string target_revision
+        string deployed_revision
+        string status
+    }
+
+    OWNER_NOTIFICATIONS {
+        integer id PK
+        string event_type
+        string platform
+        string recipient_id
+        string status
+        integer attempts
+    }
+
     OUTBOUND_DRAFTS {
         integer id PK
         string conversation_id
@@ -250,6 +286,9 @@ erDiagram
     FEEDBACKS ||--o{ IMPROVEMENT_TASKS : "feedback_id"
     TASKS ||--o| IMPROVEMENT_TASKS : "task_id"
     IMPROVEMENT_TASKS ||--o{ PULL_REQUESTS : "improvement_task_id"
+    PULL_REQUESTS ||--o| MERGE_AUTHORIZATIONS : "pull_request_id"
+    PULL_REQUESTS ||--o| IMPROVEMENT_REFLECTIONS : "pull_request_id"
+    PULL_REQUESTS ||--o{ DEPLOYMENT_RECORDS : "pull_request_id"
 ```
 
 `CONVERSATION` is a logical entity derived from `conversation_id`; it is not a separate SQLite table yet.
@@ -334,6 +373,8 @@ Current behavior:
   fail, `runner_status` becomes `checks_failed` and no pull request is opened
 - a passing `improve ship` pushes the branch and opens a pull request, sets
   `runner_status` to `pr_open`, and records it in `pull_requests`
+- opening a pull request queues owner notifications for every configured QQ and
+  Telegram owner
 - there is no host execution fallback when Docker or the runner image is unavailable
 - runs and pull requests are high-risk actions recorded in audit logs
 
@@ -342,6 +383,10 @@ CI checks (`checks_status`) from GitHub:
 
 ```bash
 gugabobo pr sync 1
+gugabobo pr approve-merge 15
+gugabobo pr reject-merge 15
+gugabobo pr sync-all
+gugabobo deployment record-current
 ```
 
 Current behavior:
@@ -352,7 +397,14 @@ Current behavior:
 - opening a pull request is a high-risk action recorded in audit logs
 - API write endpoints require `GUGABOBO_ADMIN_TOKEN`, and opening a pull request
   requires `confirm_text=OPEN`
-- generated branches are unique and are never merged automatically
+- generated branches are unique and never merge without explicit authenticated
+  owner approval
+- an owner may send `同意合并 PR #15` or `/merge 15` in QQ or Telegram, or use
+  Dashboard/CLI; one approval is sufficient across all channels
+- approval is durable, but merge remains blocked until GitHub checks report
+  `success`; `unknown`, `pending`, and `failure` never merge
+- merge/rejection creates a reflection record, queues outcome notifications, and
+  merged revisions receive a pending deployment record
 
 API endpoints:
 
@@ -369,6 +421,14 @@ POST /improvements/{id}/pull-request
 GET  /prs
 GET  /prs/{id}
 POST /prs/{id}/sync
+POST /prs/{id}/approve-merge
+POST /prs/{id}/reject-merge
+POST /prs/sync-all
+GET  /merge-authorizations
+GET  /improvement-reflections
+GET  /deployments
+GET  /owner-notifications
+POST /deployments/record-current
 ```
 
 ## Configuration

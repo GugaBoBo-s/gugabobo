@@ -110,6 +110,60 @@ CREATE TABLE IF NOT EXISTS pull_requests (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS merge_authorizations (
+    pull_request_id INTEGER PRIMARY KEY,
+    decision TEXT NOT NULL,
+    status TEXT NOT NULL,
+    actor_platform TEXT NOT NULL,
+    actor_source TEXT NOT NULL,
+    actor_user_id TEXT NOT NULL,
+    command TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS improvement_reflections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    improvement_task_id INTEGER NOT NULL,
+    pull_request_id INTEGER NOT NULL UNIQUE,
+    outcome TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    lessons TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS deployment_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pull_request_id INTEGER NOT NULL,
+    environment TEXT NOT NULL,
+    target_revision TEXT NOT NULL,
+    deployed_revision TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    detail TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deployed_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(pull_request_id, environment, target_revision)
+);
+
+CREATE TABLE IF NOT EXISTS owner_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dedupe_key TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    recipient_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    sent_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(dedupe_key, platform, recipient_id)
+);
+
 CREATE TABLE IF NOT EXISTS outbound_drafts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id TEXT NOT NULL,
@@ -715,6 +769,30 @@ class MemoryStore:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_pull_request_by_number(
+        self,
+        number: int,
+        github_owner: str = "",
+        github_repo: str = "",
+    ) -> dict[str, Any] | None:
+        clauses = ["number = ?"]
+        values: list[Any] = [number]
+        if github_owner:
+            clauses.append("github_owner = ?")
+            values.append(github_owner)
+        if github_repo:
+            clauses.append("github_repo = ?")
+            values.append(github_repo)
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id, improvement_task_id, github_owner, github_repo, number, url, "
+                "branch_name, status, checks_status, merged_at, created_at, updated_at "
+                f"FROM pull_requests WHERE {' AND '.join(clauses)} "
+                "ORDER BY id DESC LIMIT 1",
+                values,
+            ).fetchone()
+        return dict(row) if row else None
+
     def update_pull_request(
         self,
         pr_id: int,
@@ -743,6 +821,228 @@ class MemoryStore:
                 values,
             )
             return cursor.rowcount > 0
+
+    def upsert_merge_authorization(
+        self,
+        pull_request_id: int,
+        decision: str,
+        status: str,
+        actor_platform: str,
+        actor_source: str,
+        actor_user_id: str,
+        command: str = "",
+        detail: str = "",
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO merge_authorizations "
+                "(pull_request_id, decision, status, actor_platform, actor_source, "
+                "actor_user_id, command, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(pull_request_id) DO UPDATE SET decision = excluded.decision, "
+                "status = excluded.status, actor_platform = excluded.actor_platform, "
+                "actor_source = excluded.actor_source, actor_user_id = excluded.actor_user_id, "
+                "command = excluded.command, detail = excluded.detail, "
+                "updated_at = CURRENT_TIMESTAMP",
+                (
+                    pull_request_id,
+                    decision,
+                    status,
+                    actor_platform,
+                    actor_source,
+                    actor_user_id,
+                    command,
+                    detail,
+                ),
+            )
+
+    def get_merge_authorization(self, pull_request_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT pull_request_id, decision, status, actor_platform, actor_source, "
+                "actor_user_id, command, detail, created_at, updated_at "
+                "FROM merge_authorizations WHERE pull_request_id = ?",
+                (pull_request_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_merge_authorizations(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT pull_request_id, decision, status, actor_platform, actor_source, "
+                "actor_user_id, command, detail, created_at, updated_at "
+                "FROM merge_authorizations ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def upsert_improvement_reflection(
+        self,
+        improvement_task_id: int,
+        pull_request_id: int,
+        outcome: str,
+        summary: str,
+        lessons: str = "",
+    ) -> int:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO improvement_reflections "
+                "(improvement_task_id, pull_request_id, outcome, summary, lessons) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(pull_request_id) DO UPDATE SET "
+                "outcome = excluded.outcome, summary = excluded.summary, "
+                "lessons = excluded.lessons, updated_at = CURRENT_TIMESTAMP",
+                (improvement_task_id, pull_request_id, outcome, summary, lessons),
+            )
+            row = conn.execute(
+                "SELECT id FROM improvement_reflections WHERE pull_request_id = ?",
+                (pull_request_id,),
+            ).fetchone()
+        return int(row["id"])
+
+    def list_improvement_reflections(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, improvement_task_id, pull_request_id, outcome, summary, lessons, "
+                "created_at, updated_at FROM improvement_reflections "
+                "ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_deployment_record(
+        self,
+        pull_request_id: int,
+        environment: str,
+        target_revision: str,
+        status: str = "pending",
+        detail: str = "",
+    ) -> int:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO deployment_records "
+                "(pull_request_id, environment, target_revision, status, detail) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (pull_request_id, environment, target_revision, status, detail),
+            )
+            row = conn.execute(
+                "SELECT id FROM deployment_records WHERE pull_request_id = ? "
+                "AND environment = ? AND target_revision = ?",
+                (pull_request_id, environment, target_revision),
+            ).fetchone()
+        return int(row["id"])
+
+    def list_deployment_records(
+        self,
+        limit: int = 50,
+        status: str | None = None,
+        environment: str | None = None,
+    ) -> list[dict[str, Any]]:
+        query = (
+            "SELECT id, pull_request_id, environment, target_revision, deployed_revision, "
+            "status, detail, created_at, updated_at, deployed_at FROM deployment_records"
+        )
+        conditions: list[str] = []
+        values: list[Any] = []
+        if status:
+            conditions.append("status = ?")
+            values.append(status)
+        if environment:
+            conditions.append("environment = ?")
+            values.append(environment)
+        if conditions:
+            query += f" WHERE {' AND '.join(conditions)}"
+        query += " ORDER BY id DESC LIMIT ?"
+        values.append(limit)
+        with self.connect() as conn:
+            rows = conn.execute(query, values).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_deployment_record(
+        self,
+        deployment_id: int,
+        status: str,
+        deployed_revision: str = "",
+        detail: str = "",
+    ) -> bool:
+        deployed_at = "CURRENT_TIMESTAMP" if status == "deployed" else "''"
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE deployment_records SET status = ?, deployed_revision = ?, "
+                f"detail = ?, deployed_at = {deployed_at}, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ?",
+                (status, deployed_revision, detail, deployment_id),
+            )
+            return cursor.rowcount > 0
+
+    def queue_owner_notification(
+        self,
+        dedupe_key: str,
+        event_type: str,
+        platform: str,
+        recipient_id: str,
+        content: str,
+    ) -> int:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO owner_notifications "
+                "(dedupe_key, event_type, platform, recipient_id, content) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (dedupe_key, event_type, platform, recipient_id, content),
+            )
+            row = conn.execute(
+                "SELECT id FROM owner_notifications WHERE dedupe_key = ? "
+                "AND platform = ? AND recipient_id = ?",
+                (dedupe_key, platform, recipient_id),
+            ).fetchone()
+        return int(row["id"])
+
+    def claim_owner_notification(self, notification_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE owner_notifications SET status = 'sending', attempts = attempts + 1, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ? "
+                "AND status IN ('pending', 'failed')",
+                (notification_id,),
+            )
+            if cursor.rowcount == 0:
+                return None
+            row = conn.execute(
+                "SELECT id, dedupe_key, event_type, platform, recipient_id, content, "
+                "status, attempts, last_error, sent_at, created_at, updated_at "
+                "FROM owner_notifications WHERE id = ?",
+                (notification_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def finish_owner_notification(
+        self,
+        notification_id: int,
+        status: str,
+        last_error: str = "",
+    ) -> bool:
+        sent_at = "CURRENT_TIMESTAMP" if status == "sent" else "''"
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE owner_notifications SET status = ?, last_error = ?, "
+                f"sent_at = {sent_at}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (status, last_error, notification_id),
+            )
+            return cursor.rowcount > 0
+
+    def list_owner_notifications(
+        self,
+        limit: int = 50,
+        retryable_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        query = (
+            "SELECT id, dedupe_key, event_type, platform, recipient_id, content, status, "
+            "attempts, last_error, sent_at, created_at, updated_at FROM owner_notifications"
+        )
+        if retryable_only:
+            query += " WHERE status IN ('pending', 'failed')"
+        query += " ORDER BY id ASC LIMIT ?"
+        with self.connect() as conn:
+            rows = conn.execute(query, (limit,)).fetchall()
+        return [dict(row) for row in rows]
 
     def add_outbound_draft(
         self,
@@ -951,6 +1251,10 @@ class MemoryStore:
             "tasks",
             "improvement_tasks",
             "pull_requests",
+            "merge_authorizations",
+            "improvement_reflections",
+            "deployment_records",
+            "owner_notifications",
             "outbound_drafts",
             "inbound_events",
         ]

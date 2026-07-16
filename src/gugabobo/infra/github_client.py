@@ -15,6 +15,13 @@ class PullRequestResult:
     branch_name: str
 
 
+@dataclass(frozen=True)
+class MergeResult:
+    merged: bool
+    sha: str
+    message: str
+
+
 class GitHubClient:
     def __init__(
         self,
@@ -109,6 +116,27 @@ class GitHubClient:
 
     def get_pull_request(self, number: int) -> dict:
         result = self._request("GET", f"/pulls/{number}")
+        return dict(result) if isinstance(result, dict) else {}
+
+    def merge_pull_request(
+        self,
+        number: int,
+        commit_title: str,
+        merge_method: str = "squash",
+    ) -> MergeResult:
+        data = self._request(
+            "PUT",
+            f"/pulls/{number}/merge",
+            {"commit_title": commit_title, "merge_method": merge_method},
+        )
+        return MergeResult(
+            merged=bool(data.get("merged")),
+            sha=str(data.get("sha", "")),
+            message=str(data.get("message", "")),
+        )
+
+    def close_pull_request(self, number: int) -> dict:
+        result = self._request("PATCH", f"/pulls/{number}", {"state": "closed"})
         return dict(result) if isinstance(result, dict) else {}
 
     def get_commit_status(self, ref: str) -> dict:

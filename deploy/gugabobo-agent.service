@@ -1,0 +1,28 @@
+[Unit]
+Description=gugabobo persistent lifecycle agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/gugabobo/repo
+EnvironmentFile=/opt/gugabobo/repo/.env
+ExecStart=/opt/gugabobo/repo/.venv/bin/gugabobo daemon --interval 30
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+ReadWritePaths=/opt/gugabobo/data
+
+[Install]
+WantedBy=multi-user.target
