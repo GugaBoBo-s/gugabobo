@@ -119,6 +119,21 @@ Claude Code runs only in `gugabobo-runner:local`. Its dedicated home directory
 is mounted into the container; the service user's normal home and the host
 environment are not mounted or forwarded.
 
+For an Anthropic-compatible gateway, configure the following values in the
+mode-600 `.env` file:
+
+```bash
+GUGABOBO_CLAUDE_BASE_URL=https://gateway.example.com
+GUGABOBO_CLAUDE_AUTH_TOKEN=replace-with-gateway-token
+```
+
+The runner maps these values to `ANTHROPIC_BASE_URL` and
+`ANTHROPIC_AUTH_TOKEN` only inside the short-lived Claude Code container. The
+token is not included in the Docker command line or Dashboard response. No
+interactive login is required in this mode.
+
+When no gateway token is configured, authenticate the dedicated runner home:
+
 ```bash
 sudo -u ubuntu docker run --rm -it \
   --read-only \

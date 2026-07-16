@@ -270,6 +270,7 @@ def dashboard_control_config(_: None = Depends(require_admin_token)) -> dict[str
             "GUGABOBO_LLM_SUMMARY_KEEP_RECENT_TOKENS": settings.llm_summary_keep_recent_tokens,
             "GUGABOBO_RUNNER_CONTAINER_RUNTIME": settings.runner_container_runtime,
             "GUGABOBO_RUNNER_CONTAINER_IMAGE": settings.runner_container_image,
+            "GUGABOBO_CLAUDE_BASE_URL": settings.claude_base_url,
         },
         "secrets": {
             "GUGABOBO_ADMIN_TOKEN": bool(settings.admin_token),
@@ -280,6 +281,7 @@ def dashboard_control_config(_: None = Depends(require_admin_token)) -> dict[str
             "GUGABOBO_MOONSHOT_API_KEY": bool(settings.moonshot_api_key),
             "GUGABOBO_DEEPSEEK_API_KEY": bool(settings.deepseek_api_key),
             "GUGABOBO_OPENAI_API_KEY": bool(settings.openai_api_key),
+            "GUGABOBO_CLAUDE_AUTH_TOKEN": bool(settings.claude_auth_token),
         },
     }
 

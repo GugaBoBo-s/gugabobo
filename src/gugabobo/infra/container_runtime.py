@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -8,6 +9,9 @@ from pathlib import Path
 
 from gugabobo.config import Settings, get_settings
 from gugabobo.infra.redaction import redact_sensitive
+
+
+_ENVIRONMENT_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -55,6 +59,7 @@ class ContainerRuntime:
         timeout: int,
         input_text: str | None = None,
         home_dir: Path | None = None,
+        environment: dict[str, str] | None = None,
     ) -> ContainerResult:
         resolved_workspace = workspace.resolve()
         resolved_home = home_dir.resolve() if home_dir else None
@@ -95,6 +100,12 @@ class ContainerRuntime:
             )
         else:
             docker_command.extend(["--env", "HOME=/tmp"])
+        process_environment = self._host_env()
+        for name, value in sorted((environment or {}).items()):
+            if not _ENVIRONMENT_NAME.fullmatch(name):
+                raise ValueError(f"invalid container environment name: {name}")
+            docker_command.extend(["--env", name])
+            process_environment[name] = value
         docker_command.extend([self.settings.runner_container_image, *command])
         try:
             result = subprocess.run(
@@ -104,7 +115,7 @@ class ContainerRuntime:
                 text=True,
                 check=False,
                 timeout=timeout,
-                env=self._host_env(),
+                env=process_environment,
             )
         except subprocess.TimeoutExpired:
             return ContainerResult(returncode=124, stdout="", stderr="container run timed out")
@@ -124,6 +135,8 @@ class ContainerRuntime:
     def _host_env(self) -> dict[str, str]:
         blocked_names = {
             "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BASE_URL",
             "GH_TOKEN",
             "GITHUB_TOKEN",
             "OPENAI_API_KEY",
@@ -145,4 +158,5 @@ class ContainerRuntime:
             self.settings.moonshot_api_key,
             self.settings.deepseek_api_key,
             self.settings.openai_api_key,
+            self.settings.claude_auth_token,
         )

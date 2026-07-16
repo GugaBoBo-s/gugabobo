@@ -409,6 +409,8 @@ def config_show() -> None:
             "runner_container_image": settings.runner_container_image,
             "runner_home_dir": settings.runner_home_dir,
             "claude_bin": settings.claude_bin,
+            "claude_base_url": settings.claude_base_url,
+            "claude_auth_token": "***" if settings.claude_auth_token else "",
             "claude_permission_mode": "acceptEdits",
             "claude_timeout_seconds": settings.claude_timeout_seconds,
             "llm_provider": settings.llm_provider,

@@ -263,6 +263,7 @@ def test_dashboard_config_control_updates_env_file(tmp_path, monkeypatch):
                 "GUGABOBO_TELEGRAM_REPLY_ENABLED": True,
                 "GUGABOBO_NAPCAT_DIR": "D:/tools/napcat",
                 "GUGABOBO_LLM_HISTORY_TOKEN_BUDGET": 0,
+                "GUGABOBO_CLAUDE_BASE_URL": "https://gateway.example.com/",
                 "GUGABOBO_TELEGRAM_PROXY": "http://127.0.0.1:1080\nINJECTED=true",
                 "GUGABOBO_DEEPSEEK_API_KEY": "should-not-save",
             }
@@ -279,6 +280,7 @@ def test_dashboard_config_control_updates_env_file(tmp_path, monkeypatch):
     assert "GUGABOBO_TELEGRAM_REPLY_ENABLED=true" in env_text
     assert "GUGABOBO_NAPCAT_DIR=D:/tools/napcat" in env_text
     assert "GUGABOBO_LLM_HISTORY_TOKEN_BUDGET=1" in env_text
+    assert "GUGABOBO_CLAUDE_BASE_URL=https://gateway.example.com/" in env_text
     assert "INJECTED=true" in env_text
     assert "\nINJECTED=true\n" not in env_text
     assert "should-not-save" not in env_text

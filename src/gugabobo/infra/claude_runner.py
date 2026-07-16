@@ -55,6 +55,14 @@ class ClaudeCodeRunner:
             "--max-budget-usd",
             str(self.settings.claude_max_budget_usd),
         ]
+        environment = {
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "DISABLE_AUTOUPDATER": "1",
+        }
+        if self.settings.claude_base_url:
+            environment["ANTHROPIC_BASE_URL"] = self.settings.claude_base_url.rstrip("/")
+        if self.settings.claude_auth_token:
+            environment["ANTHROPIC_AUTH_TOKEN"] = self.settings.claude_auth_token
         result = self.container_runtime.run(
             workspace=cwd,
             command=command,
@@ -62,6 +70,7 @@ class ClaudeCodeRunner:
             timeout=self.settings.claude_timeout_seconds,
             input_text=prompt,
             home_dir=self.settings.runner_home_dir,
+            environment=environment,
         )
         return RunResult(
             ok=result.returncode == 0,

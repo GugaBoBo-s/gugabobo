@@ -1,3 +1,4 @@
+from gugabobo.config import get_settings
 from gugabobo.infra.container_runtime import ContainerRuntime
 from gugabobo.infra.runtime import RuntimeManager
 
@@ -38,3 +39,18 @@ def test_telegram_poll_command_detection():
     )
     assert manager._is_telegram_poll_command(["gugabobo", "telegram", "poll"])
     assert not manager._is_telegram_poll_command(["python", "-m", "gugabobo.main", "api"])
+
+
+def test_status_reports_claude_gateway_without_exposing_token(monkeypatch):
+    monkeypatch.setenv("GUGABOBO_CLAUDE_BASE_URL", "https://gateway.example.com")
+    monkeypatch.setenv("GUGABOBO_CLAUDE_AUTH_TOKEN", "runner-secret")
+    get_settings.cache_clear()
+    manager = RuntimeManager()
+    monkeypatch.setattr(ContainerRuntime, "configured", property(lambda _self: False))
+
+    status = manager.status()["self_improvement"]
+
+    assert status["claude_gateway_configured"] is True
+    assert status["claude_base_url"] == "https://gateway.example.com"
+    assert "runner-secret" not in str(status)
+    get_settings.cache_clear()

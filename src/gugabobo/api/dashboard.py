@@ -274,6 +274,7 @@ def dashboard_html() -> str:
                   <input id="configTelegramProxy" placeholder="Telegram proxy URL">
                   <input id="configRunnerRuntime" placeholder="Container runtime">
                   <input id="configRunnerImage" placeholder="Runner image">
+                  <input id="configClaudeBaseUrl" placeholder="Claude gateway base URL">
                   <div id="configSecrets" class="muted"></div>
                   <button id="loadConfigButton" type="button">加载配置</button>
                   <button id="saveConfigButton" type="button">保存配置</button>
@@ -586,6 +587,7 @@ def dashboard_html() -> str:
             byId("configTelegramProxy").value = values.GUGABOBO_TELEGRAM_PROXY || "";
             byId("configRunnerRuntime").value = values.GUGABOBO_RUNNER_CONTAINER_RUNTIME || "docker";
             byId("configRunnerImage").value = values.GUGABOBO_RUNNER_CONTAINER_IMAGE || "gugabobo-runner:local";
+            byId("configClaudeBaseUrl").value = values.GUGABOBO_CLAUDE_BASE_URL || "";
             byId("configSecrets").innerHTML = Object.entries(config.secrets)
               .map(([key, configured]) => `${esc(key.replace("GUGABOBO_", ""))}: ${pill(configured ? "configured" : "missing", configured)}`)
               .join("<br>");
@@ -617,7 +619,8 @@ def dashboard_html() -> str:
               GUGABOBO_TELEGRAM_BOT_USERNAME: byId("configTelegramBotUsername").value,
               GUGABOBO_TELEGRAM_PROXY: byId("configTelegramProxy").value,
               GUGABOBO_RUNNER_CONTAINER_RUNTIME: byId("configRunnerRuntime").value,
-              GUGABOBO_RUNNER_CONTAINER_IMAGE: byId("configRunnerImage").value
+              GUGABOBO_RUNNER_CONTAINER_IMAGE: byId("configRunnerImage").value,
+              GUGABOBO_CLAUDE_BASE_URL: byId("configClaudeBaseUrl").value
             };
           }
           async function loadEditableConfig() {
@@ -687,6 +690,8 @@ def dashboard_html() -> str:
               `<div>NapCat WebUI ${pill(data.runtime.napcat.webui.configured ? "configured" : "missing", data.runtime.napcat.webui.configured)}</div>`,
               `<div>Runner ${pill(data.runtime.self_improvement.runtime_configured ? data.runtime.self_improvement.runtime : "missing", data.runtime.self_improvement.runtime_configured)}</div>`,
               `<div>Runner image ${pill(data.runtime.self_improvement.image_available ? data.runtime.self_improvement.image : "missing", data.runtime.self_improvement.image_available)}</div>`,
+              `<div>Claude gateway ${pill(data.runtime.self_improvement.claude_gateway_configured ? "configured" : "missing", data.runtime.self_improvement.claude_gateway_configured)}</div>`,
+              `<div class="muted">${esc(data.runtime.self_improvement.claude_base_url || "default Anthropic endpoint")}</div>`,
               `<div>GitHub ${pill(data.runtime.self_improvement.github_configured ? "configured" : "missing", data.runtime.self_improvement.github_configured)}</div>`,
               `<div class="muted">${esc(data.runtime.napcat.api_url)}</div>`
             ].join("");

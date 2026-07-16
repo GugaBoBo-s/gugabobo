@@ -28,6 +28,8 @@ def isolate_runtime_settings(tmp_path, monkeypatch):
         "GUGABOBO_GITHUB_TOKEN": "",
         "GUGABOBO_SANDBOX_DIR": str(data_dir / "sandbox"),
         "GUGABOBO_RUNNER_HOME_DIR": str(data_dir / "claude-home"),
+        "GUGABOBO_CLAUDE_BASE_URL": "",
+        "GUGABOBO_CLAUDE_AUTH_TOKEN": "",
         "GUGABOBO_LLM_PROVIDER": "moonshot",
         "GUGABOBO_MOONSHOT_API_KEY": "",
         "GUGABOBO_DEEPSEEK_API_KEY": "",

@@ -7,7 +7,9 @@ from gugabobo.infra.container_runtime import ContainerRuntime
 
 def test_container_run_applies_isolation_and_strips_business_secrets(tmp_path, monkeypatch):
     github_token = "ghp_" + "a" * 26
+    claude_token = "sk-relay-" + "b" * 24
     monkeypatch.setenv("GUGABOBO_GITHUB_TOKEN", github_token)
+    monkeypatch.setenv("GUGABOBO_CLAUDE_AUTH_TOKEN", claude_token)
     monkeypatch.setenv("GITHUB_TOKEN", "host-secret")
     get_settings.cache_clear()
     captured = {}
@@ -30,6 +32,10 @@ def test_container_run_applies_isolation_and_strips_business_secrets(tmp_path, m
         timeout=30,
         input_text="prompt",
         home_dir=home,
+        environment={
+            "ANTHROPIC_AUTH_TOKEN": claude_token,
+            "ANTHROPIC_BASE_URL": "https://gateway.example.com",
+        },
     )
 
     command = captured["command"]
@@ -42,8 +48,32 @@ def test_container_run_applies_isolation_and_strips_business_secrets(tmp_path, m
     assert "GUGABOBO_GITHUB_TOKEN" not in captured["env"]
     assert "GITHUB_TOKEN" not in captured["env"]
     assert github_token not in " ".join(command)
+    assert claude_token not in " ".join(command)
+    assert "ANTHROPIC_AUTH_TOKEN" in command
+    assert "ANTHROPIC_BASE_URL" in command
+    assert captured["env"]["ANTHROPIC_AUTH_TOKEN"] == claude_token
+    assert captured["env"]["ANTHROPIC_BASE_URL"] == "https://gateway.example.com"
     assert captured["input"] == "prompt"
     get_settings.cache_clear()
+
+
+def test_container_run_rejects_invalid_environment_name(tmp_path):
+    get_settings.cache_clear()
+
+    try:
+        ContainerRuntime().run(
+            workspace=tmp_path,
+            command=["true"],
+            network="none",
+            timeout=30,
+            environment={"INVALID-NAME": "value"},
+        )
+    except ValueError as error:
+        assert "invalid container environment name" in str(error)
+    else:
+        raise AssertionError("invalid environment name was accepted")
+    finally:
+        get_settings.cache_clear()
 
 
 def test_container_output_is_redacted(tmp_path, monkeypatch):

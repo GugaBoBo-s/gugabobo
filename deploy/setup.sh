@@ -108,4 +108,4 @@ systemctl daemon-reload
 systemctl enable gugabobo-api.service
 
 echo "[gugabobo] setup complete"
-echo "Edit $REPO_DIR/.env, authenticate the runner, then restart gugabobo-api."
+echo "Edit $REPO_DIR/.env, configure runner credentials, then restart gugabobo-api."

@@ -24,6 +24,8 @@ def test_configured_requires_isolated_runtime():
 def test_run_builds_isolated_headless_command(tmp_path, monkeypatch):
     monkeypatch.setenv("GUGABOBO_CLAUDE_PERMISSION_MODE", "bypassPermissions")
     monkeypatch.setenv("GUGABOBO_CLAUDE_ALLOWED_TOOLS", "Bash,Read,Write")
+    monkeypatch.setenv("GUGABOBO_CLAUDE_BASE_URL", "https://gateway.example.com/")
+    monkeypatch.setenv("GUGABOBO_CLAUDE_AUTH_TOKEN", "runner-secret")
     get_settings.cache_clear()
     runtime = FakeContainerRuntime()
 
@@ -40,6 +42,12 @@ def test_run_builds_isolated_headless_command(tmp_path, monkeypatch):
     assert "bypassPermissions" not in call["command"]
     assert "Bash,Read,Write" not in call["command"]
     assert "--no-session-persistence" in call["command"]
+    assert call["environment"] == {
+        "ANTHROPIC_AUTH_TOKEN": "runner-secret",
+        "ANTHROPIC_BASE_URL": "https://gateway.example.com",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "DISABLE_AUTOUPDATER": "1",
+    }
     get_settings.cache_clear()
 
 

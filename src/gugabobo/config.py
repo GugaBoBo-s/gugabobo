@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     runner_cpu_limit: str = "2"
     runner_pids_limit: int = Field(default=256, ge=16)
     claude_bin: str = "claude"
+    claude_base_url: str = ""
+    claude_auth_token: str = Field(default="", repr=False)
     claude_timeout_seconds: int = Field(default=900, ge=1)
     claude_max_budget_usd: float = Field(default=5.0, gt=0, le=100)
     sandbox_check_timeout_seconds: int = Field(default=300, ge=1)

@@ -466,6 +466,7 @@ class ImprovementService:
                 settings.moonshot_api_key,
                 settings.deepseek_api_key,
                 settings.openai_api_key,
+                settings.claude_auth_token,
             ),
         )[:2000]
 

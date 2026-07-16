@@ -61,6 +61,10 @@ class RuntimeManager:
                 "image": self.settings.runner_container_image,
                 "image_available": runner_image_available,
                 "github_configured": bool(self.settings.github_token),
+                "claude_base_url": self.settings.claude_base_url,
+                "claude_gateway_configured": bool(
+                    self.settings.claude_base_url and self.settings.claude_auth_token
+                ),
             },
         }
 
