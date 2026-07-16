@@ -246,6 +246,9 @@ def test_file_batches_never_exceed_configured_character_limit(tmp_path) -> None:
 
     assert all(len(batch) <= 1000 for batch in batches)
     assert sum(batch.count("x") for batch in batches) == 5000
+    expected_header = f"--- FILE {'f' * 500} ---"
+    assert all(expected_header in batch for batch in batches)
+    assert all("patch_chunk=" in batch for batch in batches)
 
 
 def test_spoofed_marker_from_another_reviewer_does_not_skip(tmp_path) -> None:
