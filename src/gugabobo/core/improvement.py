@@ -545,7 +545,7 @@ class ImprovementService:
                 detail=pull_request.url,
             )
         if pull_request.status == "open":
-            self.notifier.notify_pr_opened(pull_request.number, pull_request.url, title)
+            self.notifier.ensure_pr_opened(pull_request.number, pull_request.url, title)
         return PullRequestOpened(
             pull_request_id=pull_request_id,
             number=pull_request.number,
@@ -568,7 +568,7 @@ class ImprovementService:
             branch_name=branch_name,
         )
         if status == "open":
-            self.notifier.notify_pr_opened(
+            self.notifier.ensure_pr_opened(
                 int(record["number"]),
                 str(record["url"]),
                 title,

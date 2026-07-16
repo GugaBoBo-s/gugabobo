@@ -21,6 +21,9 @@ class OwnerNotifier:
         self.telegram_client = telegram_client or TelegramClient()
 
     def notify_pr_opened(self, number: int, url: str, title: str) -> list[int]:
+        return self.ensure_pr_opened(number, url, title)
+
+    def ensure_pr_opened(self, number: int, url: str, title: str) -> list[int]:
         content = (
             f"咕嘎BoBo 已提交 PR #{number}：{title}\n{url}\n\n"
             "回复“同意合并”立即合并，或回复“拒绝合并”关闭。"

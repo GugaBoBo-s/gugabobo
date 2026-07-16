@@ -1,7 +1,8 @@
 import pytest
 
+from gugabobo.config import Settings, get_settings
 from gugabobo.core.improvement import ImprovementError, ImprovementService
-from gugabobo.config import get_settings
+from gugabobo.core.notifications import OwnerNotifier
 from gugabobo.infra.github_client import PullRequestResult
 from gugabobo.memory.store import MemoryStore
 
@@ -119,6 +120,19 @@ class FakeSandbox:
 
     def cleanup(self, improvement_id):
         self.cleaned.append(improvement_id)
+
+
+class FakeNapCat:
+    def __init__(self):
+        self.messages = []
+
+    def send_private_msg(self, user_id, message):
+        self.messages.append((user_id, message))
+
+
+class FakeTelegram:
+    def send_message(self, chat_id, text):
+        raise AssertionError("telegram should not be called")
 
 
 def make_store_with_feedback(tmp_path) -> tuple[MemoryStore, int]:
@@ -250,6 +264,31 @@ def test_open_pull_request_creates_branch_file_and_pr(tmp_path):
     actions = [log["action"] for log in store.list_audit_logs()]
     assert "improvement.pr_open" in actions
     assert "improvement.approved" in actions
+    get_settings.cache_clear()
+
+
+def test_open_pull_request_retry_delivers_one_owner_notification(tmp_path):
+    get_settings.cache_clear()
+    store, feedback_id = make_store_with_feedback(tmp_path)
+    github = FakeGitHubClient()
+    napcat = FakeNapCat()
+    settings = Settings(
+        data_dir=tmp_path,
+        db_path=tmp_path / "improve.db",
+        owner_qq_ids="10001",
+        owner_telegram_ids="",
+    )
+    notifier = OwnerNotifier(store, settings, napcat, FakeTelegram())
+    service = ImprovementService(store, github_client=github, notifier=notifier)
+    created = service.create_from_feedback(feedback_id)
+    service.approve(created.improvement_id)
+
+    first = service.open_pull_request(created.improvement_id)
+    second = service.open_pull_request(created.improvement_id)
+
+    assert first.pull_request_id == second.pull_request_id
+    assert len(napcat.messages) == 1
+    assert len(store.list_owner_notifications()) == 1
     get_settings.cache_clear()
 
 
