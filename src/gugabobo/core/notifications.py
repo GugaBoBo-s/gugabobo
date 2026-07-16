@@ -43,6 +43,26 @@ class OwnerNotifier:
             skip_recipient=skip_recipient,
         )
 
+    def notify_pr_head_changed(
+        self,
+        number: int,
+        url: str,
+        previous_head_sha: str,
+        current_head_sha: str,
+    ) -> list[int]:
+        previous = previous_head_sha[:12] or "unknown"
+        current = current_head_sha[:12] or "unknown"
+        content = (
+            f"咕嘎BoBo PR #{number} 在授权后新增了提交。\n"
+            f"原提交：{previous}\n当前提交：{current}\n{url}\n\n"
+            f"请重新检查后回复“同意合并 PR #{number}”。"
+        )
+        return self.queue_and_deliver(
+            f"pr:{number}:head-changed:{previous_head_sha}:{current_head_sha}",
+            "pr_head_changed",
+            content,
+        )
+
     def queue_and_deliver(
         self,
         dedupe_key: str,

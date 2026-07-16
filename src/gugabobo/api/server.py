@@ -1,3 +1,5 @@
+import hmac
+
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -136,7 +138,13 @@ def require_danger_confirmation(
 
 def require_admin_token(x_gugabobo_admin_token: str | None = Header(default=None)) -> None:
     settings = get_settings()
-    if settings.admin_token and x_gugabobo_admin_token != settings.admin_token:
+    configured_token = settings.admin_token.strip()
+    if not configured_token or configured_token == "change-me":
+        raise HTTPException(status_code=503, detail="Admin token is not configured")
+    if x_gugabobo_admin_token is None or not hmac.compare_digest(
+        x_gugabobo_admin_token,
+        configured_token,
+    ):
         raise HTTPException(status_code=401, detail="Invalid admin token")
 
 
@@ -495,8 +503,8 @@ def approve_pull_request_merge(
     if not record:
         raise HTTPException(status_code=404, detail="Pull request not found")
     try:
-        outcome = PullRequestLifecycleService(agent.store).approve_merge(
-            int(record["number"]),
+        outcome = PullRequestLifecycleService(agent.store).approve_merge_record(
+            pr_id,
             dashboard_owner_context(),
             f"dashboard approve PR #{record['number']}",
         )
@@ -523,8 +531,8 @@ def reject_pull_request_merge(
     if not record:
         raise HTTPException(status_code=404, detail="Pull request not found")
     try:
-        outcome = PullRequestLifecycleService(agent.store).reject_merge(
-            int(record["number"]),
+        outcome = PullRequestLifecycleService(agent.store).reject_merge_record(
+            pr_id,
             dashboard_owner_context(),
             f"dashboard reject PR #{record['number']}",
         )

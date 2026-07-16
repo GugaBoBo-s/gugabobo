@@ -7,7 +7,7 @@ from uuid import uuid4
 from gugabobo.config import get_settings
 from gugabobo.core.notifications import OwnerNotifier
 from gugabobo.infra.claude_runner import ClaudeCodeRunner
-from gugabobo.infra.github_client import GitHubClient
+from gugabobo.infra.github_client import GitHubClient, PullRequestResult
 from gugabobo.infra.redaction import redact_sensitive
 from gugabobo.infra.sandbox import SandboxManager
 from gugabobo.memory.store import MemoryStore
@@ -152,21 +152,31 @@ class ImprovementService:
             raise ImprovementError("improvement task must be approved before opening a pull request")
         if not self.github.configured:
             raise ImprovementError("GUGABOBO_GITHUB_TOKEN is not configured")
-        existing = self.store.get_pull_request_for_improvement(improvement_id)
-        if existing:
-            return PullRequestOpened(
-                pull_request_id=int(existing["id"]),
-                number=int(existing["number"]),
-                url=str(existing["url"]),
-                branch_name=str(existing["branch_name"]),
-            )
         task = self.store.get_task(int(improvement["task_id"]))
         title = str(task["title"]) if task else f"Improvement #{improvement_id}"
+        existing = self.store.get_pull_request_for_improvement(improvement_id)
+        if existing:
+            return self._tracked_pull_request(existing, title)
+        proposal = self._proposal_markdown(improvement_id, improvement, task)
+        branch_name = self._branch_name(improvement_id, improvement)
+        self.store.update_improvement_task(improvement_id, branch_name=branch_name)
         base_branch = self.github.get_default_branch()
         base_sha = self.github.get_branch_sha(base_branch)
-        branch_name = self._branch_name(improvement_id)
-        self.github.create_branch(branch_name, base_sha)
-        proposal = self._proposal_markdown(improvement_id, improvement, task)
+        recovered = self._recover_pull_request(
+            improvement_id,
+            branch_name,
+            base_branch,
+            base_sha,
+            title,
+            proposal,
+            actor_source,
+            actor_user_id,
+        )
+        if recovered:
+            return recovered
+        branch_sha = self.github.try_get_branch_sha(branch_name)
+        if not branch_sha:
+            self.github.create_branch(branch_name, base_sha)
         self.github.put_file(
             path=f"improvements/{improvement_id}.md",
             content=proposal,
@@ -179,33 +189,12 @@ class ImprovementService:
             base=base_branch,
             body=proposal,
         )
-        pull_request_id = self.store.add_pull_request(
-            improvement_task_id=improvement_id,
-            github_owner=self.github.owner,
-            github_repo=self.github.repo,
-            number=pull_request.number,
-            url=pull_request.url,
-            branch_name=branch_name,
-        )
-        self.store.update_improvement_task(
+        return self._persist_pull_request(
             improvement_id,
-            runner_status="pr_open",
-            branch_name=branch_name,
-        )
-        self.store.add_audit_log(
-            actor_source=actor_source,
-            actor_user_id=actor_user_id,
-            action="improvement.pr_open",
-            target=f"pull_request:{pull_request.number}",
-            risk_level="high",
-            detail=pull_request.url,
-        )
-        self.notifier.notify_pr_opened(pull_request.number, pull_request.url, title)
-        return PullRequestOpened(
-            pull_request_id=pull_request_id,
-            number=pull_request.number,
-            url=pull_request.url,
-            branch_name=branch_name,
+            pull_request,
+            title,
+            actor_source,
+            actor_user_id,
         )
 
     def run_improvement(
@@ -227,7 +216,7 @@ class ImprovementService:
         if not runner.configured:
             raise ImprovementError("isolated Claude Code runner is not available")
         task = self.store.get_task(int(improvement["task_id"]))
-        branch_name = self._branch_name(improvement_id)
+        branch_name = self._branch_name(improvement_id, improvement)
         self.store.update_improvement_task(improvement_id, runner_status="running")
         try:
             path = sandbox.prepare(
@@ -281,24 +270,50 @@ class ImprovementService:
             raise ImprovementError(f"improvement task #{improvement_id} not found")
         if improvement["approval_status"] != "approved":
             raise ImprovementError("improvement task must be approved before running")
+        if not self.github.configured:
+            raise ImprovementError("GUGABOBO_GITHUB_TOKEN is not configured")
+        task = self.store.get_task(int(improvement["task_id"]))
+        title = str(task["title"]) if task else f"Improvement #{improvement_id}"
+        proposal = self._proposal_markdown(improvement_id, improvement, task)
+        branch_name = self._branch_name(improvement_id, improvement)
+        self.store.update_improvement_task(improvement_id, branch_name=branch_name)
+        existing = self.store.get_pull_request_for_improvement(improvement_id)
+        if existing:
+            tracked = self._tracked_pull_request(existing, title)
+            return RunOutcome(
+                status="pr_open",
+                branch_name=tracked.branch_name,
+                pr_number=tracked.number,
+                pr_url=tracked.url,
+            )
+        base_branch = self.github.get_default_branch()
+        base_sha = self.github.get_branch_sha(base_branch)
+        recovered = self._recover_pull_request(
+            improvement_id,
+            branch_name,
+            base_branch,
+            base_sha,
+            title,
+            proposal,
+            actor_source,
+            actor_user_id,
+        )
+        if recovered:
+            return RunOutcome(
+                status="pr_open",
+                branch_name=recovered.branch_name,
+                pr_number=recovered.number,
+                pr_url=recovered.url,
+            )
         runner = runner or ClaudeCodeRunner()
         sandbox = sandbox or SandboxManager()
         if not runner.configured:
             raise ImprovementError("isolated Claude Code runner is not available")
-        if not self.github.configured:
-            raise ImprovementError("GUGABOBO_GITHUB_TOKEN is not configured")
-        existing = self.store.get_pull_request_for_improvement(improvement_id)
-        if existing:
-            return RunOutcome(
-                status="pr_open",
-                branch_name=str(existing["branch_name"]),
-                pr_number=int(existing["number"]),
-                pr_url=str(existing["url"]),
-            )
-        task = self.store.get_task(int(improvement["task_id"]))
-        title = str(task["title"]) if task else f"Improvement #{improvement_id}"
-        branch_name = self._branch_name(improvement_id)
-        self.store.update_improvement_task(improvement_id, runner_status="running")
+        self.store.update_improvement_task(
+            improvement_id,
+            runner_status="running",
+            branch_name=branch_name,
+        )
         try:
             path = sandbox.prepare(improvement_id, source_repo or Path.cwd(), branch_name)
         except Exception as error:
@@ -347,14 +362,30 @@ class ImprovementService:
         try:
             sandbox.commit_all(path, f"feat(improvement): #{improvement_id} via Claude Code")
             sandbox.push_branch(path, self.github.push_url, branch_name, self.github.token)
-            base_branch = self.github.get_default_branch()
             pull_request = self.github.create_pull_request(
                 title=title,
                 head=branch_name,
                 base=base_branch,
-                body=self._proposal_markdown(improvement_id, improvement, task),
+                body=proposal,
             )
         except Exception as error:
+            remote = self.github.find_pull_request_by_head(branch_name)
+            if remote:
+                recovered = self._persist_pull_request(
+                    improvement_id,
+                    self._pull_request_result(remote, branch_name),
+                    title,
+                    actor_source,
+                    actor_user_id,
+                )
+                sandbox.cleanup(improvement_id)
+                return RunOutcome(
+                    status="pr_open",
+                    branch_name=recovered.branch_name,
+                    diff=diff,
+                    pr_number=recovered.number,
+                    pr_url=recovered.url,
+                )
             self.store.update_improvement_task(
                 improvement_id,
                 runner_status="failed",
@@ -363,35 +394,20 @@ class ImprovementService:
             detail = self._safe_error(error)
             self._audit_run(actor_source, actor_user_id, improvement_id, "failed", detail)
             return RunOutcome(status="failed", branch_name=branch_name, diff=diff, detail=detail)
-        self.store.add_pull_request(
-            improvement_task_id=improvement_id,
-            github_owner=self.github.owner,
-            github_repo=self.github.repo,
-            number=pull_request.number,
-            url=pull_request.url,
-            branch_name=branch_name,
-        )
-        self.store.update_improvement_task(
+        opened = self._persist_pull_request(
             improvement_id,
-            runner_status="pr_open",
-            branch_name=branch_name,
+            pull_request,
+            title,
+            actor_source,
+            actor_user_id,
         )
-        self.store.add_audit_log(
-            actor_source=actor_source,
-            actor_user_id=actor_user_id,
-            action="improvement.pr_open",
-            target=f"pull_request:{pull_request.number}",
-            risk_level="high",
-            detail=pull_request.url,
-        )
-        self.notifier.notify_pr_opened(pull_request.number, pull_request.url, title)
         sandbox.cleanup(improvement_id)
         return RunOutcome(
             status="pr_open",
-            branch_name=branch_name,
+            branch_name=opened.branch_name,
             diff=diff,
-            pr_number=pull_request.number,
-            pr_url=pull_request.url,
+            pr_number=opened.number,
+            pr_url=opened.url,
         )
 
     def sync_pull_request(
@@ -411,7 +427,7 @@ class ImprovementService:
         if self.github.owner == owner and self.github.repo == repo:
             github = self.github
         else:
-            github = GitHubClient(owner=owner, repo=repo)
+            github = GitHubClient(self.github.settings, owner=owner, repo=repo)
         remote = github.get_pull_request(number)
         merged = bool(remote.get("merged"))
         state = str(remote.get("state", ""))
@@ -442,6 +458,127 @@ class ImprovementService:
             merged_at=str(merged_at or ""),
         )
 
+    def _recover_pull_request(
+        self,
+        improvement_id: int,
+        branch_name: str,
+        base_branch: str,
+        base_sha: str,
+        title: str,
+        body: str,
+        actor_source: str,
+        actor_user_id: str,
+    ) -> PullRequestOpened | None:
+        remote = self.github.find_pull_request_by_head(branch_name)
+        if remote:
+            return self._persist_pull_request(
+                improvement_id,
+                self._pull_request_result(remote, branch_name),
+                title,
+                actor_source,
+                actor_user_id,
+            )
+        branch_sha = self.github.try_get_branch_sha(branch_name)
+        if not branch_sha or branch_sha == base_sha:
+            return None
+        try:
+            pull_request = self.github.create_pull_request(
+                title=title,
+                head=branch_name,
+                base=base_branch,
+                body=body,
+            )
+        except Exception as error:
+            remote = self.github.find_pull_request_by_head(branch_name)
+            if not remote:
+                detail = self._safe_error(error)
+                raise ImprovementError(
+                    f"remote branch exists but pull request recovery failed: {detail}"
+                ) from error
+            pull_request = self._pull_request_result(remote, branch_name)
+        return self._persist_pull_request(
+            improvement_id,
+            pull_request,
+            title,
+            actor_source,
+            actor_user_id,
+        )
+
+    def _persist_pull_request(
+        self,
+        improvement_id: int,
+        pull_request: PullRequestResult,
+        title: str,
+        actor_source: str,
+        actor_user_id: str,
+    ) -> PullRequestOpened:
+        existing = self.store.get_pull_request_for_improvement(improvement_id)
+        pull_request_id = self.store.add_pull_request(
+            improvement_task_id=improvement_id,
+            github_owner=self.github.owner,
+            github_repo=self.github.repo,
+            number=pull_request.number,
+            url=pull_request.url,
+            branch_name=pull_request.branch_name,
+        )
+        self.store.update_improvement_task(
+            improvement_id,
+            runner_status="pr_open",
+            branch_name=pull_request.branch_name,
+        )
+        if existing is None:
+            self.store.add_audit_log(
+                actor_source=actor_source,
+                actor_user_id=actor_user_id,
+                action="improvement.pr_open",
+                target=f"pull_request:{pull_request.number}",
+                risk_level="high",
+                detail=pull_request.url,
+            )
+        self.notifier.notify_pr_opened(pull_request.number, pull_request.url, title)
+        return PullRequestOpened(
+            pull_request_id=pull_request_id,
+            number=pull_request.number,
+            url=pull_request.url,
+            branch_name=pull_request.branch_name,
+        )
+
+    def _tracked_pull_request(
+        self,
+        record: dict[str, object],
+        title: str,
+    ) -> PullRequestOpened:
+        improvement_id = int(record["improvement_task_id"])
+        branch_name = str(record["branch_name"])
+        self.store.update_improvement_task(
+            improvement_id,
+            runner_status="pr_open",
+            branch_name=branch_name,
+        )
+        if str(record["status"]) == "open":
+            self.notifier.notify_pr_opened(
+                int(record["number"]),
+                str(record["url"]),
+                title,
+            )
+        return PullRequestOpened(
+            pull_request_id=int(record["id"]),
+            number=int(record["number"]),
+            url=str(record["url"]),
+            branch_name=branch_name,
+        )
+
+    def _pull_request_result(
+        self,
+        remote: dict[str, object],
+        branch_name: str,
+    ) -> PullRequestResult:
+        return PullRequestResult(
+            number=int(remote["number"]),
+            url=str(remote["html_url"]),
+            branch_name=branch_name,
+        )
+
     def _audit_run(
         self,
         actor_source: str,
@@ -460,8 +597,9 @@ class ImprovementService:
             detail=detail[:1000],
         )
 
-    def _branch_name(self, improvement_id: int) -> str:
-        return f"gugabobo/improvement-{improvement_id}-{uuid4().hex[:8]}"
+    def _branch_name(self, improvement_id: int, improvement: dict[str, object]) -> str:
+        existing = str(improvement.get("branch_name", "")).strip()
+        return existing or f"gugabobo/improvement-{improvement_id}-{uuid4().hex[:8]}"
 
     def _safe_error(self, error: object) -> str:
         settings = get_settings()
@@ -502,6 +640,7 @@ class ImprovementService:
         risk_level = improvement.get("risk_level", "normal")
         description = str(task["description"]) if task else ""
         return (
+            f"<!-- gugabobo-improvement:{improvement_id} -->\n"
             f"# Improvement proposal #{improvement_id}\n\n"
             f"- Source feedback: #{feedback_id}\n"
             f"- Scope: {scope}\n"

@@ -18,6 +18,8 @@ class FakeGitHubClient:
         self.created_pulls: list[dict[str, str]] = []
         self.pull_state = {"state": "open", "merged": False, "head": {"sha": "abc"}}
         self.checks_state = "success"
+        self.remote_branches: dict[str, str] = {}
+        self.remote_pull: dict[str, object] = {}
 
     def get_pull_request(self, number):
         return self.pull_state
@@ -33,15 +35,30 @@ class FakeGitHubClient:
 
     def create_branch(self, branch: str, from_sha: str) -> dict:
         self.created_branches.append((branch, from_sha))
+        self.remote_branches[branch] = from_sha
         return {"ref": f"refs/heads/{branch}"}
 
     def put_file(self, path: str, content: str, message: str, branch: str) -> dict:
         self.put_files.append({"path": path, "content": content, "branch": branch})
+        self.remote_branches[branch] = "commitsha"
         return {"commit": {"sha": "commitsha"}}
 
     def create_pull_request(self, title, head, base, body="") -> PullRequestResult:
         self.created_pulls.append({"title": title, "head": head, "base": base})
+        self.remote_pull = {
+            "number": 7,
+            "html_url": "https://github.com/x/y/pull/7",
+            "head": {"ref": head},
+        }
         return PullRequestResult(number=7, url="https://github.com/x/y/pull/7", branch_name=head)
+
+    def find_pull_request_by_head(self, branch: str) -> dict:
+        if self.remote_pull and self.remote_pull.get("head", {}).get("ref") == branch:
+            return self.remote_pull
+        return {}
+
+    def try_get_branch_sha(self, branch: str) -> str:
+        return self.remote_branches.get(branch, "")
 
     @property
     def push_url(self) -> str:
@@ -50,6 +67,11 @@ class FakeGitHubClient:
 
 class UnconfiguredGitHubClient(FakeGitHubClient):
     configured = False
+
+
+class FailingPullRequestGitHubClient(FakeGitHubClient):
+    def create_pull_request(self, title, head, base, body="") -> PullRequestResult:
+        raise RuntimeError("github unavailable")
 
 
 class FakeRunner:
@@ -118,6 +140,14 @@ def test_store_task_improvement_and_pr_crud(tmp_path):
         url="https://example/pull/9",
         branch_name="gugabobo/improvement-1",
     )
+    duplicate_pr_id = store.add_pull_request(
+        improvement_task_id=improvement_id,
+        github_owner="a",
+        github_repo="b",
+        number=9,
+        url="https://example/pull/9",
+        branch_name="gugabobo/improvement-1",
+    )
 
     assert store.get_task(task_id)["title"] == "t1"
     assert store.list_tasks()[0]["id"] == task_id
@@ -129,6 +159,7 @@ def test_store_task_improvement_and_pr_crud(tmp_path):
     assert store.get_improvement_task(improvement_id)["approval_status"] == "approved"
 
     assert store.get_pull_request(pr_id)["number"] == 9
+    assert duplicate_pr_id == pr_id
     assert store.list_pull_requests()[0]["id"] == pr_id
     counts = {row["table"]: row["rows"] for row in store.table_counts()}
     assert counts["tasks"] == 1
@@ -334,8 +365,73 @@ def test_ship_opens_pull_request_when_checks_pass(tmp_path):
     assert sandbox.cleaned == [improvement_id]
     assert store.get_improvement_task(improvement_id)["runner_status"] == "pr_open"
     assert store.list_pull_requests()[0]["number"] == 7
+
+
+def test_ship_recovers_remote_pr_created_before_database_write(tmp_path):
+    get_settings.cache_clear()
+    store, service, improvement_id = approved_improvement(tmp_path)
+    github = service.github
+    branch = f"gugabobo/improvement-{improvement_id}-recovery"
+    store.update_improvement_task(improvement_id, branch_name=branch)
+    github.remote_pull = {
+        "number": 19,
+        "html_url": "https://github.com/x/y/pull/19",
+        "head": {"ref": branch},
+    }
+
+    outcome = service.run_and_open_pull_request(
+        improvement_id,
+        runner=FakeRunner(configured=False),
+        sandbox=FakeSandbox(),
+    )
+
+    assert outcome.status == "pr_open"
+    assert outcome.pr_number == 19
+    assert store.list_pull_requests()[0]["number"] == 19
+
+
+def test_ship_recovers_pushed_branch_before_running_again(tmp_path):
+    get_settings.cache_clear()
+    store, service, improvement_id = approved_improvement(tmp_path)
+    github = service.github
+    branch = f"gugabobo/improvement-{improvement_id}-pushed"
+    store.update_improvement_task(improvement_id, branch_name=branch)
+    github.remote_branches[branch] = "pushed-sha"
+
+    outcome = service.run_and_open_pull_request(
+        improvement_id,
+        runner=FakeRunner(configured=False),
+        sandbox=FakeSandbox(),
+    )
+
+    assert outcome.status == "pr_open"
+    assert github.created_pulls[0]["head"] == branch
+    assert store.list_pull_requests()[0]["number"] == 7
     actions = [log["action"] for log in store.list_audit_logs()]
     assert "improvement.pr_open" in actions
+    get_settings.cache_clear()
+
+
+def test_ship_stops_when_remote_branch_cannot_be_recovered(tmp_path):
+    get_settings.cache_clear()
+    store, feedback_id = make_store_with_feedback(tmp_path)
+    github = FailingPullRequestGitHubClient()
+    service = ImprovementService(store, github_client=github)
+    created = service.create_from_feedback(feedback_id)
+    service.approve(created.improvement_id)
+    branch = f"gugabobo/improvement-{created.improvement_id}-pushed"
+    store.update_improvement_task(created.improvement_id, branch_name=branch)
+    github.remote_branches[branch] = "pushed-sha"
+    runner = FakeRunner()
+
+    with pytest.raises(ImprovementError, match="pull request recovery failed"):
+        service.run_and_open_pull_request(
+            created.improvement_id,
+            runner=runner,
+            sandbox=FakeSandbox(),
+        )
+
+    assert runner.calls == []
     get_settings.cache_clear()
 
 

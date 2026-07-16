@@ -93,3 +93,37 @@ def test_failed_notification_is_retried(tmp_path) -> None:
     record = store.list_owner_notifications()[0]
     assert record["status"] == "sent"
     assert record["attempts"] == 2
+
+
+def test_stale_sending_notification_is_retried(tmp_path) -> None:
+    store = MemoryStore(tmp_path / "stale.db")
+    settings = Settings(
+        data_dir=tmp_path,
+        db_path=tmp_path / "stale.db",
+        owner_qq_ids="10001",
+        owner_telegram_ids="",
+    )
+    napcat = FakeNapCat()
+    notifier = OwnerNotifier(store, settings, napcat, FakeTelegram())
+    notification_id = store.queue_owner_notification(
+        "pr:15:merged:qq:10001",
+        "pr_merged",
+        "qq",
+        "10001",
+        "done",
+    )
+    assert store.claim_owner_notification(notification_id) is not None
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE owner_notifications SET updated_at = datetime('now', '-6 minutes') "
+            "WHERE id = ?",
+            (notification_id,),
+        )
+
+    result = notifier.retry_pending()
+
+    assert result == {"attempted": 1, "sent": 1}
+    assert napcat.messages == [("10001", "done")]
+    record = store.list_owner_notifications()[0]
+    assert record["status"] == "sent"
+    assert record["attempts"] == 2

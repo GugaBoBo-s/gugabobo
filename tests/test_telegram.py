@@ -37,6 +37,7 @@ def configure_test_env(tmp_path, monkeypatch):
     monkeypatch.setenv("GUGABOBO_TELEGRAM_BOT_TOKEN", "")
     monkeypatch.setenv("GUGABOBO_TELEGRAM_WEBHOOK_SECRET", "")
     monkeypatch.setenv("GUGABOBO_TELEGRAM_REPLY_ENABLED", "false")
+    monkeypatch.setenv("GUGABOBO_ADMIN_TOKEN", "test-admin")
     monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
     monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
     get_settings.cache_clear()
@@ -161,7 +162,7 @@ def test_telegram_trusted_role_can_record_group_feedback(tmp_path, monkeypatch):
     client.post(
         "/dashboard-control/access-rules",
         json={"platform": "telegram", "user_id": "10001", "role": "trusted"},
-        headers={"X-Gugabobo-Admin-Token": "change-me"},
+        headers={"X-Gugabobo-Admin-Token": "test-admin"},
     )
 
     response = client.post("/telegram/events", json=group_payload("建议回复短一点"))
@@ -208,7 +209,7 @@ def test_telegram_trusted_role_can_write_memory(tmp_path, monkeypatch):
     client.post(
         "/dashboard-control/access-rules",
         json={"platform": "telegram", "user_id": "10001", "role": "trusted"},
-        headers={"X-Gugabobo-Admin-Token": "change-me"},
+        headers={"X-Gugabobo-Admin-Token": "test-admin"},
     )
 
     response = client.post("/telegram/events", json=private_payload("记住我喜欢蓝色"))
@@ -227,7 +228,7 @@ def test_telegram_blocked_user_is_ignored(tmp_path, monkeypatch):
     client.post(
         "/dashboard-control/access-rules",
         json={"platform": "telegram", "user_id": "10001", "role": "blocked"},
-        headers={"X-Gugabobo-Admin-Token": "change-me"},
+        headers={"X-Gugabobo-Admin-Token": "test-admin"},
     )
 
     response = client.post("/telegram/events", json=private_payload())

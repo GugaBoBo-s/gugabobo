@@ -111,6 +111,23 @@ def test_dashboard_control_requires_admin_token(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
+def test_dashboard_control_rejects_unsafe_admin_token_configuration(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    for token in ("", "change-me"):
+        monkeypatch.setenv("GUGABOBO_ADMIN_TOKEN", token)
+        get_settings.cache_clear()
+        client = TestClient(app)
+
+        response = client.post(
+            "/dashboard-control/chat",
+            json={"message": "你好"},
+            headers={"X-Gugabobo-Admin-Token": token},
+        )
+
+        assert response.status_code == 503
+    get_settings.cache_clear()
+
+
 def test_dashboard_runtime_control_requires_admin_token(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     client = TestClient(app)
@@ -603,6 +620,12 @@ class FakeGitHubClient:
     def get_branch_sha(self, branch):
         return "sha"
 
+    def try_get_branch_sha(self, branch):
+        return ""
+
+    def find_pull_request_by_head(self, branch):
+        return {}
+
     def create_branch(self, branch, from_sha):
         return {}
 
@@ -632,7 +655,7 @@ class FakeLifecycleGitHubClient(FakeGitHubClient):
             "head": {"sha": "abc"},
         }
 
-    def merge_pull_request(self, number, commit_title, merge_method="squash"):
+    def merge_pull_request(self, number, commit_title, merge_method="squash", sha=""):
         from gugabobo.infra.github_client import MergeResult
 
         return MergeResult(merged=True, sha="merge-sha", message="merged")

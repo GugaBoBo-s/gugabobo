@@ -1,3 +1,5 @@
+import sqlite3
+
 from gugabobo.config import Settings
 from gugabobo.core.channel import ChannelContext
 from gugabobo.core.lifecycle import PullRequestLifecycleService, parse_merge_command
@@ -21,13 +23,13 @@ class FakeGitHub:
             "head": {"sha": "head-sha"},
         }
         self.merged_numbers: list[int] = []
+        self.merged_shas: list[str] = []
         self.closed_numbers: list[int] = []
 
     def get_pull_request(self, number: int) -> dict[str, object]:
         return self.remote
 
     def get_checks_status(self, ref: str) -> str:
-        assert ref == "head-sha"
         return self.checks_status
 
     def merge_pull_request(
@@ -35,10 +37,12 @@ class FakeGitHub:
         number: int,
         commit_title: str,
         merge_method: str = "squash",
+        sha: str = "",
     ) -> MergeResult:
         if self.merge_fails:
             raise RuntimeError("GitHub temporarily rejected merge")
         self.merged_numbers.append(number)
+        self.merged_shas.append(sha)
         return MergeResult(merged=True, sha="merge-sha", message="merged")
 
     def close_pull_request(self, number: int) -> dict[str, object]:
@@ -50,6 +54,7 @@ class FakeGitHub:
 class FakeNotifier:
     def __init__(self) -> None:
         self.outcomes: list[tuple[int, str, str, tuple[str, str] | None]] = []
+        self.head_changes: list[tuple[int, str, str, str]] = []
 
     def notify_pr_outcome(
         self,
@@ -63,6 +68,16 @@ class FakeNotifier:
 
     def retry_pending(self, limit: int = 50) -> dict[str, int]:
         return {"attempted": 0, "sent": 0}
+
+    def notify_pr_head_changed(
+        self,
+        number: int,
+        url: str,
+        previous_head_sha: str,
+        current_head_sha: str,
+    ) -> list[int]:
+        self.head_changes.append((number, url, previous_head_sha, current_head_sha))
+        return []
 
 def build_service(tmp_path, checks_status: str = "success"):
     store = MemoryStore(tmp_path / "lifecycle.db")
@@ -102,6 +117,27 @@ def test_parse_merge_commands() -> None:
     assert parse_merge_command("聊聊 PR 15") is None
 
 
+def test_merge_authorization_schema_is_migrated(tmp_path) -> None:
+    db_path = tmp_path / "legacy.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE merge_authorizations ("
+            "pull_request_id INTEGER PRIMARY KEY, decision TEXT NOT NULL, "
+            "status TEXT NOT NULL, actor_platform TEXT NOT NULL, actor_source TEXT NOT NULL, "
+            "actor_user_id TEXT NOT NULL, command TEXT NOT NULL DEFAULT '', "
+            "detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+
+    store = MemoryStore(db_path)
+
+    with store.connect() as conn:
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(merge_authorizations)")
+        }
+    assert "authorized_head_sha" in columns
+
+
 def test_non_owner_cannot_authorize_merge(tmp_path) -> None:
     store, pr_id, github, notifier, service = build_service(tmp_path)
     context = ChannelContext(
@@ -127,6 +163,7 @@ def test_successful_checks_merge_immediately(tmp_path) -> None:
 
     assert outcome.status == "merged"
     assert github.merged_numbers == [15]
+    assert github.merged_shas == ["head-sha"]
     assert store.get_pull_request(pr_id)["status"] == "merged"
     assert store.get_merge_authorization(pr_id)["status"] == "merged"
     assert store.list_improvement_reflections()[0]["outcome"] == "merged"
@@ -191,6 +228,58 @@ def test_github_rejection_is_retried_by_daemon(tmp_path) -> None:
     tick = service.tick()
 
     assert tick["merged"] == 1
+    assert github.merged_numbers == [15]
+
+
+def test_new_head_requires_fresh_owner_authorization(tmp_path) -> None:
+    store, pr_id, github, notifier, service = build_service(tmp_path)
+    github.merge_fails = True
+
+    first = service.approve_merge(15, ChannelContext.local(), "/merge 15")
+    github.remote["head"] = {"sha": "new-head-sha"}
+    github.merge_fails = False
+    tick = service.tick()
+
+    assert first.status == "merge_pending"
+    assert tick["merged"] == 0
+    assert github.merged_numbers == []
+    assert store.get_merge_authorization(pr_id)["status"] == "head_changed"
+    assert notifier.head_changes[0][2:] == ("head-sha", "new-head-sha")
+
+    second = service.approve_merge(15, ChannelContext.local(), "同意合并 PR #15")
+
+    assert second.status == "merged"
+    assert github.merged_shas == ["new-head-sha"]
+
+
+def test_fresh_merge_lease_prevents_duplicate_merge_call(tmp_path) -> None:
+    store, pr_id, github, notifier, service = build_service(tmp_path)
+    store.upsert_merge_authorization(
+        pull_request_id=pr_id,
+        decision="approved",
+        status="approved",
+        authorized_head_sha="head-sha",
+        actor_platform="cli",
+        actor_source="cli",
+        actor_user_id="local",
+    )
+    assert store.claim_merge_authorization(pr_id, "head-sha") is not None
+
+    pending = service.process(pr_id)
+
+    assert pending.status == "merge_pending"
+    assert github.merged_numbers == []
+
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE merge_authorizations SET updated_at = datetime('now', '-3 minutes') "
+            "WHERE pull_request_id = ?",
+            (pr_id,),
+        )
+
+    merged = service.process(pr_id)
+
+    assert merged.status == "merged"
     assert github.merged_numbers == [15]
 
 

@@ -147,13 +147,36 @@ def test_merge_and_close_pull_request(monkeypatch):
     seen = install_mock(monkeypatch, handler)
     client = GitHubClient()
 
-    merged = client.merge_pull_request(15, "Merge PR #15")
+    merged = client.merge_pull_request(15, "Merge PR #15", sha="head-sha")
     closed = client.close_pull_request(15)
 
     assert merged.merged is True
     assert merged.sha == "abc"
+    assert json.loads(seen[0].content)["sha"] == "head-sha"
     assert closed["state"] == "closed"
     assert [request.method for request in seen] == ["PUT", "PATCH"]
+    get_settings.cache_clear()
+
+
+def test_authenticated_login_and_pull_request_recovery(monkeypatch):
+    configure_token(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/user":
+            return httpx.Response(200, json={"login": "gugabobo-agent"})
+        if request.url.path.endswith("/pulls"):
+            assert request.url.params["head"] == "GugaBoBo-s:gugabobo/improvement-7"
+            return httpx.Response(200, json=[{"number": 17, "html_url": "https://example/pr/17"}])
+        if request.url.path.endswith("/git/ref/heads/missing"):
+            return httpx.Response(404, json={"message": "Not Found"})
+        return httpx.Response(404, json={})
+
+    install_mock(monkeypatch, handler)
+    client = GitHubClient()
+
+    assert client.get_authenticated_login() == "gugabobo-agent"
+    assert client.find_pull_request_by_head("gugabobo/improvement-7")["number"] == 17
+    assert client.try_get_branch_sha("missing") == ""
     get_settings.cache_clear()
 
 

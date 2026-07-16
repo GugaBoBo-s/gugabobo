@@ -130,9 +130,21 @@ class GitHubClient:
         data = self._request("GET", "")
         return str(data.get("default_branch", "main"))
 
+    def get_authenticated_login(self) -> str:
+        data = self._request_url("GET", self._api_url("/user"))
+        return str(data.get("login", "")) if isinstance(data, dict) else ""
+
     def get_branch_sha(self, branch: str) -> str:
         data = self._request("GET", f"/git/ref/heads/{branch}")
         return str(data["object"]["sha"])
+
+    def try_get_branch_sha(self, branch: str) -> str:
+        try:
+            return self.get_branch_sha(branch)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 404:
+                return ""
+            raise
 
     def create_branch(self, branch: str, from_sha: str) -> dict:
         return self._request(
@@ -176,11 +188,15 @@ class GitHubClient:
         number: int,
         commit_title: str,
         merge_method: str = "squash",
+        sha: str = "",
     ) -> MergeResult:
+        payload = {"commit_title": commit_title, "merge_method": merge_method}
+        if sha:
+            payload["sha"] = sha
         data = self._request(
             "PUT",
             f"/pulls/{number}/merge",
-            {"commit_title": commit_title, "merge_method": merge_method},
+            payload,
         )
         return MergeResult(
             merged=bool(data.get("merged")),
@@ -225,6 +241,14 @@ class GitHubClient:
 
     def list_pull_requests(self, state: str = "open") -> list[dict]:
         return self._paginate(self._url("/pulls"), {"state": state})
+
+    def find_pull_request_by_head(self, branch: str) -> dict:
+        pulls = self._paginate(
+            self._url("/pulls"),
+            {"state": "open", "head": f"{self.owner}:{branch}"},
+            limit=1,
+        )
+        return pulls[0] if pulls else {}
 
     def list_pull_request_files(self, number: int, limit: int = 100) -> list[dict]:
         return self._paginate(self._url(f"/pulls/{number}/files"), limit=limit)

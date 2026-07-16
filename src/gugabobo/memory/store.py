@@ -177,6 +177,7 @@ CREATE TABLE IF NOT EXISTS merge_authorizations (
     pull_request_id INTEGER PRIMARY KEY,
     decision TEXT NOT NULL,
     status TEXT NOT NULL,
+    authorized_head_sha TEXT NOT NULL DEFAULT '',
     actor_platform TEXT NOT NULL,
     actor_source TEXT NOT NULL,
     actor_user_id TEXT NOT NULL,
@@ -272,6 +273,7 @@ class MemoryStore:
             conn.executescript(SCHEMA)
             self._migrate_access_rules(conn)
             self._migrate_audit_logs(conn)
+            self._migrate_github_lifecycle(conn)
             columns = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(messages)").fetchall()
@@ -324,6 +326,17 @@ class MemoryStore:
         }
         if "risk_level" not in columns:
             conn.execute("ALTER TABLE audit_logs ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'normal'")
+
+    def _migrate_github_lifecycle(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(merge_authorizations)").fetchall()
+        }
+        if "authorized_head_sha" not in columns:
+            conn.execute(
+                "ALTER TABLE merge_authorizations ADD COLUMN "
+                "authorized_head_sha TEXT NOT NULL DEFAULT ''"
+            )
 
     def ensure_channel_account(
         self,
@@ -1108,6 +1121,15 @@ class MemoryStore:
         checks_status: str = "unknown",
     ) -> int:
         with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT id FROM pull_requests WHERE improvement_task_id = ? "
+                "OR (github_owner = ? AND github_repo = ? AND number = ?) "
+                "ORDER BY id DESC LIMIT 1",
+                (improvement_task_id, github_owner, github_repo, number),
+            ).fetchone()
+            if existing:
+                return int(existing["id"])
             cursor = conn.execute(
                 "INSERT INTO pull_requests "
                 "(improvement_task_id, github_owner, github_repo, number, url, "
@@ -1341,14 +1363,16 @@ class MemoryStore:
         actor_user_id: str,
         command: str = "",
         detail: str = "",
+        authorized_head_sha: str = "",
     ) -> None:
         with self.connect() as conn:
             conn.execute(
                 "INSERT INTO merge_authorizations "
-                "(pull_request_id, decision, status, actor_platform, actor_source, "
-                "actor_user_id, command, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "(pull_request_id, decision, status, authorized_head_sha, actor_platform, "
+                "actor_source, actor_user_id, command, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(pull_request_id) DO UPDATE SET decision = excluded.decision, "
-                "status = excluded.status, actor_platform = excluded.actor_platform, "
+                "status = excluded.status, authorized_head_sha = excluded.authorized_head_sha, "
+                "actor_platform = excluded.actor_platform, "
                 "actor_source = excluded.actor_source, actor_user_id = excluded.actor_user_id, "
                 "command = excluded.command, detail = excluded.detail, "
                 "updated_at = CURRENT_TIMESTAMP",
@@ -1356,6 +1380,7 @@ class MemoryStore:
                     pull_request_id,
                     decision,
                     status,
+                    authorized_head_sha,
                     actor_platform,
                     actor_source,
                     actor_user_id,
@@ -1364,11 +1389,36 @@ class MemoryStore:
                 ),
             )
 
+    def claim_merge_authorization(
+        self,
+        pull_request_id: int,
+        authorized_head_sha: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                "UPDATE merge_authorizations SET status = 'merging', detail = '', "
+                "updated_at = CURRENT_TIMESTAMP WHERE pull_request_id = ? "
+                "AND decision = 'approved' AND authorized_head_sha = ? AND "
+                "(status IN ('approved', 'merge_pending') OR "
+                "(status = 'merging' AND updated_at < datetime('now', '-2 minutes')))",
+                (pull_request_id, authorized_head_sha),
+            )
+            if cursor.rowcount == 0:
+                return None
+            row = conn.execute(
+                "SELECT pull_request_id, decision, status, authorized_head_sha, "
+                "actor_platform, actor_source, actor_user_id, command, detail, "
+                "created_at, updated_at FROM merge_authorizations WHERE pull_request_id = ?",
+                (pull_request_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def get_merge_authorization(self, pull_request_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT pull_request_id, decision, status, actor_platform, actor_source, "
-                "actor_user_id, command, detail, created_at, updated_at "
+                "SELECT pull_request_id, decision, status, authorized_head_sha, actor_platform, "
+                "actor_source, actor_user_id, command, detail, created_at, updated_at "
                 "FROM merge_authorizations WHERE pull_request_id = ?",
                 (pull_request_id,),
             ).fetchone()
@@ -1377,8 +1427,8 @@ class MemoryStore:
     def list_merge_authorizations(self, limit: int = 50) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT pull_request_id, decision, status, actor_platform, actor_source, "
-                "actor_user_id, command, detail, created_at, updated_at "
+                "SELECT pull_request_id, decision, status, authorized_head_sha, actor_platform, "
+                "actor_source, actor_user_id, command, detail, created_at, updated_at "
                 "FROM merge_authorizations ORDER BY updated_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -1509,7 +1559,8 @@ class MemoryStore:
             cursor = conn.execute(
                 "UPDATE owner_notifications SET status = 'sending', attempts = attempts + 1, "
                 "updated_at = CURRENT_TIMESTAMP WHERE id = ? "
-                "AND status IN ('pending', 'failed')",
+                "AND (status IN ('pending', 'failed') OR "
+                "(status = 'sending' AND updated_at < datetime('now', '-5 minutes')))",
                 (notification_id,),
             )
             if cursor.rowcount == 0:
@@ -1547,7 +1598,10 @@ class MemoryStore:
             "attempts, last_error, sent_at, created_at, updated_at FROM owner_notifications"
         )
         if retryable_only:
-            query += " WHERE status IN ('pending', 'failed')"
+            query += (
+                " WHERE status IN ('pending', 'failed') OR "
+                "(status = 'sending' AND updated_at < datetime('now', '-5 minutes'))"
+            )
         query += " ORDER BY id ASC LIMIT ?"
         with self.connect() as conn:
             rows = conn.execute(query, (limit,)).fetchall()

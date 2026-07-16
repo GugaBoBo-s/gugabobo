@@ -45,7 +45,7 @@ Open the local monitoring dashboard:
 http://127.0.0.1:8765/dashboard
 ```
 
-After entering `GUGABOBO_ADMIN_TOKEN`, the Dashboard can manage runtime processes, diagnostics, non-secret configuration, conversation context, memories, summaries, feedback, access rules, tasks, improvement runs, pull requests, and outbound drafts. High-risk actions require a fixed confirmation phrase and are written to the audit log. `blocked` QQ and Telegram users are rejected before reaching the core agent.
+After entering `GUGABOBO_ADMIN_TOKEN`, the Dashboard can manage runtime processes, diagnostics, non-secret configuration, conversation context, memories, summaries, feedback, access rules, tasks, improvement runs, pull requests, and outbound drafts. The token must be non-empty and must not use the `change-me` placeholder; otherwise every administrative write endpoint returns `503`. High-risk actions require a fixed confirmation phrase and are written to the audit log. `blocked` QQ and Telegram users are rejected before reaching the core agent.
 
 Access roles are enforced before write operations from QQ and Telegram. `user` can chat only, `trusted` can also record feedback and explicit long-term memories, `owner` is reserved for administrative and future high-risk operations, and `blocked` is ignored.
 
@@ -403,13 +403,16 @@ account so pull requests are opened by the bot rather than the owner.
 The lifecycle daemon can scan every repository visible to the bot account in one GitHub
 organization and publish a `COMMENT` review on every open pull request. A review run is unique
 for `(owner, repository, PR number, head SHA)`. Repeated scans and process restarts do not create
-duplicate reviews; pushing a new commit changes the head SHA and schedules a fresh review.
+duplicate reviews; pushing a new commit changes the head SHA and schedules a fresh review. Remote
+deduplication only trusts reviews authored by the currently authenticated bot account for that exact
+head commit. Changed files and large patches are split into bounded LLM batches and consolidated,
+covering up to GitHub's 3,000-file pull request API limit instead of silently omitting later files.
 
 ```env
 GUGABOBO_GITHUB_REVIEW_ENABLED=true
 GUGABOBO_GITHUB_ORGANIZATION=GugaBoBo-s
 GUGABOBO_GITHUB_REVIEW_INTERVAL_SECONDS=300
-GUGABOBO_GITHUB_REVIEW_MAX_FILES=100
+GUGABOBO_GITHUB_REVIEW_MAX_FILES=3000
 GUGABOBO_GITHUB_REVIEW_MAX_PATCH_CHARS=120000
 ```
 
@@ -493,6 +496,9 @@ Current behavior:
   `runner_status` to `pr_open`, and records it in `pull_requests`
 - opening a pull request queues owner notifications for every configured QQ and
   Telegram owner
+- a generated branch name is persisted before remote writes; retries recover an
+  already-created pull request or pushed branch instead of creating duplicate work
+- stale in-progress notification deliveries are reclaimed and retried after a timeout
 - there is no host execution fallback when Docker or the runner image is unavailable
 - runs and pull requests are high-risk actions recorded in audit logs
 
@@ -523,6 +529,11 @@ Current behavior:
 - one approval is sufficient across QQ, Telegram, Dashboard, or CLI and triggers
   an immediate GitHub merge request; GitHub branch protection may reject it, in
   which case the durable authorization is retried by the lifecycle agent
+- every approval is bound to the exact PR head SHA and the SHA is sent with the
+  GitHub merge request; any later commit revokes the pending authorization and
+  notifies the owner to review and approve the new head
+- an atomic merge lease prevents the API and lifecycle daemon from issuing the
+  same merge concurrently
 - merge/rejection creates a reflection record, queues outcome notifications, and
   merged revisions receive a pending deployment record
 

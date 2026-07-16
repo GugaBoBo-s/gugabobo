@@ -108,6 +108,27 @@ class PullRequestLifecycleService:
     ) -> LifecycleOutcome:
         self._require_owner(context)
         record = self._record_by_number(pr_number)
+        return self._approve_record(record, context, command)
+
+    def approve_merge_record(
+        self,
+        pull_request_id: int,
+        context: ChannelContext,
+        command: str = "",
+    ) -> LifecycleOutcome:
+        self._require_owner(context)
+        record = self.store.get_pull_request(pull_request_id)
+        if not record:
+            raise LifecycleError(f"pull request #{pull_request_id} not found")
+        return self._approve_record(record, context, command)
+
+    def _approve_record(
+        self,
+        record: dict[str, object],
+        context: ChannelContext,
+        command: str,
+    ) -> LifecycleOutcome:
+        pr_number = int(record["number"])
         pull_request_id = int(record["id"])
         if str(record["status"]) == "merged":
             return LifecycleOutcome(
@@ -116,10 +137,22 @@ class PullRequestLifecycleService:
                 checks_status=str(record["checks_status"]),
                 message=f"PR #{pr_number} 已经合并。",
             )
+        github = self._github_for(record)
+        try:
+            remote = github.get_pull_request(pr_number)
+        except Exception as error:
+            raise LifecycleError(self._safe_error(error)) from error
+        if bool(remote.get("merged")) or str(remote.get("state", "")) == "closed":
+            return self.process(pull_request_id, response_context=context)
+        head = remote.get("head", {})
+        head_sha = str(head.get("sha", "")) if isinstance(head, dict) else ""
+        if not head_sha:
+            raise LifecycleError(f"无法读取 PR #{pr_number} 的当前提交。")
         self.store.upsert_merge_authorization(
             pull_request_id=pull_request_id,
             decision="approved",
             status="approved",
+            authorized_head_sha=head_sha,
             actor_platform=context.platform,
             actor_source=context.source,
             actor_user_id=context.user_id,
@@ -131,7 +164,7 @@ class PullRequestLifecycleService:
             action="pull_request.merge_approved",
             target=f"pull_request:{pr_number}",
             risk_level="high",
-            detail=f"platform:{context.platform}",
+            detail=f"platform:{context.platform}; head:{head_sha}",
         )
         return self.process(pull_request_id, response_context=context)
 
@@ -143,6 +176,27 @@ class PullRequestLifecycleService:
     ) -> LifecycleOutcome:
         self._require_owner(context)
         record = self._record_by_number(pr_number)
+        return self._reject_record(record, context, command)
+
+    def reject_merge_record(
+        self,
+        pull_request_id: int,
+        context: ChannelContext,
+        command: str = "",
+    ) -> LifecycleOutcome:
+        self._require_owner(context)
+        record = self.store.get_pull_request(pull_request_id)
+        if not record:
+            raise LifecycleError(f"pull request #{pull_request_id} not found")
+        return self._reject_record(record, context, command)
+
+    def _reject_record(
+        self,
+        record: dict[str, object],
+        context: ChannelContext,
+        command: str,
+    ) -> LifecycleOutcome:
+        pr_number = int(record["number"])
         pull_request_id = int(record["id"])
         if str(record["status"]) == "merged":
             return LifecycleOutcome(
@@ -153,7 +207,12 @@ class PullRequestLifecycleService:
             )
         github = self._github_for(record)
         try:
-            github.close_pull_request(pr_number)
+            remote = github.get_pull_request(pr_number)
+            if bool(remote.get("merged")) or str(remote.get("state", "")) == "closed":
+                return self.process(pull_request_id, response_context=context)
+            closed = github.close_pull_request(pr_number)
+            if bool(closed.get("merged")):
+                return self.process(pull_request_id, response_context=context)
         except Exception as error:
             raise LifecycleError(self._safe_error(error)) from error
         self.store.update_pull_request(pull_request_id, status="closed")
@@ -161,6 +220,7 @@ class PullRequestLifecycleService:
             pull_request_id=pull_request_id,
             decision="rejected",
             status="rejected",
+            authorized_head_sha="",
             actor_platform=context.platform,
             actor_source=context.source,
             actor_user_id=context.user_id,
@@ -242,30 +302,58 @@ class PullRequestLifecycleService:
                 checks_status=checks_status,
                 message=f"PR #{number} 仍在等待主人授权。",
             )
+        if str(authorization["status"]) == "head_changed":
+            return LifecycleOutcome(
+                status="head_changed",
+                pr_number=number,
+                checks_status=checks_status,
+                message=f"PR #{number} 已新增提交，需要主人重新授权。",
+            )
+        authorized_head_sha = str(authorization.get("authorized_head_sha", ""))
+        if not authorized_head_sha or authorized_head_sha != head_sha:
+            return self._mark_head_changed(
+                record,
+                authorization,
+                authorized_head_sha,
+                head_sha,
+                checks_status,
+            )
+        claimed = self.store.claim_merge_authorization(
+            pull_request_id,
+            authorized_head_sha,
+        )
+        if claimed is None:
+            return LifecycleOutcome(
+                status="merge_pending",
+                pr_number=number,
+                checks_status=checks_status,
+                message=f"PR #{number} 正在执行合并，请稍候。",
+            )
         try:
             result = github.merge_pull_request(
                 number,
                 commit_title=f"Merge PR #{number} via gugabobo owner approval",
+                sha=authorized_head_sha,
             )
         except Exception as error:
-            detail = self._safe_error(error)
-            self._update_authorization(authorization, "merge_pending", detail)
-            self._record_blocked(record, "merge_failed", detail)
-            return LifecycleOutcome(
-                status="merge_pending",
-                pr_number=number,
-                checks_status=checks_status,
-                message=f"PR #{number} 暂未合并，后台会自动重试。",
+            return self._handle_merge_failure(
+                record,
+                github,
+                claimed,
+                authorized_head_sha,
+                checks_status,
+                error,
+                response_context,
             )
         if not result.merged:
-            detail = result.message or "GitHub refused the merge"
-            self._update_authorization(authorization, "merge_pending", detail)
-            self._record_blocked(record, "merge_failed", detail)
-            return LifecycleOutcome(
-                status="merge_pending",
-                pr_number=number,
-                checks_status=checks_status,
-                message=f"PR #{number} 暂未合并，后台会自动重试。",
+            return self._handle_merge_failure(
+                record,
+                github,
+                claimed,
+                authorized_head_sha,
+                checks_status,
+                result.message or "GitHub refused the merge",
+                response_context,
             )
         merged_at = datetime.now(timezone.utc).isoformat()
         self.store.update_pull_request(
@@ -274,7 +362,7 @@ class PullRequestLifecycleService:
             checks_status=checks_status,
             merged_at=merged_at,
         )
-        self._update_authorization(authorization, "merged", result.sha)
+        self._update_authorization(claimed, "merged", result.sha)
         self._complete_merged(
             record,
             result.sha,
@@ -358,6 +446,106 @@ class PullRequestLifecycleService:
         if not context.is_owner:
             raise LifecycleError("只有已登记的主人可以批准或拒绝合并 PR。")
 
+    def _handle_merge_failure(
+        self,
+        record: dict[str, object],
+        github: GitHubClient,
+        authorization: dict[str, object],
+        authorized_head_sha: str,
+        checks_status: str,
+        failure: object,
+        response_context: ChannelContext | None,
+    ) -> LifecycleOutcome:
+        number = int(record["number"])
+        pull_request_id = int(record["id"])
+        try:
+            remote = github.get_pull_request(number)
+        except Exception:
+            remote = {}
+        if bool(remote.get("merged")):
+            merge_sha = str(remote.get("merge_commit_sha") or "")
+            merged_at = str(remote.get("merged_at") or datetime.now(timezone.utc).isoformat())
+            self.store.update_pull_request(
+                pull_request_id,
+                status="merged",
+                checks_status=checks_status,
+                merged_at=merged_at,
+            )
+            self._update_authorization(authorization, "merged", merge_sha)
+            self._complete_merged(
+                record,
+                merge_sha,
+                merged_at,
+                checks_status,
+                response_context=response_context,
+            )
+            return LifecycleOutcome(
+                status="merged",
+                pr_number=number,
+                checks_status=checks_status,
+                message=f"PR #{number} 已合并。",
+            )
+        head = remote.get("head", {})
+        current_head_sha = str(head.get("sha", "")) if isinstance(head, dict) else ""
+        if current_head_sha and current_head_sha != authorized_head_sha:
+            return self._mark_head_changed(
+                record,
+                authorization,
+                authorized_head_sha,
+                current_head_sha,
+                checks_status,
+            )
+        detail = self._safe_error(failure)
+        self._update_authorization(authorization, "merge_pending", detail)
+        self._record_blocked(record, "merge_failed", detail)
+        return LifecycleOutcome(
+            status="merge_pending",
+            pr_number=number,
+            checks_status=checks_status,
+            message=f"PR #{number} 暂未合并，后台会自动重试。",
+        )
+
+    def _mark_head_changed(
+        self,
+        record: dict[str, object],
+        authorization: dict[str, object],
+        authorized_head_sha: str,
+        current_head_sha: str,
+        checks_status: str,
+    ) -> LifecycleOutcome:
+        number = int(record["number"])
+        previous = authorized_head_sha or "missing"
+        current = current_head_sha or "missing"
+        detail = f"authorized head {previous} changed to {current}"
+        already_recorded = (
+            str(authorization["status"]) == "head_changed"
+            and str(authorization["detail"]) == detail
+        )
+        self._update_authorization(authorization, "head_changed", detail)
+        if not already_recorded:
+            self._record_blocked(record, "head_changed", detail)
+            self.store.add_audit_log(
+                actor_source="github",
+                actor_user_id="gugabobo",
+                action="pull_request.head_changed",
+                target=f"pull_request:{number}",
+                status="blocked",
+                risk_level="high",
+                detail=detail,
+            )
+            self.notifier.notify_pr_head_changed(
+                number,
+                str(record["url"]),
+                authorized_head_sha,
+                current_head_sha,
+            )
+        return LifecycleOutcome(
+            status="head_changed",
+            pr_number=number,
+            checks_status=checks_status,
+            message=f"PR #{number} 已新增提交，需要主人重新授权。",
+        )
+
     def _update_authorization(
         self,
         authorization: dict[str, object],
@@ -368,6 +556,7 @@ class PullRequestLifecycleService:
             pull_request_id=int(authorization["pull_request_id"]),
             decision=str(authorization["decision"]),
             status=status,
+            authorized_head_sha=str(authorization.get("authorized_head_sha", "")),
             actor_platform=str(authorization["actor_platform"]),
             actor_source=str(authorization["actor_source"]),
             actor_user_id=str(authorization["actor_user_id"]),
