@@ -66,6 +66,25 @@ class OwnerNotifier:
             content,
         )
 
+    def notify_deployment(
+        self,
+        status: str,
+        revision: str,
+        detail: str,
+    ) -> list[int]:
+        short_revision = revision[:12] or "unknown"
+        if status == "deployed":
+            content = f"咕嘎BoBo 已自动部署 {short_revision} 到服务器。\n{detail}".strip()
+        else:
+            content = (
+                f"咕嘎BoBo 自动部署 {short_revision} 失败，生产服务已回滚。\n{detail}"
+            ).strip()
+        return self.queue_and_deliver(
+            f"deployment:{revision}:{status}",
+            f"deployment_{status}",
+            content,
+        )
+
     def queue_and_deliver(
         self,
         dedupe_key: str,

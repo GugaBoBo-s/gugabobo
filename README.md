@@ -590,6 +590,7 @@ gugabobo pr approve-merge 15
 gugabobo pr reject-merge 15
 gugabobo pr sync-all
 gugabobo deployment record-current
+gugabobo deployment report deployed <revision> --detail "health check passed"
 ```
 
 Current behavior:
@@ -613,8 +614,16 @@ Current behavior:
   notifies the owner to review and approve the new head
 - an atomic merge lease prevents the API and lifecycle daemon from issuing the
   same merge concurrently
-- merge/rejection creates a reflection record, queues outcome notifications, and
-  merged revisions receive a pending deployment record
+- merge/rejection creates a reflection record and queues outcome notifications
+- merged revisions receive a pending deployment record; the root-only systemd
+  deployment timer notices the canonical `main` update within one minute
+- deployment candidates are installed, linted, tested, and built in staging before
+  production changes; only fast-forward updates are accepted
+- activation preserves the previous revision and runner image, restarts API and
+  lifecycle services, and verifies `/health`; failure rolls production back and
+  blocks the failed revision from automatic retries
+- successful and failed deployment outcomes are persisted and sent to configured
+  QQ and Telegram owners; Dashboard shows the current deployment state
 
 API endpoints:
 

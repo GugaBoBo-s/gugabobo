@@ -15,6 +15,28 @@ def test_runner_dockerfile_uses_supported_node_runtime() -> None:
     assert "apt-get install -y --no-install-recommends git nodejs npm" not in dockerfile
 
 
+def test_auto_deploy_validates_before_activation_and_supports_rollback() -> None:
+    script = (Path(__file__).parents[1] / "deploy" / "auto-deploy.sh").read_text(
+        encoding="utf-8"
+    )
+
+    validation = script.index("write_status \"validating\"")
+    activation = script.index("write_status \"deploying\"")
+    assert validation < activation
+    assert 'BRANCH="main"' in script
+    assert "merge-base --is-ancestor" in script
+    assert "merge --ff-only" in script
+    assert "reset --hard" in script
+    assert "health_check" in script
+    assert "deploy-failed-target" in script
+    assert "commits/{revision}/pulls" in script
+    assert "commits/{revision}/check-runs" in script
+    assert 'run.get("name") == "test"' in script
+    assert "verify_pending_deployment" in script
+    assert "target_revision = ? AND status = 'pending'" in script
+    assert "mark_pending_deployment_failed" in script
+
+
 def git(repo, *args: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -66,3 +88,34 @@ def test_current_deployment_marks_ancestor_revision(tmp_path) -> None:
     assert record["id"] == deployment_id
     assert record["status"] == "deployed"
     assert record["deployed_revision"] == current
+
+
+def test_failed_deployment_report_updates_matching_pending_revision(tmp_path) -> None:
+    store = MemoryStore(tmp_path / "deployment-failed.db")
+    task_id = store.add_task(title="deploy")
+    improvement_id = store.add_improvement_task(task_id=task_id)
+    pr_id = store.add_pull_request(
+        improvement_task_id=improvement_id,
+        github_owner="owner",
+        github_repo="repo",
+        number=2,
+        url="https://example/pull/2",
+        branch_name="change",
+    )
+    store.add_deployment_record(pr_id, "test", "abc123")
+    settings = Settings(
+        env="test",
+        data_dir=tmp_path,
+        db_path=tmp_path / "deployment-failed.db",
+    )
+
+    outcome = DeploymentService(store, settings).report(
+        "abc123",
+        "failed",
+        "health check failed",
+    )
+
+    assert outcome.updated == 1
+    record = store.list_deployment_records()[0]
+    assert record["status"] == "failed"
+    assert record["detail"] == "health check failed"

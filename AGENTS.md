@@ -33,7 +33,7 @@ The current system includes:
 - organization-wide automated pull request reviews, deduplicated by repository and head SHA
 - organization-wide issue evaluation with allowlisted autonomous pull request creation
 - a Docker-only code runner with isolated checks and no host fallback
-- systemd deployment for the API, Telegram polling, and lifecycle agent services
+- staged systemd auto deployment with rollback, health checks, and owner notifications
 
 Current P6 work should prioritize:
 
@@ -47,9 +47,14 @@ Never merge a pull request without explicit approval from an authenticated owner
 A single approval from QQ, Telegram, Dashboard, or CLI authorizes an immediate
 GitHub merge attempt. GitHub branch protection remains authoritative; if GitHub
 rejects the merge, persist the approval and retry in the lifecycle agent. Never
-treat PR creation, ordinary chat, or ambiguous language as merge approval. Do not
-automatically deploy generated code. Do not add Redis, Celery, Docker Compose, a
-vector database, X, or Xiaohongshu unless the requested work requires it.
+treat PR creation, ordinary chat, or ambiguous language as merge approval.
+Automatic production deployment is allowed only after verified code reaches the
+canonical `main` branch through the owner-authorized merge lifecycle. Validate in
+staging, require a fast-forward, a linked merged pull request, and a successful
+GitHub Actions `test` check, preserve the previous revision and runner image, and
+roll back on activation or health-check failure. Never deploy a pull request branch
+directly. Do not add Redis, Celery, Docker Compose, a vector database, X, or
+Xiaohongshu unless the requested work requires it.
 
 Automated organization reviews must use GitHub `COMMENT` reviews only. Never
 automatically submit `APPROVE` or `REQUEST_CHANGES`, and never treat a code review

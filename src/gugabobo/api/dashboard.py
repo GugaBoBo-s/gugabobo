@@ -287,6 +287,7 @@ def dashboard_html() -> str:
                   <input id="configGithubReviewMaxPatchChars" type="number" min="1000" max="1000000" placeholder="单个 PR diff 字符预算">
                   <label><input id="configGithubIssueEnabled" type="checkbox"> 自动发现并处理 Issue</label>
                   <label><input id="configGithubIssueAutoFixEnabled" type="checkbox"> 自动修改并提交 PR</label>
+                  <label><input id="configAutoDeployEnabled" type="checkbox"> main 合并后自动部署</label>
                   <input id="configGithubIssueInterval" type="number" min="30" placeholder="Issue 扫描周期（秒）">
                   <input id="configGithubIssueMaxPerScan" type="number" min="1" max="500" placeholder="每轮最多评估 Issue 数">
                   <input id="configGithubIssueMinConfidence" type="number" min="0" max="1" step="0.05" placeholder="自动修改最低置信度">
@@ -686,6 +687,7 @@ def dashboard_html() -> str:
             byId("configGithubIssueMaxPerScan").value = values.GUGABOBO_GITHUB_ISSUE_MAX_PER_SCAN || 20;
             byId("configGithubIssueMinConfidence").value = values.GUGABOBO_GITHUB_ISSUE_MIN_CONFIDENCE ?? 0.75;
             byId("configGithubIssueRepositories").value = values.GUGABOBO_GITHUB_ISSUE_AUTO_FIX_REPOSITORIES || "";
+            byId("configAutoDeployEnabled").checked = Boolean(values.GUGABOBO_AUTO_DEPLOY_ENABLED);
             byId("configSecrets").innerHTML = Object.entries(config.secrets)
               .map(([key, configured]) => `${esc(key.replace("GUGABOBO_", ""))}: ${pill(configured ? "configured" : "missing", configured)}`)
               .join("<br>");
@@ -734,7 +736,8 @@ def dashboard_html() -> str:
               GUGABOBO_GITHUB_ISSUE_INTERVAL_SECONDS: Number(byId("configGithubIssueInterval").value || 600),
               GUGABOBO_GITHUB_ISSUE_MAX_PER_SCAN: Number(byId("configGithubIssueMaxPerScan").value || 20),
               GUGABOBO_GITHUB_ISSUE_MIN_CONFIDENCE: Number(byId("configGithubIssueMinConfidence").value || 0.75),
-              GUGABOBO_GITHUB_ISSUE_AUTO_FIX_REPOSITORIES: byId("configGithubIssueRepositories").value
+              GUGABOBO_GITHUB_ISSUE_AUTO_FIX_REPOSITORIES: byId("configGithubIssueRepositories").value,
+              GUGABOBO_AUTO_DEPLOY_ENABLED: byId("configAutoDeployEnabled").checked
             };
           }
           async function loadEditableConfig() {
@@ -779,11 +782,13 @@ def dashboard_html() -> str:
             currentMemories = await memoriesResponse.json();
             const currentMessages = await messagesResponse.json();
             currentSummaries = data.summaries;
+            const autoDeploy = data.runtime.auto_deploy || { status: "unknown" };
             byId("metrics").innerHTML = [
               metric("状态", data.status.status, "ok"),
               metric("API", data.runtime.api.running ? `运行 ${data.runtime.api.pid}` : "停止", data.runtime.api.running ? "ok" : "warn"),
               metric("Telegram", data.runtime.telegram_polling.running ? `运行 ${data.runtime.telegram_polling.pid}` : "停止", data.runtime.telegram_polling.running ? "ok" : "warn"),
               metric("生命周期", data.runtime.lifecycle_agent.running ? `运行 ${data.runtime.lifecycle_agent.pid}` : "停止", data.runtime.lifecycle_agent.running ? "ok" : "warn"),
+              metric("自动部署", autoDeploy.status, ["deployed", "current"].includes(autoDeploy.status) ? "ok" : "warn"),
               metric("消息", data.status.messages),
               metric("反馈", data.status.feedbacks),
               metric("记忆", data.status.memory_items),
@@ -803,6 +808,8 @@ def dashboard_html() -> str:
               `<div>Telegram token ${pill(data.runtime.telegram_polling.configured ? "configured" : "missing", data.runtime.telegram_polling.configured)}</div>`,
               `<div>Telegram send ${pill(data.runtime.telegram_polling.reply_enabled ? "enabled" : "disabled", data.runtime.telegram_polling.reply_enabled)}</div>`,
               `<div>Lifecycle agent ${pill(data.runtime.lifecycle_agent.running ? `running pid=${data.runtime.lifecycle_agent.pid}` : "stopped", data.runtime.lifecycle_agent.running)}</div>`,
+              `<div>Auto deploy ${pill(autoDeploy.status, ["deployed", "current"].includes(autoDeploy.status))}</div>`,
+              `<div class="muted">${esc(autoDeploy.detail || "")}</div>`,
               `<div>NapCat ${pill(data.runtime.napcat.reply_enabled ? "active reply" : (data.runtime.napcat.passive_reply_enabled ? "passive reply" : "reply off"), data.runtime.napcat.reply_enabled || data.runtime.napcat.passive_reply_enabled)}</div>`,
               `<div>NapCat process ${pill(data.runtime.napcat.running ? `running ${data.runtime.napcat.pids.join(",")}` : "stopped", data.runtime.napcat.running)}</div>`,
               `<div>NapCat WebUI ${pill(data.runtime.napcat.webui.configured ? "configured" : "missing", data.runtime.napcat.webui.configured)}</div>`,

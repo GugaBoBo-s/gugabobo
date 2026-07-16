@@ -298,6 +298,7 @@ def test_dashboard_config_control_updates_env_file(tmp_path, monkeypatch):
                 "GUGABOBO_GITHUB_ISSUE_MAX_PER_SCAN": 999,
                 "GUGABOBO_GITHUB_ISSUE_MIN_CONFIDENCE": 1.5,
                 "GUGABOBO_GITHUB_ISSUE_AUTO_FIX_REPOSITORIES": "GugaBoBo-s/gugabobo",
+                "GUGABOBO_AUTO_DEPLOY_ENABLED": False,
                 "GUGABOBO_CODE_CLAUDE_MODEL": "claude-code",
                 "GUGABOBO_CODE_OPENAI_MODEL": "gpt-code",
                 "GUGABOBO_CODE_DEEPSEEK_MODEL": "deepseek-code",
@@ -329,6 +330,7 @@ def test_dashboard_config_control_updates_env_file(tmp_path, monkeypatch):
     assert "GUGABOBO_GITHUB_ISSUE_MAX_PER_SCAN=500" in env_text
     assert "GUGABOBO_GITHUB_ISSUE_MIN_CONFIDENCE=1.0" in env_text
     assert "GUGABOBO_GITHUB_ISSUE_AUTO_FIX_REPOSITORIES=GugaBoBo-s/gugabobo" in env_text
+    assert "GUGABOBO_AUTO_DEPLOY_ENABLED=false" in env_text
     assert "GUGABOBO_CODE_CLAUDE_MODEL=claude-code" in env_text
     assert "GUGABOBO_CODE_OPENAI_MODEL=gpt-code" in env_text
     assert "GUGABOBO_CODE_DEEPSEEK_MODEL=deepseek-code" in env_text

@@ -1,0 +1,13 @@
+[Unit]
+Description=gugabobo production auto deployment
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/gugabobo-auto-deploy
+TimeoutStartSec=30min
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

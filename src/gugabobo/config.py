@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     github_issue_min_confidence: float = Field(default=0.75, ge=0, le=1)
     github_issue_auto_fix_enabled: bool = True
     github_issue_auto_fix_repositories: str = ""
+    auto_deploy_enabled: bool = True
     git_author_name: str = "GuGabobo"
     git_author_email: str = "263493647+GuGabobo@users.noreply.github.com"
     sandbox_dir: Path = Path(".gugabobo/sandbox")

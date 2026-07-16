@@ -1256,6 +1256,54 @@ Safety invariants:
 - Generated work stays in a unique branch and pull request; explicit owner authorization remains mandatory for merge.
 - Non-timeout provider errors stop execution and remain visible in SQLite, logs, CLI, API, and Dashboard.
 
+### 14.3 Staged Production Auto Deployment
+
+The server runs a root-only systemd timer independently from the unprivileged gugabobo runtime.
+It polls the canonical `main` branch, stages and validates a new fast-forward revision, builds a
+revision-tagged runner image, and only then activates production. Pull request branches are never
+deployment targets.
+
+```mermaid
+sequenceDiagram
+    participant T as systemd timer
+    participant G as origin/main
+    participant S as staging release
+    participant P as production
+    participant O as QQ and Telegram owners
+
+    T->>G: Fetch canonical main
+    alt No new fast-forward revision
+        T-->>T: Record current or blocked state
+    else New revision
+        T->>S: Export commit and install dependencies
+        S->>S: Ruff, pytest, and runner image build
+        alt Validation fails
+            T->>O: Notify deployment failure
+        else Validation passes
+            T->>P: Fast-forward, install, activate image, restart
+            T->>P: Verify localhost health endpoint
+            alt Health check fails
+                T->>P: Restore previous commit and runner image
+                T->>O: Notify rollback
+            else Healthy
+                T->>O: Notify deployment success
+            end
+        end
+    end
+```
+
+Safety invariants:
+
+- The deployment service follows only `origin/main` and requires fast-forward ancestry.
+- The target must be linked to a merged `main` pull request and have a successful GitHub Actions `test` check.
+- SQLite must contain the pending deployment record created by the merge lifecycle for that exact revision.
+- Validation runs before the production checkout changes.
+- The deployment timer runs as root; API, Telegram, and lifecycle processes remain unprivileged.
+- Tracked local production changes block deployment.
+- The previous Git revision and runner image are retained for rollback.
+- A failed revision is not retried until a newer revision exists or an administrator clears it.
+- Deployment status, records, audit logs, and owner notifications expose the lifecycle outcome.
+
 Recommended branch protection:
 
 ```text
@@ -2131,7 +2179,9 @@ audit records. PR creation notifies all configured QQ and Telegram owners. A
 single explicit owner authorization is persisted across channels and triggers an
 immediate GitHub merge request. GitHub-rejected merges remain queued for retry.
 Merge/rejection creates reflection records, and merged revisions are linked to
-deployment records visible in Dashboard.
+deployment records visible in Dashboard. A root-only systemd timer validates new
+fast-forward `main` revisions in staging, activates healthy candidates, rolls back
+failed service health checks, and notifies owners of the outcome.
 The lifecycle agent also performs organization-wide GitHub `COMMENT` code reviews,
 deduplicated by repository, PR number, and head SHA. Review history, failures, retries,
 and links are persisted and visible in Dashboard.

@@ -87,8 +87,8 @@ sudo bash /opt/gugabobo/repo/deploy/setup.sh
 ```
 
 The setup script installs Python and Docker, installs the package, builds the
-isolated runner image, runs Ruff and pytest, and installs the systemd units. It
-does not overwrite an existing `.env`.
+isolated runner image, runs Ruff and pytest, installs the systemd units, and
+enables the production deployment timer. It does not overwrite an existing `.env`.
 
 ## Configuration
 
@@ -211,6 +211,47 @@ curl --fail http://127.0.0.1:8765/health
 The setup command uses `git pull --ff-only`, rebuilds the runner image, and
 reruns the complete test suite before the service is restarted.
 
+## Automatic deployment
+
+`gugabobo-deploy.timer` checks `origin/main` every minute. Set the following
+value through `.env` or Dashboard configuration:
+
+```bash
+GUGABOBO_AUTO_DEPLOY_ENABLED=true
+```
+
+For every new fast-forward revision, the root-only deployment service:
+
+1. Requires the target commit to be associated with a merged `main` pull request
+   and a successful GitHub Actions `test` check, plus a pending deployment record
+   created by the gugabobo lifecycle agent.
+2. Exports the target commit into `/opt/gugabobo/deploy-staging`.
+3. Creates an isolated virtual environment and runs Ruff and pytest.
+4. Builds a revision-tagged runner image.
+5. Fast-forwards the production checkout only after all validation passes.
+6. Reinstalls the production package, activates the image, restarts services,
+   and verifies `http://127.0.0.1:8765/health`.
+7. Records and notifies success, or restores the previous commit and image on
+   failure.
+
+A failed revision is written to `/opt/gugabobo/data/deploy-failed-target` and is
+not retried automatically. A newer `main` revision is eligible immediately. To
+retry the same revision after fixing an external problem:
+
+```bash
+sudo rm /opt/gugabobo/data/deploy-failed-target
+sudo systemctl start gugabobo-deploy.service
+```
+
+Inspect deployment state and logs:
+
+```bash
+systemctl status gugabobo-deploy.timer --no-pager
+systemctl status gugabobo-deploy.service --no-pager
+journalctl -u gugabobo-deploy.service -n 200 --no-pager
+cat /opt/gugabobo/data/deploy-status.json
+```
+
 ## Security invariants
 
 - Keep the API on `127.0.0.1` and use an SSH tunnel.
@@ -223,5 +264,6 @@ reruns the complete test suite before the service is restarted.
 - Owner authorization may come from QQ, Telegram, Dashboard, or CLI and triggers
   an immediate merge request. Keep required checks enforced through GitHub branch
   protection; rejected authorized merges are retried by the lifecycle agent.
-- Keep merge authorization separate from deployment; setup records the deployed
-  server revision after tests pass.
+- Never deploy a pull request branch directly. Automatic deployment follows only
+  fast-forward revisions on canonical `main`, validates candidates before
+  activation, and rolls back failed health checks.

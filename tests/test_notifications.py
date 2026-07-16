@@ -134,3 +134,23 @@ def test_stale_sending_notification_is_recovered_after_lease(tmp_path) -> None:
     assert napcat.messages == [("10001", "done")]
     assert record["status"] == "sent"
     assert record["attempts"] == 2
+
+
+def test_deployment_notification_sends_result_once_per_revision(tmp_path) -> None:
+    store = MemoryStore(tmp_path / "deployment-notification.db")
+    settings = Settings(
+        data_dir=tmp_path,
+        db_path=tmp_path / "deployment-notification.db",
+        owner_qq_ids="10001",
+        owner_telegram_ids="20001",
+    )
+    napcat = FakeNapCat()
+    telegram = FakeTelegram()
+    notifier = OwnerNotifier(store, settings, napcat, telegram)
+
+    notifier.notify_deployment("deployed", "abcdef1234567890", "health check passed")
+    notifier.notify_deployment("deployed", "abcdef1234567890", "health check passed")
+
+    assert len(napcat.messages) == 1
+    assert len(telegram.messages) == 1
+    assert "已自动部署 abcdef123456" in napcat.messages[0][1]

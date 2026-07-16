@@ -54,6 +54,7 @@ class RuntimeManager:
                 "pid": lifecycle_pid,
                 "github_configured": bool(self.settings.github_token),
             },
+            "auto_deploy": self._auto_deploy_status(),
             "napcat": {
                 "api_url": self.settings.napcat_api_url,
                 "reply_enabled": self.settings.napcat_reply_enabled,
@@ -89,6 +90,23 @@ class RuntimeManager:
                 },
             },
         }
+
+    def _auto_deploy_status(self) -> dict[str, object]:
+        path = self.settings.data_dir / "deploy-status.json"
+        default = {
+            "status": "unknown",
+            "current_revision": "",
+            "target_revision": "",
+            "detail": "No deployment status has been recorded.",
+            "updated_at": "",
+        }
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return default
+        if not isinstance(data, dict):
+            return default
+        return {key: data.get(key, value) for key, value in default.items()}
 
     def qq_diagnostics(self, store: MemoryStore) -> dict[str, object]:
         webui = self._tcp_status("127.0.0.1", 6099)

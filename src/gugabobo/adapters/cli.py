@@ -12,9 +12,10 @@ from gugabobo.core.deployment import DeploymentError, DeploymentService
 from gugabobo.core.github_issues import GitHubIssueAutomationService
 from gugabobo.core.improvement import ImprovementError, ImprovementService
 from gugabobo.core.lifecycle import LifecycleError, PullRequestLifecycleService
-from gugabobo.infra.telegram_client import TelegramClient
+from gugabobo.core.notifications import OwnerNotifier
 from gugabobo.infra.logs import get_logger
 from gugabobo.infra.runtime import build_agent
+from gugabobo.infra.telegram_client import TelegramClient
 
 app = typer.Typer(help="gugabobo control CLI")
 feedback_app = typer.Typer(help="Feedback commands")
@@ -441,6 +442,28 @@ def deployment_list(limit: int = 50) -> None:
         )
 
 
+@deployment_app.command("report")
+def deployment_report(
+    status: str,
+    revision: str,
+    detail: str = typer.Option("", "--detail"),
+) -> None:
+    """Record and notify the owner about an automated deployment result."""
+    agent = build_agent()
+    try:
+        outcome = DeploymentService(agent.store).report(revision, status, detail)
+    except DeploymentError as error:
+        raise typer.BadParameter(str(error)) from error
+    OwnerNotifier(agent.store).notify_deployment(status, revision, detail)
+    echo_mapping(
+        {
+            "revision": outcome.revision,
+            "status": outcome.status,
+            "updated": outcome.updated,
+        }
+    )
+
+
 @review_app.command("scan")
 def review_scan() -> None:
     """Scan organization pull requests and submit pending reviews."""
@@ -519,6 +542,7 @@ def config_show() -> None:
             "github_issue_min_confidence": settings.github_issue_min_confidence,
             "github_issue_auto_fix_enabled": settings.github_issue_auto_fix_enabled,
             "github_issue_auto_fix_repositories": settings.github_issue_auto_fix_repositories,
+            "auto_deploy_enabled": settings.auto_deploy_enabled,
             "git_author_name": settings.git_author_name,
             "git_author_email": settings.git_author_email,
             "sandbox_dir": settings.sandbox_dir,
