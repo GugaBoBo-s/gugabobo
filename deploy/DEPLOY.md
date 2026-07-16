@@ -109,6 +109,10 @@ If Docker Hub or `github.com` requires the server's local HTTP proxy, set
 also accepts a local HTTP `GUGABOBO_TELEGRAM_PROXY`. Only loopback HTTP proxy
 URLs are accepted for automatic Docker daemon configuration.
 
+For servers with a slow path to Debian's default repository, set a trusted base
+mirror such as `GUGABOBO_DEBIAN_MIRROR=https://mirrors.cloud.tencent.com`.
+The value replaces only `http://deb.debian.org` inside the runner build.
+
 ## Isolated Claude Code authentication
 
 Claude Code runs only in `gugabobo-runner:local`. Its dedicated home directory

@@ -10,6 +10,7 @@ HTTPS_REPO_URL="${GUGABOBO_HTTPS_REPO_URL:-https://github.com/GugaBoBo-s/gugabob
 RUNNER_IMAGE="${GUGABOBO_RUNNER_IMAGE:-gugabobo-runner:local}"
 CREDENTIAL_HELPER="$REPO_DIR/deploy/git-credential-gugabobo"
 DOCKER_PROXY="${GUGABOBO_DOCKER_PROXY:-}"
+DEBIAN_MIRROR="${GUGABOBO_DEBIAN_MIRROR:-}"
 
 configure_repo_auth() {
   if [ ! -f "$CREDENTIAL_HELPER" ] || [ ! -f "$REPO_DIR/.env" ]; then
@@ -42,6 +43,15 @@ configure_docker_proxy() {
   systemctl restart docker
 }
 
+configure_build_mirror() {
+  if [ -z "$DEBIAN_MIRROR" ] && [ -f "$REPO_DIR/.env" ]; then
+    DEBIAN_MIRROR=$(sed -n 's/^GUGABOBO_DEBIAN_MIRROR=//p' "$REPO_DIR/.env" | head -n 1 | tr -d '\r')
+  fi
+  if ! printf '%s' "$DEBIAN_MIRROR" | grep -Eq '^https?://[A-Za-z0-9._:/-]+$'; then
+    DEBIAN_MIRROR=""
+  fi
+}
+
 echo "[gugabobo] root=$ROOT user=$RUN_USER"
 
 apt-get update -y
@@ -72,15 +82,19 @@ fi
 chmod 600 "$REPO_DIR/.env"
 configure_repo_auth
 configure_docker_proxy
+configure_build_mirror
 
+BUILD_ARGS=()
 if [ -n "$DOCKER_PROXY" ]; then
-  docker build --network=host \
-    --build-arg HTTP_PROXY="$DOCKER_PROXY" \
-    --build-arg HTTPS_PROXY="$DOCKER_PROXY" \
-    -f "$REPO_DIR/deploy/Dockerfile.runner" -t "$RUNNER_IMAGE" "$REPO_DIR"
-else
-  docker build -f "$REPO_DIR/deploy/Dockerfile.runner" -t "$RUNNER_IMAGE" "$REPO_DIR"
+  BUILD_ARGS+=(--network=host)
+  BUILD_ARGS+=(--build-arg "HTTP_PROXY=$DOCKER_PROXY")
+  BUILD_ARGS+=(--build-arg "HTTPS_PROXY=$DOCKER_PROXY")
 fi
+if [ -n "$DEBIAN_MIRROR" ]; then
+  BUILD_ARGS+=(--build-arg "DEBIAN_MIRROR=$DEBIAN_MIRROR")
+fi
+docker build "${BUILD_ARGS[@]}" \
+  -f "$REPO_DIR/deploy/Dockerfile.runner" -t "$RUNNER_IMAGE" "$REPO_DIR"
 
 sudo -u "$RUN_USER" "$REPO_DIR/.venv/bin/python" -m ruff check "$REPO_DIR"
 sudo -u "$RUN_USER" "$REPO_DIR/.venv/bin/python" -m pytest -q "$REPO_DIR"
