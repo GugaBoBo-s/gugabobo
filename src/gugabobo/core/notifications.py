@@ -23,9 +23,7 @@ class OwnerNotifier:
     def notify_pr_opened(self, number: int, url: str, title: str) -> list[int]:
         content = (
             f"咕嘎BoBo 已提交 PR #{number}：{title}\n{url}\n\n"
-            f"可立即授权；CI 通过后将自动合并。在 QQ、Telegram 或 Dashboard 发送：\n"
-            f"同意合并 PR #{number}\n"
-            f"拒绝合并 PR #{number}"
+            "回复“同意合并”立即合并，或回复“拒绝合并”关闭。"
         )
         return self.queue_and_deliver(f"pr:{number}:opened", "pr_opened", content)
 
@@ -34,6 +32,7 @@ class OwnerNotifier:
         number: int,
         outcome: str,
         detail: str,
+        skip_recipient: tuple[str, str] | None = None,
     ) -> list[int]:
         label = "已合并" if outcome == "merged" else "已拒绝"
         content = f"咕嘎BoBo PR #{number} {label}。\n{detail}".strip()
@@ -41,19 +40,7 @@ class OwnerNotifier:
             f"pr:{number}:{outcome}",
             f"pr_{outcome}",
             content,
-        )
-
-    def notify_pr_blocked(
-        self,
-        number: int,
-        reason: str,
-        url: str,
-    ) -> list[int]:
-        content = f"咕嘎BoBo PR #{number} 已阻止自动合并：{reason}\n{url}".strip()
-        return self.queue_and_deliver(
-            f"pr:{number}:blocked:{reason}",
-            "pr_merge_blocked",
-            content,
+            skip_recipient=skip_recipient,
         )
 
     def queue_and_deliver(
@@ -61,6 +48,7 @@ class OwnerNotifier:
         dedupe_key: str,
         event_type: str,
         content: str,
+        skip_recipient: tuple[str, str] | None = None,
     ) -> list[int]:
         ids: list[int] = []
         for platform, recipient_ids in (
@@ -68,6 +56,8 @@ class OwnerNotifier:
             ("telegram", self.settings.owner_telegram_id_set),
         ):
             for recipient_id in sorted(recipient_ids):
+                if skip_recipient == (platform, recipient_id):
+                    continue
                 notification_id = self.store.queue_owner_notification(
                     dedupe_key=dedupe_key,
                     event_type=event_type,

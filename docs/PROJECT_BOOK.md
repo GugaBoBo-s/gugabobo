@@ -1044,7 +1044,7 @@ issue creation for low-risk feedback
 draft generation
 test execution in sandbox
 pull request creation from approved improvement tasks
-execution of a previously authorized merge after required checks succeed
+immediate execution of an explicitly owner-authorized merge
 ```
 
 ### 12.3 Requires Owner Approval
@@ -1091,7 +1091,9 @@ external feedback
   -> GitHub Actions runs
   -> dashboard displays result
   -> owner approves or rejects from QQ, Telegram, Dashboard, or CLI
-  -> lifecycle agent merges only after successful required checks
+  -> lifecycle agent immediately requests merge from GitHub
+  -> GitHub branch protection accepts or rejects the merge
+  -> rejected authorized merges remain queued for retry
   -> server deploys merged version
   -> Reflection Agent records outcome
 ```
@@ -1100,8 +1102,9 @@ Important invariant:
 
 ```text
 gugabobo may prepare and submit work autonomously. The owner decides whether a
-pull request may merge; once authorized, gugabobo performs the merge only after
-required checks succeed. Deployment remains a separate recorded action.
+pull request may merge; once authorized, gugabobo immediately requests the merge
+without asking for the repository, PR number, or branch again. GitHub branch
+protection remains authoritative. Deployment remains a separate recorded action.
 ```
 
 ## 14. GitHub Organization Strategy
@@ -1631,7 +1634,7 @@ GitHub client tests with mocks
 end-to-end local flow tests
 ```
 
-### 23.3 Required Checks Before PR Merge
+### 23.3 Verification And Branch Protection
 
 ```text
 pytest
@@ -1640,6 +1643,11 @@ type check when introduced
 database migration verification
 security-sensitive test cases for policy changes
 ```
+
+Generated changes run project checks before a PR is opened. Repository-required
+checks should also be enforced through GitHub branch protection. After explicit
+owner authorization, gugabobo requests merge immediately and retains the
+authorization for retry if GitHub rejects it.
 
 ## 24. Milestone Roadmap
 
@@ -1859,7 +1867,7 @@ owner review
 policy tests
 audit logs
 no merge without explicit owner authorization
-no merge unless GitHub checks report success
+GitHub branch protection remains authoritative
 ```
 
 ### 25.3 Secret Leakage Risk
@@ -1994,7 +2002,7 @@ Claude Code execution in a restricted Docker container, network-disabled Ruff
 and pytest checks, tokenless Git remote URLs with askpass authentication, unique
 branches, GitHub Actions check-run synchronization, Dashboard controls, and
 audit records. PR creation notifies all configured QQ and Telegram owners. A
-single explicit owner authorization is persisted across channels, and the
-lifecycle agent merges only when GitHub checks report success. Merge/rejection
-creates reflection records, and merged revisions are linked to deployment
-records visible in Dashboard.
+single explicit owner authorization is persisted across channels and triggers an
+immediate GitHub merge request. GitHub-rejected merges remain queued for retry.
+Merge/rejection creates reflection records, and merged revisions are linked to
+deployment records visible in Dashboard.

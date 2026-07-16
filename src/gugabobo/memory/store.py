@@ -1159,6 +1159,42 @@ class MemoryStore:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_latest_notified_open_pull_request(
+        self,
+        platform: str,
+        recipient_id: str,
+        github_owner: str = "",
+        github_repo: str = "",
+    ) -> dict[str, Any] | None:
+        conditions = [
+            "notifications.platform = ?",
+            "notifications.recipient_id = ?",
+            "notifications.status = 'sent'",
+            "pull_requests.status = 'open'",
+        ]
+        values: list[Any] = [platform, recipient_id]
+        if github_owner:
+            conditions.append("pull_requests.github_owner = ?")
+            values.append(github_owner)
+        if github_repo:
+            conditions.append("pull_requests.github_repo = ?")
+            values.append(github_repo)
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT pull_requests.id, pull_requests.improvement_task_id, "
+                "pull_requests.github_owner, pull_requests.github_repo, "
+                "pull_requests.number, pull_requests.url, pull_requests.branch_name, "
+                "pull_requests.status, pull_requests.checks_status, "
+                "pull_requests.merged_at, pull_requests.created_at, "
+                "pull_requests.updated_at FROM owner_notifications AS notifications "
+                "JOIN pull_requests ON notifications.dedupe_key = "
+                "'pr:' || pull_requests.number || ':opened' "
+                f"WHERE {' AND '.join(conditions)} "
+                "ORDER BY notifications.id DESC, pull_requests.id DESC LIMIT 1",
+                values,
+            ).fetchone()
+        return dict(row) if row else None
+
     def update_pull_request(
         self,
         pr_id: int,

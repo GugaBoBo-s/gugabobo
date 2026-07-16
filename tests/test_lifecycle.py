@@ -12,6 +12,7 @@ class FakeGitHub:
 
     def __init__(self, checks_status: str = "success") -> None:
         self.checks_status = checks_status
+        self.merge_fails = False
         self.remote = {
             "state": "open",
             "merged": False,
@@ -35,6 +36,8 @@ class FakeGitHub:
         commit_title: str,
         merge_method: str = "squash",
     ) -> MergeResult:
+        if self.merge_fails:
+            raise RuntimeError("GitHub temporarily rejected merge")
         self.merged_numbers.append(number)
         return MergeResult(merged=True, sha="merge-sha", message="merged")
 
@@ -46,20 +49,20 @@ class FakeGitHub:
 
 class FakeNotifier:
     def __init__(self) -> None:
-        self.outcomes: list[tuple[int, str, str]] = []
-        self.blocked: list[tuple[int, str, str]] = []
+        self.outcomes: list[tuple[int, str, str, tuple[str, str] | None]] = []
 
-    def notify_pr_outcome(self, number: int, outcome: str, detail: str) -> list[int]:
-        self.outcomes.append((number, outcome, detail))
+    def notify_pr_outcome(
+        self,
+        number: int,
+        outcome: str,
+        detail: str,
+        skip_recipient: tuple[str, str] | None = None,
+    ) -> list[int]:
+        self.outcomes.append((number, outcome, detail, skip_recipient))
         return []
 
     def retry_pending(self, limit: int = 50) -> dict[str, int]:
         return {"attempted": 0, "sent": 0}
-
-    def notify_pr_blocked(self, number: int, reason: str, url: str) -> list[int]:
-        self.blocked.append((number, reason, url))
-        return []
-
 
 def build_service(tmp_path, checks_status: str = "success"):
     store = MemoryStore(tmp_path / "lifecycle.db")
@@ -94,6 +97,8 @@ def test_parse_merge_commands() -> None:
     assert parse_merge_command("/merge 15") == ("approve", 15)
     assert parse_merge_command("拒绝合并 PR #15") == ("reject", 15)
     assert parse_merge_command("/reject-merge 15") == ("reject", 15)
+    assert parse_merge_command("同意合并") == ("approve", None)
+    assert parse_merge_command("拒绝合并") == ("reject", None)
     assert parse_merge_command("聊聊 PR 15") is None
 
 
@@ -129,45 +134,64 @@ def test_successful_checks_merge_immediately(tmp_path) -> None:
     assert notifier.outcomes[0][1] == "merged"
 
 
-def test_approval_waits_for_checks_then_daemon_merges(tmp_path) -> None:
-    store, pr_id, github, notifier, service = build_service(tmp_path, "pending")
+def test_owner_approval_merges_regardless_of_check_visibility(tmp_path) -> None:
+    for checks_status in ("pending", "unknown", "failure"):
+        store, pr_id, github, notifier, service = build_service(
+            tmp_path / checks_status,
+            checks_status,
+        )
+
+        outcome = service.approve_merge(15, ChannelContext.local(), "/merge 15")
+
+        assert outcome.status == "merged"
+        assert github.merged_numbers == [15]
+        assert store.get_merge_authorization(pr_id)["status"] == "merged"
+
+
+def test_implicit_approval_uses_latest_pr_notification(tmp_path) -> None:
+    store, pr_id, github, notifier, service = build_service(tmp_path)
+    notification_id = store.queue_owner_notification(
+        "pr:15:opened",
+        "pr_opened",
+        "telegram",
+        "owner-1",
+        "opened",
+    )
+    store.claim_owner_notification(notification_id)
+    store.finish_owner_notification(notification_id, "sent")
+    context = ChannelContext(
+        platform="telegram",
+        channel_type="private",
+        source="telegram_private",
+        user_id="owner-1",
+        conversation_id="telegram:user:owner-1",
+        is_owner=True,
+        is_wake_triggered=True,
+    )
+
+    reply = service.handle_command("同意合并", context)
+
+    assert reply == "PR #15 已合并。"
+    assert github.merged_numbers == [15]
+    assert store.get_pull_request(pr_id)["status"] == "merged"
+    assert notifier.outcomes[0][3] == ("telegram", "owner-1")
+
+
+def test_github_rejection_is_retried_by_daemon(tmp_path) -> None:
+    store, pr_id, github, notifier, service = build_service(tmp_path)
+    github.merge_fails = True
 
     outcome = service.approve_merge(15, ChannelContext.local(), "/merge 15")
 
-    assert outcome.status == "waiting_checks"
-    assert store.get_merge_authorization(pr_id)["status"] == "waiting_checks"
-    assert github.merged_numbers == []
+    assert outcome.status == "merge_pending"
+    assert store.get_merge_authorization(pr_id)["status"] == "merge_pending"
+    assert store.list_improvement_reflections()[0]["outcome"] == "merge_failed"
 
-    github.checks_status = "success"
+    github.merge_fails = False
     tick = service.tick()
 
     assert tick["merged"] == 1
     assert github.merged_numbers == [15]
-    assert store.get_merge_authorization(pr_id)["status"] == "merged"
-
-
-def test_unknown_checks_never_merge(tmp_path) -> None:
-    store, pr_id, github, notifier, service = build_service(tmp_path, "unknown")
-
-    outcome = service.approve_merge(15, ChannelContext.local(), "/merge 15")
-
-    assert outcome.status == "waiting_checks"
-    assert "Checks: Read" in outcome.message
-    assert github.merged_numbers == []
-    assert store.get_pull_request(pr_id)["status"] == "open"
-
-
-def test_failed_checks_record_reason_and_notify_owner(tmp_path) -> None:
-    store, pr_id, github, notifier, service = build_service(tmp_path, "failure")
-
-    outcome = service.approve_merge(15, ChannelContext.local(), "/merge 15")
-
-    assert outcome.status == "checks_failed"
-    assert github.merged_numbers == []
-    reflection = store.list_improvement_reflections()[0]
-    assert reflection["outcome"] == "checks_failed"
-    assert "GitHub checks reported failure" in reflection["lessons"]
-    assert notifier.blocked[0][0] == 15
 
 
 def test_rejection_closes_pr_and_records_reflection(tmp_path) -> None:

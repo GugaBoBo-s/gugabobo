@@ -28,7 +28,7 @@ The current system includes:
 - per-user and per-conversation context with summaries and long-term memory
 - administrative controls, diagnostics, audit records, and outbound approvals
 - an approval-gated self-improvement workflow that creates GitHub pull requests
-- owner-authorized, CI-gated pull request merging from QQ, Telegram, Dashboard, or CLI
+- owner-authorized pull request merging from QQ, Telegram, Dashboard, or CLI
 - cross-channel owner notifications, lifecycle reflections, and deployment records
 - a Docker-only Claude Code runner with isolated checks and no host fallback
 - systemd deployment for the API, Telegram polling, and lifecycle agent services
@@ -40,11 +40,12 @@ Current P5 work should prioritize:
 - structured token and cost records for coding runs
 
 Never merge a pull request without explicit approval from an authenticated owner.
-A single approval from QQ, Telegram, Dashboard, or CLI authorizes automatic merge
-only after GitHub checks report success. Never treat PR creation, ordinary chat,
-or ambiguous language as merge approval. Do not automatically deploy generated
-code. Do not add Redis, Celery, Docker Compose, a vector database, X, or
-Xiaohongshu unless the requested work requires it.
+A single approval from QQ, Telegram, Dashboard, or CLI authorizes an immediate
+GitHub merge attempt. GitHub branch protection remains authoritative; if GitHub
+rejects the merge, persist the approval and retry in the lifecycle agent. Never
+treat PR creation, ordinary chat, or ambiguous language as merge approval. Do not
+automatically deploy generated code. Do not add Redis, Celery, Docker Compose, a
+vector database, X, or Xiaohongshu unless the requested work requires it.
 
 ## Development Commands
 

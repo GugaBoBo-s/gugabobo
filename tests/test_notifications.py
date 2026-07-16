@@ -39,11 +39,33 @@ def test_owner_notification_sends_both_channels_and_deduplicates(tmp_path) -> No
 
     assert len(napcat.messages) == 1
     assert len(telegram.messages) == 1
-    assert "CI 通过后将自动合并" in napcat.messages[0][1]
-    assert "同意合并 PR #15" in napcat.messages[0][1]
+    assert "回复“同意合并”立即合并" in napcat.messages[0][1]
     records = store.list_owner_notifications()
     assert len(records) == 2
     assert {record["status"] for record in records} == {"sent"}
+
+
+def test_outcome_notification_skips_reply_channel(tmp_path) -> None:
+    store = MemoryStore(tmp_path / "skip.db")
+    settings = Settings(
+        data_dir=tmp_path,
+        db_path=tmp_path / "skip.db",
+        owner_qq_ids="10001",
+        owner_telegram_ids="20001",
+    )
+    napcat = FakeNapCat()
+    telegram = FakeTelegram()
+    notifier = OwnerNotifier(store, settings, napcat, telegram)
+
+    notifier.notify_pr_outcome(
+        15,
+        "merged",
+        "done",
+        skip_recipient=("telegram", "20001"),
+    )
+
+    assert len(napcat.messages) == 1
+    assert telegram.messages == []
 
 
 def test_failed_notification_is_retried(tmp_path) -> None:

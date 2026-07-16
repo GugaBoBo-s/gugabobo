@@ -220,7 +220,8 @@ reruns the complete test suite before the service is restarted.
 - Require owner approval and explicit confirmation before running or shipping an
   improvement.
 - Never merge without explicit authenticated owner authorization.
-- Owner authorization may come from QQ, Telegram, Dashboard, or CLI, but the
-  lifecycle agent must still observe successful GitHub checks before merging.
+- Owner authorization may come from QQ, Telegram, Dashboard, or CLI and triggers
+  an immediate merge request. Keep required checks enforced through GitHub branch
+  protection; rejected authorized merges are retried by the lifecycle agent.
 - Keep merge authorization separate from deployment; setup records the deployed
   server revision after tests pass.

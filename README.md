@@ -452,10 +452,12 @@ Current behavior:
   requires `confirm_text=OPEN`
 - generated branches are unique and never merge without explicit authenticated
   owner approval
-- an owner may send `同意合并 PR #15` or `/merge 15` in QQ or Telegram, or use
-  Dashboard/CLI; one approval is sufficient across all channels
-- approval is durable, but merge remains blocked until GitHub checks report
-  `success`; `unknown`, `pending`, and `failure` never merge
+- after receiving a PR notification, an owner may reply `同意合并` or `拒绝合并`
+  without repeating the repository, branch, or PR number; explicit numbered
+  commands such as `/merge 15` remain available
+- one approval is sufficient across QQ, Telegram, Dashboard, or CLI and triggers
+  an immediate GitHub merge request; GitHub branch protection may reject it, in
+  which case the durable authorization is retried by the lifecycle agent
 - merge/rejection creates a reflection record, queues outcome notifications, and
   merged revisions receive a pending deployment record
 

@@ -21,6 +21,14 @@ _REJECT_PATTERNS = (
     re.compile(r"^拒绝合并\s*(?:PR)?\s*#?(\d+)\s*$", re.IGNORECASE),
     re.compile(r"^/(?:reject-merge|close-pr)\s+#?(\d+)\s*$", re.IGNORECASE),
 )
+_IMPLICIT_APPROVE_PATTERNS = (
+    re.compile(r"^(?:同意合并|批准合并|可以合并|确认合并|合并吧)[。.!！]?$", re.IGNORECASE),
+    re.compile(r"^/(?:merge|approve-merge)\s*$", re.IGNORECASE),
+)
+_IMPLICIT_REJECT_PATTERNS = (
+    re.compile(r"^(?:拒绝合并|不要合并|不合并)[。.!！]?$", re.IGNORECASE),
+    re.compile(r"^/(?:reject-merge|close-pr)\s*$", re.IGNORECASE),
+)
 
 
 class LifecycleError(RuntimeError):
@@ -35,7 +43,7 @@ class LifecycleOutcome:
     message: str = ""
 
 
-def parse_merge_command(text: str) -> tuple[str, int] | None:
+def parse_merge_command(text: str) -> tuple[str, int | None] | None:
     stripped = text.strip()
     for pattern in _APPROVE_PATTERNS:
         match = pattern.fullmatch(stripped)
@@ -45,6 +53,10 @@ def parse_merge_command(text: str) -> tuple[str, int] | None:
         match = pattern.fullmatch(stripped)
         if match:
             return "reject", int(match.group(1))
+    if any(pattern.fullmatch(stripped) for pattern in _IMPLICIT_APPROVE_PATTERNS):
+        return "approve", None
+    if any(pattern.fullmatch(stripped) for pattern in _IMPLICIT_REJECT_PATTERNS):
+        return "reject", None
     return None
 
 
@@ -72,6 +84,16 @@ class PullRequestLifecycleService:
         if not context.is_owner:
             return "只有已登记的主人可以批准或拒绝合并 PR。"
         action, pr_number = command
+        if pr_number is None:
+            record = self.store.get_latest_notified_open_pull_request(
+                context.platform,
+                context.user_id,
+                self.settings.github_owner,
+                self.settings.github_repo,
+            )
+            if not record:
+                return "没有找到最近通知你的待处理 PR。"
+            pr_number = int(record["number"])
         if action == "approve":
             outcome = self.approve_merge(pr_number, context, text)
         else:
@@ -111,7 +133,7 @@ class PullRequestLifecycleService:
             risk_level="high",
             detail=f"platform:{context.platform}",
         )
-        return self.process(pull_request_id)
+        return self.process(pull_request_id, response_context=context)
 
     def reject_merge(
         self,
@@ -144,7 +166,7 @@ class PullRequestLifecycleService:
             actor_user_id=context.user_id,
             command=command,
         )
-        self._complete_rejected(record)
+        self._complete_rejected(record, response_context=context)
         self.store.add_audit_log(
             actor_source=context.source,
             actor_user_id=context.user_id,
@@ -160,7 +182,11 @@ class PullRequestLifecycleService:
             message=f"已拒绝并关闭 PR #{pr_number}。",
         )
 
-    def process(self, pull_request_id: int) -> LifecycleOutcome:
+    def process(
+        self,
+        pull_request_id: int,
+        response_context: ChannelContext | None = None,
+    ) -> LifecycleOutcome:
         record = self.store.get_pull_request(pull_request_id)
         if not record:
             raise LifecycleError(f"pull request #{pull_request_id} not found")
@@ -172,9 +198,12 @@ class PullRequestLifecycleService:
             state = str(remote.get("state", ""))
             status = "merged" if merged else ("closed" if state == "closed" else "open")
             head_sha = str(remote.get("head", {}).get("sha", ""))
-            checks_status = github.get_checks_status(head_sha) if head_sha else "unknown"
         except Exception as error:
             raise LifecycleError(self._safe_error(error)) from error
+        try:
+            checks_status = github.get_checks_status(head_sha) if head_sha else "unknown"
+        except Exception:
+            checks_status = "unknown"
         merged_at = str(remote.get("merged_at") or "")
         self.store.update_pull_request(
             pull_request_id,
@@ -184,7 +213,13 @@ class PullRequestLifecycleService:
         )
         if status == "merged":
             merge_sha = str(remote.get("merge_commit_sha") or "")
-            self._complete_merged(record, merge_sha, merged_at, checks_status)
+            self._complete_merged(
+                record,
+                merge_sha,
+                merged_at,
+                checks_status,
+                response_context=response_context,
+            )
             return LifecycleOutcome(
                 status="merged",
                 pr_number=number,
@@ -192,7 +227,7 @@ class PullRequestLifecycleService:
                 message=f"PR #{number} 已合并。",
             )
         if status == "closed":
-            self._complete_rejected(record)
+            self._complete_rejected(record, response_context=response_context)
             return LifecycleOutcome(
                 status="rejected",
                 pr_number=number,
@@ -207,35 +242,6 @@ class PullRequestLifecycleService:
                 checks_status=checks_status,
                 message=f"PR #{number} 仍在等待主人授权。",
             )
-        if checks_status != "success":
-            authorization_status = (
-                "checks_failed" if checks_status == "failure" else "waiting_checks"
-            )
-            self._update_authorization(
-                authorization,
-                authorization_status,
-                f"checks:{checks_status}",
-            )
-            if checks_status == "failure":
-                self._record_blocked(
-                    record,
-                    "checks_failed",
-                    "GitHub checks reported failure.",
-                )
-                message = f"PR #{number} 的 CI 未通过，已阻止自动合并。"
-            elif checks_status == "unknown":
-                message = (
-                    f"已记录 PR #{number} 的合并授权，但无法读取 CI 状态。"
-                    "请为 GitHub Token 增加 Checks: Read 权限。"
-                )
-            else:
-                message = f"已记录 PR #{number} 的合并授权，等待 CI 通过后自动合并。"
-            return LifecycleOutcome(
-                status=authorization_status,
-                pr_number=number,
-                checks_status=checks_status,
-                message=message,
-            )
         try:
             result = github.merge_pull_request(
                 number,
@@ -243,18 +249,23 @@ class PullRequestLifecycleService:
             )
         except Exception as error:
             detail = self._safe_error(error)
-            self._update_authorization(authorization, "merge_failed", detail)
-            self._record_blocked(record, "merge_failed", detail)
-            raise LifecycleError(detail) from error
-        if not result.merged:
-            detail = result.message or "GitHub refused the merge"
-            self._update_authorization(authorization, "merge_failed", detail)
+            self._update_authorization(authorization, "merge_pending", detail)
             self._record_blocked(record, "merge_failed", detail)
             return LifecycleOutcome(
-                status="merge_failed",
+                status="merge_pending",
                 pr_number=number,
                 checks_status=checks_status,
-                message=f"PR #{number} 合并失败：{detail}",
+                message=f"PR #{number} 暂未合并，后台会自动重试。",
+            )
+        if not result.merged:
+            detail = result.message or "GitHub refused the merge"
+            self._update_authorization(authorization, "merge_pending", detail)
+            self._record_blocked(record, "merge_failed", detail)
+            return LifecycleOutcome(
+                status="merge_pending",
+                pr_number=number,
+                checks_status=checks_status,
+                message=f"PR #{number} 暂未合并，后台会自动重试。",
             )
         merged_at = datetime.now(timezone.utc).isoformat()
         self.store.update_pull_request(
@@ -264,7 +275,13 @@ class PullRequestLifecycleService:
             merged_at=merged_at,
         )
         self._update_authorization(authorization, "merged", result.sha)
-        self._complete_merged(record, result.sha, merged_at, checks_status)
+        self._complete_merged(
+            record,
+            result.sha,
+            merged_at,
+            checks_status,
+            response_context=response_context,
+        )
         self.store.add_audit_log(
             actor_source="github",
             actor_user_id="gugabobo",
@@ -277,7 +294,7 @@ class PullRequestLifecycleService:
             status="merged",
             pr_number=number,
             checks_status=checks_status,
-            message=f"主人授权有效，PR #{number} 已通过 CI 并自动合并。",
+            message=f"PR #{number} 已合并。",
         )
 
     def tick(self, limit: int = 100) -> dict[str, int]:
@@ -364,6 +381,7 @@ class PullRequestLifecycleService:
         merge_sha: str,
         merged_at: str,
         checks_status: str,
+        response_context: ChannelContext | None = None,
     ) -> None:
         pull_request_id = int(record["id"])
         number = int(record["number"])
@@ -390,9 +408,18 @@ class PullRequestLifecycleService:
                 target_revision=merge_sha,
                 detail=f"PR #{number} merged and awaits deployment verification",
             )
-        self.notifier.notify_pr_outcome(number, "merged", str(record["url"]))
+        self.notifier.notify_pr_outcome(
+            number,
+            "merged",
+            str(record["url"]),
+            skip_recipient=self._notification_recipient(response_context),
+        )
 
-    def _complete_rejected(self, record: dict[str, object]) -> None:
+    def _complete_rejected(
+        self,
+        record: dict[str, object],
+        response_context: ChannelContext | None = None,
+    ) -> None:
         pull_request_id = int(record["id"])
         number = int(record["number"])
         authorization = self.store.get_merge_authorization(pull_request_id)
@@ -411,7 +438,20 @@ class PullRequestLifecycleService:
                 "and verification evidence before proposing a replacement."
             ),
         )
-        self.notifier.notify_pr_outcome(number, "rejected", str(record["url"]))
+        self.notifier.notify_pr_outcome(
+            number,
+            "rejected",
+            str(record["url"]),
+            skip_recipient=self._notification_recipient(response_context),
+        )
+
+    def _notification_recipient(
+        self,
+        context: ChannelContext | None,
+    ) -> tuple[str, str] | None:
+        if context and context.platform in {"qq", "telegram"}:
+            return context.platform, context.user_id
+        return None
 
     def _record_blocked(
         self,
@@ -427,7 +467,6 @@ class PullRequestLifecycleService:
             summary=f"PR #{number} automatic merge was blocked.",
             lessons=f"Failure reason: {reason}",
         )
-        self.notifier.notify_pr_blocked(number, reason, str(record["url"]))
 
     def _safe_error(self, error: object) -> str:
         return redact_sensitive(
