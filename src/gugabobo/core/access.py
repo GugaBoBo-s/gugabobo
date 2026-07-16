@@ -18,13 +18,15 @@ class AccessDecision:
 
 def evaluate_access(context: ChannelContext, store: MemoryStore) -> AccessDecision:
     rule = store.get_access_rule(context.platform, context.user_id)
-    if not rule:
-        if context.is_owner:
-            return AccessDecision(allowed=True, role="owner")
-        return AccessDecision(allowed=True, role="user")
-    role = str(rule["role"])
-    if role == "blocked":
-        return AccessDecision(allowed=False, role=role, reason="blocked")
+    if rule and rule["role"] == "blocked":
+        return AccessDecision(allowed=False, role="blocked", reason="blocked")
+    account = store.get_channel_account(context.platform, context.user_id)
+    roles = ["owner" if context.is_owner else "user"]
+    if rule:
+        roles.append(str(rule["role"]))
+    if account:
+        roles.append(str(account["person_role"]))
+    role = max(roles, key=lambda value: {"user": 0, "trusted": 1, "owner": 2}.get(value, 0))
     return AccessDecision(allowed=True, role=role)
 
 

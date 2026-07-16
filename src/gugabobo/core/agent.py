@@ -1,9 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor
 from threading import BoundedSemaphore, Lock
 
-from gugabobo.core.channel import ChannelContext
-from gugabobo.core.lifecycle import LifecycleError, PullRequestLifecycleService
 from gugabobo.core.access import context_access_role, role_can_use_skill
+from gugabobo.core.channel import ChannelContext
+from gugabobo.core.identity import IdentityService
+from gugabobo.core.lifecycle import LifecycleError, PullRequestLifecycleService
 from gugabobo.core.persona import Persona
 from gugabobo.core.router import Router
 from gugabobo.config import Settings, get_settings
@@ -36,6 +37,7 @@ class CoreAgent:
         self.chat_skill = ChatSkill(self.persona)
         self.feedback_skill = FeedbackSkill(store)
         self.memory_skill = MemorySkill(store)
+        self.identity_service = IdentityService(store)
         self.outbound_skill = OutboundSkill(self.chat_skill.llm_client, store)
         self.summarizer_skill = SummarizerSkill(self.chat_skill.llm_client)
         self.lifecycle_service = PullRequestLifecycleService(store)
@@ -69,6 +71,9 @@ class CoreAgent:
         images: list[str] | None = None,
     ) -> str:
         settings = get_settings()
+        context = self.identity_service.resolve_context(context)
+        identity_result = self.identity_service.handle_command(text, context)
+        context = identity_result.context
         summary_row = self.store.get_conversation_summary(context.conversation_id)
         summarized_until = int(summary_row["updated_until_message_id"]) if summary_row else 0
         history = self.store.list_recent_messages_after(
@@ -100,36 +105,39 @@ class CoreAgent:
             conversation_id=context.conversation_id,
         )
         access_role = context_access_role(context)
-        try:
-            lifecycle_response = self.lifecycle_service.handle_command(text, context)
-        except LifecycleError as error:
-            lifecycle_response = f"PR 操作失败：{error}"
         route = self.router.route(text)
-        if lifecycle_response is not None:
-            response = lifecycle_response
-        elif not role_can_use_skill(access_role, route.skill):
-            response = self.permission_denied_response(route.skill, access_role)
-        elif route.skill == "feedback":
-            response = self.feedback_skill.record(
-                text,
-                source=context.source,
-                user_id=context.user_id,
-            )
-        elif route.skill == "memory":
-            response = self.memory_skill.record(text, subject=context.conversation_id)
+        if identity_result.response is not None:
+            response = identity_result.response
         else:
-            outbound_reply = None
-            if access_role == "owner" and not images:
-                outbound_reply = self.outbound_skill.handle(text, context)
-            if outbound_reply is not None:
-                response = outbound_reply
-            else:
-                response = self.chat_skill.reply(
+            try:
+                lifecycle_response = self.lifecycle_service.handle_command(text, context)
+            except LifecycleError as error:
+                lifecycle_response = f"PR 操作失败：{error}"
+            if lifecycle_response is not None:
+                response = lifecycle_response
+            elif not role_can_use_skill(access_role, route.skill):
+                response = self.permission_denied_response(route.skill, access_role)
+            elif route.skill == "feedback":
+                response = self.feedback_skill.record(
                     text,
-                    history=llm_history,
-                    system_context=system_context,
-                    images=images,
+                    source=context.source,
+                    user_id=context.user_id,
                 )
+            elif route.skill == "memory":
+                response = self.memory_skill.record(text, subject=context.conversation_id)
+            else:
+                outbound_reply = None
+                if access_role == "owner" and not images:
+                    outbound_reply = self.outbound_skill.handle(text, context)
+                if outbound_reply is not None:
+                    response = outbound_reply
+                else:
+                    response = self.chat_skill.reply(
+                        text,
+                        history=llm_history,
+                        system_context=system_context,
+                        images=images,
+                    )
         self.store.add_message(
             source=context.source,
             user_id="gugabobo",

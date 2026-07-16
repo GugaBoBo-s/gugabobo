@@ -15,6 +15,7 @@ class ChannelContext:
     source: str
     user_id: str
     conversation_id: str
+    person_id: int | None = None
     group_id: str | None = None
     chat_id: str | None = None
     is_owner: bool = False

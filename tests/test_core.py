@@ -52,7 +52,9 @@ def test_explicit_memory_request_records_long_term_memory(tmp_path, monkeypatch)
             metadata={"access_role": "trusted"},
         ),
     )
-    memories = agent.store.list_memory_items(subject="qq:user:u1")
+    account = agent.store.get_channel_account("qq", "u1")
+    conversation_id = f"person:{account['person_id']}:direct"
+    memories = agent.store.list_memory_items(subject=conversation_id)
 
     assert "已记住" in reply
     assert memories[0]["content"] == "我喜欢蓝色"
@@ -171,12 +173,14 @@ def test_agent_accepts_channel_context(tmp_path, monkeypatch):
     )
 
     reply = agent.handle_context_message("你好", context)
-    messages = agent.store.list_conversation_messages("telegram:user:tg-1")
+    account = agent.store.get_channel_account("telegram", "tg-1")
+    conversation_id = f"person:{account['person_id']}:direct"
+    messages = agent.store.list_conversation_messages(conversation_id)
 
     assert "已收到" in reply
     assert messages[0]["source"] == "telegram_private"
     assert messages[0]["user_id"] == "tg-1"
-    assert messages[1]["conversation_id"] == "telegram:user:tg-1"
+    assert messages[1]["conversation_id"] == conversation_id
     get_settings.cache_clear()
 
 

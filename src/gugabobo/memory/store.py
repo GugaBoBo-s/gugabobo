@@ -44,6 +44,46 @@ CREATE TABLE IF NOT EXISTS memory_items (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS persons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    display_name TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL DEFAULT 'user',
+    merged_into_person_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS channel_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_id INTEGER NOT NULL,
+    platform TEXT NOT NULL,
+    platform_user_id TEXT NOT NULL,
+    verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(platform, platform_user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_channel_accounts_person_id
+ON channel_accounts(person_id);
+
+CREATE TABLE IF NOT EXISTS account_link_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_id INTEGER NOT NULL,
+    source_platform TEXT NOT NULL,
+    source_user_id TEXT NOT NULL,
+    code_hash TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    expires_at TEXT NOT NULL DEFAULT (datetime('now', '+10 minutes')),
+    consumed_by_platform TEXT NOT NULL DEFAULT '',
+    consumed_by_user_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    consumed_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_link_codes_status_expires
+ON account_link_codes(status, expires_at);
+
 CREATE TABLE IF NOT EXISTS access_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     platform TEXT NOT NULL,
@@ -262,6 +302,320 @@ class MemoryStore:
         if "risk_level" not in columns:
             conn.execute("ALTER TABLE audit_logs ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'normal'")
 
+    def ensure_channel_account(
+        self,
+        platform: str,
+        platform_user_id: str,
+        role: str = "user",
+    ) -> dict[str, Any]:
+        normalized_role = role if role in {"owner", "trusted"} else "user"
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = self._get_channel_account(conn, platform, platform_user_id)
+            if row:
+                current_role = str(row["person_role"])
+                promoted_role = self._higher_role(current_role, normalized_role)
+                if promoted_role != current_role:
+                    conn.execute(
+                        "UPDATE persons SET role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (promoted_role, row["person_id"]),
+                    )
+                return dict(self._get_channel_account(conn, platform, platform_user_id))
+            person_cursor = conn.execute("INSERT INTO persons (role) VALUES (?)", (normalized_role,))
+            person_id = int(person_cursor.lastrowid)
+            conn.execute(
+                "INSERT INTO channel_accounts (person_id, platform, platform_user_id) "
+                "VALUES (?, ?, ?)",
+                (person_id, platform, platform_user_id),
+            )
+            return dict(self._get_channel_account(conn, platform, platform_user_id))
+
+    def get_channel_account(
+        self,
+        platform: str,
+        platform_user_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = self._get_channel_account(conn, platform, platform_user_id)
+        return dict(row) if row else None
+
+    def resolve_conversation_id(self, conversation_id: str) -> str:
+        prefixes = {
+            "qq:user:": "qq",
+            "telegram:user:": "telegram",
+        }
+        for prefix, platform in prefixes.items():
+            if not conversation_id.startswith(prefix):
+                continue
+            platform_user_id = conversation_id[len(prefix) :]
+            account = self.get_channel_account(platform, platform_user_id)
+            if account:
+                return f"person:{account['person_id']}:direct"
+        return conversation_id
+
+    def list_person_accounts(self, person_id: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, person_id, platform, platform_user_id, verified_at, "
+                "created_at, updated_at FROM channel_accounts "
+                "WHERE person_id = ? ORDER BY id ASC",
+                (person_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def migrate_private_conversation(
+        self,
+        legacy_conversation_id: str,
+        canonical_conversation_id: str,
+    ) -> None:
+        if legacy_conversation_id == canonical_conversation_id:
+            return
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE messages SET conversation_id = ? WHERE conversation_id = ?",
+                (canonical_conversation_id, legacy_conversation_id),
+            )
+            conn.execute(
+                "UPDATE memory_items SET subject = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE subject = ?",
+                (canonical_conversation_id, legacy_conversation_id),
+            )
+            conn.execute(
+                "UPDATE outbound_drafts SET conversation_id = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE conversation_id = ?",
+                (canonical_conversation_id, legacy_conversation_id),
+            )
+            legacy_summary = conn.execute(
+                "SELECT summary FROM conversation_summaries WHERE conversation_id = ?",
+                (legacy_conversation_id,),
+            ).fetchone()
+            canonical_summary = conn.execute(
+                "SELECT summary FROM conversation_summaries WHERE conversation_id = ?",
+                (canonical_conversation_id,),
+            ).fetchone()
+            if legacy_summary and not canonical_summary:
+                conn.execute(
+                    "UPDATE conversation_summaries SET conversation_id = ? "
+                    "WHERE conversation_id = ?",
+                    (canonical_conversation_id, legacy_conversation_id),
+                )
+            elif legacy_summary:
+                conn.execute(
+                    "INSERT INTO memory_items "
+                    "(subject, memory_type, content, importance, source) "
+                    "VALUES (?, 'linked_summary', ?, 7, 'identity_migration')",
+                    (canonical_conversation_id, legacy_summary["summary"]),
+                )
+                conn.execute(
+                    "DELETE FROM conversation_summaries WHERE conversation_id = ?",
+                    (legacy_conversation_id,),
+                )
+                conn.execute(
+                    "UPDATE conversation_summaries SET updated_until_message_id = 0, "
+                    "updated_at = CURRENT_TIMESTAMP WHERE conversation_id = ?",
+                    (canonical_conversation_id,),
+                )
+
+    def create_account_link_code(
+        self,
+        person_id: int,
+        source_platform: str,
+        source_user_id: str,
+        code_hash: str,
+        expires_in_minutes: int = 10,
+    ) -> int:
+        modifier = f"+{max(1, expires_in_minutes)} minutes"
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE account_link_codes SET status = 'revoked' "
+                "WHERE source_platform = ? AND source_user_id = ? AND status = 'pending'",
+                (source_platform, source_user_id),
+            )
+            cursor = conn.execute(
+                "INSERT INTO account_link_codes "
+                "(person_id, source_platform, source_user_id, code_hash, expires_at) "
+                "VALUES (?, ?, ?, ?, datetime('now', ?))",
+                (person_id, source_platform, source_user_id, code_hash, modifier),
+            )
+            return int(cursor.lastrowid)
+
+    def consume_account_link_code(
+        self,
+        code_hash: str,
+        target_platform: str,
+        target_user_id: str,
+    ) -> dict[str, Any]:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            link_code = conn.execute(
+                "SELECT id, person_id, source_platform, source_user_id, status, expires_at "
+                "FROM account_link_codes WHERE code_hash = ?",
+                (code_hash,),
+            ).fetchone()
+            if not link_code or link_code["status"] != "pending":
+                return {"status": "invalid"}
+            active = conn.execute(
+                "SELECT expires_at > CURRENT_TIMESTAMP AS active "
+                "FROM account_link_codes WHERE id = ?",
+                (link_code["id"],),
+            ).fetchone()
+            if not active or not bool(active["active"]):
+                conn.execute(
+                    "UPDATE account_link_codes SET status = 'expired' WHERE id = ?",
+                    (link_code["id"],),
+                )
+                return {"status": "expired"}
+            if (
+                link_code["source_platform"] == target_platform
+                and link_code["source_user_id"] == target_user_id
+            ):
+                return {"status": "same_account"}
+            if link_code["source_platform"] == target_platform:
+                return {"status": "same_platform"}
+            target_account = self._get_channel_account(conn, target_platform, target_user_id)
+            if not target_account:
+                return {"status": "target_missing"}
+            source_person_id = int(link_code["person_id"])
+            target_person_id = int(target_account["person_id"])
+            if source_person_id == target_person_id:
+                self._mark_link_code_consumed(
+                    conn,
+                    int(link_code["id"]),
+                    target_platform,
+                    target_user_id,
+                )
+                return {"status": "already_linked", "person_id": source_person_id}
+            source_person = conn.execute(
+                "SELECT id, role, merged_into_person_id FROM persons WHERE id = ?",
+                (source_person_id,),
+            ).fetchone()
+            target_person = conn.execute(
+                "SELECT id, role, merged_into_person_id FROM persons WHERE id = ?",
+                (target_person_id,),
+            ).fetchone()
+            if (
+                not source_person
+                or not target_person
+                or source_person["merged_into_person_id"] is not None
+                or target_person["merged_into_person_id"] is not None
+            ):
+                return {"status": "stale_identity"}
+            source_conversation_id = f"person:{source_person_id}:direct"
+            target_conversation_id = f"person:{target_person_id}:direct"
+            self._merge_private_conversations(
+                conn,
+                source_conversation_id,
+                target_conversation_id,
+            )
+            merged_role = self._higher_role(
+                str(source_person["role"]),
+                str(target_person["role"]),
+            )
+            conn.execute(
+                "UPDATE persons SET role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (merged_role, source_person_id),
+            )
+            conn.execute(
+                "UPDATE channel_accounts SET person_id = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE person_id = ?",
+                (source_person_id, target_person_id),
+            )
+            conn.execute(
+                "UPDATE persons SET merged_into_person_id = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ?",
+                (source_person_id, target_person_id),
+            )
+            conn.execute(
+                "UPDATE account_link_codes SET status = 'revoked' "
+                "WHERE person_id = ? AND status = 'pending' AND id != ?",
+                (target_person_id, link_code["id"]),
+            )
+            self._mark_link_code_consumed(
+                conn,
+                int(link_code["id"]),
+                target_platform,
+                target_user_id,
+            )
+            return {
+                "status": "linked",
+                "person_id": source_person_id,
+                "merged_person_id": target_person_id,
+            }
+
+    def _get_channel_account(
+        self,
+        conn: sqlite3.Connection,
+        platform: str,
+        platform_user_id: str,
+    ) -> sqlite3.Row | None:
+        return conn.execute(
+            "SELECT channel_accounts.id, channel_accounts.person_id, "
+            "channel_accounts.platform, channel_accounts.platform_user_id, "
+            "channel_accounts.verified_at, persons.role AS person_role, "
+            "persons.display_name AS person_display_name "
+            "FROM channel_accounts JOIN persons ON persons.id = channel_accounts.person_id "
+            "WHERE channel_accounts.platform = ? AND channel_accounts.platform_user_id = ? "
+            "AND persons.merged_into_person_id IS NULL",
+            (platform, platform_user_id),
+        ).fetchone()
+
+    def _merge_private_conversations(
+        self,
+        conn: sqlite3.Connection,
+        target_conversation_id: str,
+        merged_conversation_id: str,
+    ) -> None:
+        summaries = conn.execute(
+            "SELECT conversation_id, summary FROM conversation_summaries "
+            "WHERE conversation_id IN (?, ?)",
+            (target_conversation_id, merged_conversation_id),
+        ).fetchall()
+        conn.execute(
+            "UPDATE messages SET conversation_id = ? WHERE conversation_id = ?",
+            (target_conversation_id, merged_conversation_id),
+        )
+        conn.execute(
+            "UPDATE memory_items SET subject = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE subject = ?",
+            (target_conversation_id, merged_conversation_id),
+        )
+        conn.execute(
+            "UPDATE outbound_drafts SET conversation_id = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE conversation_id = ?",
+            (target_conversation_id, merged_conversation_id),
+        )
+        for summary in summaries:
+            conn.execute(
+                "INSERT INTO memory_items "
+                "(subject, memory_type, content, importance, source) "
+                "VALUES (?, 'linked_summary', ?, 7, 'account_link')",
+                (target_conversation_id, summary["summary"]),
+            )
+        conn.execute(
+            "DELETE FROM conversation_summaries WHERE conversation_id IN (?, ?)",
+            (target_conversation_id, merged_conversation_id),
+        )
+
+    def _mark_link_code_consumed(
+        self,
+        conn: sqlite3.Connection,
+        link_code_id: int,
+        platform: str,
+        user_id: str,
+    ) -> None:
+        conn.execute(
+            "UPDATE account_link_codes SET status = 'consumed', "
+            "consumed_by_platform = ?, consumed_by_user_id = ?, "
+            "consumed_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (platform, user_id, link_code_id),
+        )
+
+    @staticmethod
+    def _higher_role(first: str, second: str) -> str:
+        ranks = {"user": 0, "trusted": 1, "owner": 2}
+        return first if ranks.get(first, 0) >= ranks.get(second, 0) else second
+
     def add_message(
         self,
         source: str,
@@ -316,6 +670,7 @@ class MemoryStore:
         conversation_id: str,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
+        conversation_id = self.resolve_conversation_id(conversation_id)
         with self.connect() as conn:
             rows = conn.execute(
                 "SELECT id, conversation_id, source, user_id, role, content, created_at "
@@ -330,6 +685,7 @@ class MemoryStore:
         after_message_id: int = 0,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
+        conversation_id = self.resolve_conversation_id(conversation_id)
         with self.connect() as conn:
             query = (
                 "SELECT id, conversation_id, source, user_id, role, content, created_at "
@@ -348,6 +704,7 @@ class MemoryStore:
         after_message_id: int,
         limit: int,
     ) -> list[dict[str, Any]]:
+        conversation_id = self.resolve_conversation_id(conversation_id)
         if limit <= 0:
             return self.list_messages_after(conversation_id, after_message_id)
         with self.connect() as conn:
@@ -361,6 +718,7 @@ class MemoryStore:
         return [dict(row) for row in rows]
 
     def count_messages_after(self, conversation_id: str, after_message_id: int = 0) -> int:
+        conversation_id = self.resolve_conversation_id(conversation_id)
         with self.connect() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ? AND id > ?",
@@ -369,6 +727,7 @@ class MemoryStore:
         return int(row["c"]) if row else 0
 
     def delete_conversation_messages(self, conversation_id: str) -> int:
+        conversation_id = self.resolve_conversation_id(conversation_id)
         with self.connect() as conn:
             cursor = conn.execute(
                 "DELETE FROM messages WHERE conversation_id = ?",
@@ -391,6 +750,7 @@ class MemoryStore:
         summary: str,
         updated_until_message_id: int = 0,
     ) -> None:
+        conversation_id = self.resolve_conversation_id(conversation_id)
         with self.connect() as conn:
             conn.execute(
                 "INSERT INTO conversation_summaries "
@@ -404,6 +764,7 @@ class MemoryStore:
             )
 
     def get_conversation_summary(self, conversation_id: str) -> dict[str, Any] | None:
+        conversation_id = self.resolve_conversation_id(conversation_id)
         with self.connect() as conn:
             row = conn.execute(
                 "SELECT conversation_id, summary, updated_until_message_id, updated_at "
@@ -422,6 +783,7 @@ class MemoryStore:
         return [dict(row) for row in rows]
 
     def delete_conversation_summary(self, conversation_id: str) -> bool:
+        conversation_id = self.resolve_conversation_id(conversation_id)
         with self.connect() as conn:
             cursor = conn.execute(
                 "DELETE FROM conversation_summaries WHERE conversation_id = ?",
@@ -437,6 +799,7 @@ class MemoryStore:
         importance: int = 5,
         source: str = "manual",
     ) -> int:
+        subject = self.resolve_conversation_id(subject)
         with self.connect() as conn:
             cursor = conn.execute(
                 "INSERT INTO memory_items (subject, memory_type, content, importance, source) "
@@ -450,6 +813,8 @@ class MemoryStore:
         subject: str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
+        if subject:
+            subject = self.resolve_conversation_id(subject)
         with self.connect() as conn:
             if subject:
                 rows = conn.execute(
@@ -485,6 +850,7 @@ class MemoryStore:
         memory_type: str,
         importance: int,
     ) -> bool:
+        subject = self.resolve_conversation_id(subject)
         with self.connect() as conn:
             cursor = conn.execute(
                 "UPDATE memory_items SET subject = ?, content = ?, memory_type = ?, "
@@ -1246,6 +1612,9 @@ class MemoryStore:
             "feedbacks",
             "memory_items",
             "conversation_summaries",
+            "persons",
+            "channel_accounts",
+            "account_link_codes",
             "access_rules",
             "audit_logs",
             "tasks",

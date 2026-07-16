@@ -417,6 +417,33 @@ erDiagram
         string conversation_id PK "logical entity"
     }
 
+    PERSONS {
+        integer id PK
+        string display_name
+        string role
+        integer merged_into_person_id
+        string created_at
+        string updated_at
+    }
+
+    CHANNEL_ACCOUNTS {
+        integer id PK
+        integer person_id
+        string platform
+        string platform_user_id
+        string verified_at
+    }
+
+    ACCOUNT_LINK_CODES {
+        integer id PK
+        integer person_id
+        string source_platform
+        string source_user_id
+        string code_hash
+        string status
+        string expires_at
+    }
+
     MESSAGES {
         integer id PK
         string conversation_id
@@ -457,14 +484,44 @@ erDiagram
     CONVERSATION ||--o{ MESSAGES : "conversation_id"
     CONVERSATION ||--o| CONVERSATION_SUMMARIES : "conversation_id"
     CONVERSATION ||--o{ MEMORY_ITEMS : "subject"
+    PERSONS ||--o{ CHANNEL_ACCOUNTS : "person_id"
+    PERSONS ||--o{ ACCOUNT_LINK_CODES : "person_id"
 ```
 
 Notes:
 
 - `CONVERSATION` is a logical entity derived from `conversation_id`; it is not a physical SQLite table yet.
 - Current SQLite tables do not declare foreign keys.
-- `memory_items.subject` can point to a conversation id such as `qq:user:241398668`, `telegram:user:<id>`, or the global subject `global`.
+- Linked QQ and Telegram private accounts use `person:<person_id>:direct`; legacy platform ids remain read/write aliases.
+- `memory_items.subject` can point to a canonical conversation id or the global subject `global`.
 - `feedbacks` currently records source and user id only. It is intentionally not tied to a single message yet.
+
+#### persons
+
+Purpose:
+
+```text
+Represent a human identity independently from any communication platform.
+```
+
+#### channel_accounts
+
+Purpose:
+
+```text
+Map a verified QQ or Telegram account to one person identity.
+```
+
+The pair `(platform, platform_user_id)` is unique. Multiple accounts can belong to the same
+person only after a proof-of-control binding flow.
+
+#### account_link_codes
+
+Purpose:
+
+```text
+Store hashed, expiring, single-use proofs for cross-platform account linking.
+```
 
 #### messages
 
@@ -1319,7 +1376,8 @@ Target behavior:
 
 - private chats are handled directly
 - group chats only respond when mentioned or explicitly awakened
-- each Telegram user has isolated context
+- each unlinked person has isolated private context
+- verified QQ and Telegram accounts for one person share private context
 - each Telegram group has isolated group context
 - owner-only operations require owner confirmation
 - risky operations are blocked in group chats
@@ -1328,7 +1386,8 @@ Target behavior:
 Conversation scoping:
 
 ```text
-Telegram private: telegram:user:<user_id>
+Linked private account: person:<person_id>:direct
+Legacy Telegram private alias: telegram:user:<user_id>
 Telegram group: telegram:group:<chat_id>
 ```
 
@@ -1467,9 +1526,10 @@ Conversation scoping:
 ```text
 CLI default: cli:local
 API default: api:<user_id>
-QQ private: qq:user:<user_id>
+Linked private account: person:<person_id>:direct
+Legacy QQ private alias: qq:user:<user_id>
 QQ group: qq:group:<group_id>
-Telegram private: telegram:user:<user_id>
+Legacy Telegram private alias: telegram:user:<user_id>
 Telegram group: telegram:group:<chat_id>
 ```
 
@@ -1481,7 +1541,8 @@ conversation summary
 long-term memory items for the same conversation and global memories
 ```
 
-Different users and different groups do not share short-term context.
+Different people and different groups do not share short-term context. A person's verified
+QQ and Telegram accounts are delivery endpoints for the same private context.
 
 Manual memory and summary commands:
 

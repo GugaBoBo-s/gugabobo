@@ -108,9 +108,30 @@ Current behavior:
 
 - private chats reply directly
 - group chats reply only when mentioned or explicitly awakened
-- each Telegram user and group keeps separate conversation context
+- unlinked users and every group keep separate conversation context
+- verified QQ and Telegram accounts belonging to one person share private context
 - risky owner-only operations require explicit owner confirmation
 - Telegram-specific code stays in the adapter layer, not in the core agent
+
+### Link QQ and Telegram accounts
+
+Account linking requires proof of control over both private chats. In either QQ or Telegram
+private chat, send:
+
+```text
+绑定账号
+```
+
+gugabobo returns a single-use code valid for ten minutes. In the other platform's private
+chat, send:
+
+```text
+绑定账号 GB-XXXX-XXXX-XXXX
+```
+
+After verification, both channel accounts resolve to one `person_id` and use the same
+`person:<person_id>:direct` conversation. Existing private messages, summaries, memories,
+and the highest verified access role are preserved. Group conversations are never merged.
 
 When `GUGABOBO_TELEGRAM_REPLY_ENABLED=false`, the endpoint processes the message and reports that a reply is available without calling Telegram's `sendMessage` API.
 
@@ -147,7 +168,8 @@ GUGABOBO_LLM_SUMMARY_KEEP_RECENT_TOKENS=8000
 
 If the API key is missing or the provider call fails, chat falls back to the local placeholder reply.
 
-LLM context is scoped by conversation. CLI/API users, QQ private chats, and QQ groups keep separate context.
+LLM context is scoped by conversation. Linked QQ and Telegram private accounts share one
+person conversation; CLI/API users, unlinked people, and groups remain isolated.
 
 Context inputs:
 
@@ -162,6 +184,33 @@ Current SQLite data model:
 erDiagram
     CONVERSATION {
         string conversation_id PK "logical id, not a physical table"
+    }
+
+    PERSONS {
+        integer id PK
+        string display_name
+        string role
+        integer merged_into_person_id
+        string created_at
+        string updated_at
+    }
+
+    CHANNEL_ACCOUNTS {
+        integer id PK
+        integer person_id
+        string platform
+        string platform_user_id
+        string verified_at
+    }
+
+    ACCOUNT_LINK_CODES {
+        integer id PK
+        integer person_id
+        string source_platform
+        string source_user_id
+        string code_hash
+        string status
+        string expires_at
     }
 
     MESSAGES {
@@ -283,6 +332,8 @@ erDiagram
     CONVERSATION ||--o| CONVERSATION_SUMMARIES : "conversation_id"
     CONVERSATION ||--o{ MEMORY_ITEMS : "subject"
     CONVERSATION ||--o{ OUTBOUND_DRAFTS : "conversation_id"
+    PERSONS ||--o{ CHANNEL_ACCOUNTS : "person_id"
+    PERSONS ||--o{ ACCOUNT_LINK_CODES : "person_id"
     FEEDBACKS ||--o{ IMPROVEMENT_TASKS : "feedback_id"
     TASKS ||--o| IMPROVEMENT_TASKS : "task_id"
     IMPROVEMENT_TASKS ||--o{ PULL_REQUESTS : "improvement_task_id"
@@ -291,7 +342,9 @@ erDiagram
     PULL_REQUESTS ||--o{ DEPLOYMENT_RECORDS : "pull_request_id"
 ```
 
-`CONVERSATION` is a logical entity derived from `conversation_id`; it is not a separate SQLite table yet.
+`CONVERSATION` is a logical entity derived from `conversation_id`; it is not a separate SQLite
+table yet. The legacy private ids `qq:user:<id>` and `telegram:user:<id>` remain accepted as
+query aliases and resolve to the linked person's canonical conversation.
 
 Useful commands:
 
