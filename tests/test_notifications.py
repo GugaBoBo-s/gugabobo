@@ -95,7 +95,7 @@ def test_failed_notification_is_retried(tmp_path) -> None:
     assert record["attempts"] == 2
 
 
-def test_stale_sending_notification_is_retried(tmp_path) -> None:
+def test_stale_sending_notification_is_recovered_after_lease(tmp_path) -> None:
     store = MemoryStore(tmp_path / "stale.db")
     settings = Settings(
         data_dir=tmp_path,
@@ -112,7 +112,14 @@ def test_stale_sending_notification_is_retried(tmp_path) -> None:
         "10001",
         "done",
     )
-    assert store.claim_owner_notification(notification_id) is not None
+
+    claimed = store.claim_owner_notification(notification_id)
+    fresh_result = notifier.retry_pending()
+
+    assert claimed is not None
+    assert fresh_result == {"attempted": 0, "sent": 0}
+    assert napcat.messages == []
+
     with store.connect() as conn:
         conn.execute(
             "UPDATE owner_notifications SET updated_at = datetime('now', '-6 minutes') "
@@ -120,10 +127,10 @@ def test_stale_sending_notification_is_retried(tmp_path) -> None:
             (notification_id,),
         )
 
-    result = notifier.retry_pending()
-
-    assert result == {"attempted": 1, "sent": 1}
-    assert napcat.messages == [("10001", "done")]
+    stale_result = notifier.retry_pending()
     record = store.list_owner_notifications()[0]
+
+    assert stale_result == {"attempted": 1, "sent": 1}
+    assert napcat.messages == [("10001", "done")]
     assert record["status"] == "sent"
     assert record["attempts"] == 2

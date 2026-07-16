@@ -1562,14 +1562,19 @@ class MemoryStore:
             ).fetchone()
         return int(row["id"])
 
-    def claim_owner_notification(self, notification_id: int) -> dict[str, Any] | None:
+    def claim_owner_notification(
+        self,
+        notification_id: int,
+        lease_seconds: int = 300,
+    ) -> dict[str, Any] | None:
+        stale_before = f"-{max(1, lease_seconds)} seconds"
         with self.connect() as conn:
             cursor = conn.execute(
                 "UPDATE owner_notifications SET status = 'sending', attempts = attempts + 1, "
                 "updated_at = CURRENT_TIMESTAMP WHERE id = ? "
                 "AND (status IN ('pending', 'failed') OR "
-                "(status = 'sending' AND updated_at < datetime('now', '-5 minutes')))",
-                (notification_id,),
+                "(status = 'sending' AND updated_at < datetime('now', ?)))",
+                (notification_id, stale_before),
             )
             if cursor.rowcount == 0:
                 return None
@@ -1600,19 +1605,23 @@ class MemoryStore:
         self,
         limit: int = 50,
         retryable_only: bool = False,
+        lease_seconds: int = 300,
     ) -> list[dict[str, Any]]:
         query = (
             "SELECT id, dedupe_key, event_type, platform, recipient_id, content, status, "
             "attempts, last_error, sent_at, created_at, updated_at FROM owner_notifications"
         )
+        values: list[Any] = []
         if retryable_only:
             query += (
                 " WHERE status IN ('pending', 'failed') OR "
-                "(status = 'sending' AND updated_at < datetime('now', '-5 minutes'))"
+                "(status = 'sending' AND updated_at < datetime('now', ?))"
             )
+            values.append(f"-{max(1, lease_seconds)} seconds")
         query += " ORDER BY id ASC LIMIT ?"
+        values.append(limit)
         with self.connect() as conn:
-            rows = conn.execute(query, (limit,)).fetchall()
+            rows = conn.execute(query, values).fetchall()
         return [dict(row) for row in rows]
 
     def add_outbound_draft(
