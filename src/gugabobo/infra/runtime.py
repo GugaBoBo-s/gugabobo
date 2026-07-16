@@ -290,11 +290,12 @@ class RuntimeManager:
             module_index = -1
         if module_index >= 0 and arguments[module_index + 1 : module_index + 2] == ["daemon"]:
             return True
-        return bool(
-            arguments
-            and Path(arguments[0]).name in {"gugabobo", "gugabobo.exe"}
-            and arguments[1:2] == ["daemon"]
-        )
+        for index, argument in enumerate(arguments):
+            if Path(argument).name not in {"gugabobo", "gugabobo.exe"}:
+                continue
+            if arguments[index + 1 : index + 2] == ["daemon"]:
+                return True
+        return False
 
     def _is_telegram_poll_command(self, arguments: list[str]) -> bool:
         try:
