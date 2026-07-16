@@ -109,6 +109,19 @@ def test_check_run_status_is_aggregated(monkeypatch, runs, expected):
     get_settings.cache_clear()
 
 
+def test_check_run_permission_denied_is_unknown(monkeypatch):
+    configure_token(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/commits/abc/check-runs")
+        return httpx.Response(403, json={"message": "Resource not accessible by token"})
+
+    install_mock(monkeypatch, handler)
+
+    assert GitHubClient().get_checks_status("abc") == "unknown"
+    get_settings.cache_clear()
+
+
 def test_push_url_does_not_embed_token(monkeypatch):
     configure_token(monkeypatch, token="ghp_secret_value")
 

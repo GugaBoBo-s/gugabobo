@@ -120,7 +120,12 @@ class GitHubClient:
         return dict(result) if isinstance(result, dict) else {}
 
     def get_checks_status(self, ref: str) -> str:
-        data = self.get_check_runs(ref)
+        try:
+            data = self.get_check_runs(ref)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code in {403, 404}:
+                return "unknown"
+            raise
         check_runs = data.get("check_runs", [])
         if not isinstance(check_runs, list) or not check_runs:
             return "unknown"
