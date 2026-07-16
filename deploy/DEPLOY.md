@@ -1,7 +1,7 @@
 # gugabobo server deployment
 
 Target platform: Ubuntu 24.04 with the API bound to localhost. The repository is
-private, so the server must have its own GitHub deploy key before cloning.
+private, so the server needs deploy-only GitHub authentication before cloning.
 
 ## Filesystem layout
 
@@ -23,7 +23,15 @@ database, or the runner credential directory.
 
 ## Private repository access
 
-Create a dedicated SSH key as the service user:
+Prepare the installation directory:
+
+```bash
+sudo mkdir -p /opt/gugabobo
+sudo chown -R ubuntu:ubuntu /opt/gugabobo
+```
+
+If the organization permits repository deploy keys, create a dedicated SSH key
+as the service user:
 
 ```bash
 mkdir -p ~/.ssh && chmod 700 ~/.ssh
@@ -46,14 +54,35 @@ EOF
 chmod 600 ~/.ssh/config
 ssh-keyscan github.com >> ~/.ssh/known_hosts
 ssh -T git@github.com
+git clone git@github.com:GugaBoBo-s/gugabobo.git /opt/gugabobo/repo
 ```
+
+If organization policy disables deploy keys, clone once with a fine-grained PAT
+provided through a temporary credential helper, never inside the remote URL:
+
+```bash
+read -rsp "GitHub token: " GUGABOBO_GITHUB_TOKEN && echo
+export GUGABOBO_GITHUB_TOKEN
+git -c credential.helper='!f() { if [ "$1" = get ]; then printf "username=x-access-token\npassword=%s\n" "$GUGABOBO_GITHUB_TOKEN"; fi; }; f' \
+  clone https://github.com/GugaBoBo-s/gugabobo.git /opt/gugabobo/repo
+unset GUGABOBO_GITHUB_TOKEN
+```
+
+Create `/opt/gugabobo/repo/.env` from the deployment example and set
+`GUGABOBO_GITHUB_TOKEN` before running `setup.sh`. The setup script registers
+`deploy/git-credential-gugabobo` for this clone and changes `origin` to a
+tokenless HTTPS URL. The helper reads the token from the mode-600 `.env` only
+when Git requests credentials for `github.com`.
 
 ## First installation
 
+After cloning with either authentication method, create the production
+configuration before running setup so private Git pulls can use its token:
+
 ```bash
-sudo mkdir -p /opt/gugabobo
-sudo chown -R ubuntu:ubuntu /opt/gugabobo
-git clone git@github.com:GugaBoBo-s/gugabobo.git /opt/gugabobo/repo
+cp /opt/gugabobo/repo/deploy/gugabobo.env.example /opt/gugabobo/repo/.env
+sudo -u ubuntu nano /opt/gugabobo/repo/.env
+chmod 600 /opt/gugabobo/repo/.env
 sudo bash /opt/gugabobo/repo/deploy/setup.sh
 ```
 
