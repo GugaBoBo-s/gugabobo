@@ -6,32 +6,42 @@ Always respond to the user in Simplified Chinese.
 
 ## Project
 
-`gugabobo` is a cloud-first autonomous agent prototype.
+`gugabobo` is a cloud-first autonomous agent platform.
 
 The long-term architecture is:
 
 - one persistent cloud-side gugabobo core
-- multiple adapters such as CLI, QQ, GitHub, X, and dashboard
+- multiple adapters such as CLI, QQ, Telegram, API, GitHub, and dashboard
 - shared persona, memory, policy, routing, and improvement flow
 - self-improvement through sandboxed code changes and GitHub pull requests
 
-The current repository is at P0. Keep changes focused on the minimal core unless the user explicitly asks to expand the milestone.
+P0 through P4 are operational. The current milestone is P5: hardening the
+self-improvement lifecycle and recording its outcomes. Keep changes focused on
+that milestone unless the user explicitly changes the scope.
 
-## Current P0 Scope
+## Current P5 Scope
 
-Implemented or expected in this milestone:
+The current system includes:
 
-- Python package under `src/gugabobo`
-- CLI adapter
-- Core agent
-- Persona
-- Router
-- SQLite-backed memory and feedback store
-- FastAPI management API
-- Minimal daemon loop
-- Tests for core and API behavior
+- a shared core agent, persona, router, policy, context, and SQLite memory layer
+- CLI, QQ/NapCat, Telegram, FastAPI, and Dashboard adapters
+- per-user and per-conversation context with summaries and long-term memory
+- administrative controls, diagnostics, audit records, and outbound approvals
+- an approval-gated self-improvement workflow that creates GitHub pull requests
+- a Docker-only Claude Code runner with isolated checks and no host fallback
+- systemd deployment for the API and Telegram polling services
 
-Do not add QQ, X, Xiaohongshu, Claude Code runner, dashboard frontend, Redis, Celery, Docker Compose, or vector database unless requested.
+Current P5 work should prioritize:
+
+- reflection records after pull request merge or rejection
+- deployment records tied to pull requests and server revisions
+- stale-run recovery and cancellation
+- policy checks for generated diffs
+- structured token and cost records for coding runs
+
+Do not automatically merge pull requests or deploy generated code. Do not add
+Redis, Celery, Docker Compose, a vector database, X, or Xiaohongshu unless the
+requested work requires it.
 
 ## Development Commands
 
@@ -81,7 +91,8 @@ Run the API:
 - Keep the core independent from platform adapters.
 - Keep adapters thin. They should translate platform input/output and call the core.
 - Store durable state through `MemoryStore`; avoid ad hoc files for runtime state.
-- Keep tests close to behavior: core routing, persistence, CLI/API contracts.
+- Keep self-improvement approval-gated, branch-only, containerized, and auditable.
+- Keep tests close to behavior: core routing, persistence, adapters, API contracts, and policy boundaries.
 - Avoid broad refactors unless they directly support the requested work.
 - Use explicit types for public functions and constructors.
 - Keep secrets out of Git. Use `.env` locally and `.env.example` for documented settings.
