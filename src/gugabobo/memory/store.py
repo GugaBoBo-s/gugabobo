@@ -173,6 +173,36 @@ CREATE TABLE IF NOT EXISTS code_review_runs (
 CREATE INDEX IF NOT EXISTS idx_code_review_runs_status_updated
 ON code_review_runs(status, updated_at);
 
+CREATE TABLE IF NOT EXISTS github_issue_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    github_owner TEXT NOT NULL,
+    github_repo TEXT NOT NULL,
+    issue_number INTEGER NOT NULL,
+    issue_url TEXT NOT NULL DEFAULT '',
+    issue_updated_at TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'processing',
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    worthwhile INTEGER NOT NULL DEFAULT 0,
+    confidence REAL NOT NULL DEFAULT 0,
+    rationale TEXT NOT NULL DEFAULT '',
+    implementation_summary TEXT NOT NULL DEFAULT '',
+    provider TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    improvement_task_id INTEGER NOT NULL DEFAULT 0,
+    pr_number INTEGER NOT NULL DEFAULT 0,
+    pr_url TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(github_owner, github_repo, issue_number, issue_updated_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_github_issue_runs_status_updated
+ON github_issue_runs(status, updated_at);
+
 CREATE TABLE IF NOT EXISTS merge_authorizations (
     pull_request_id INTEGER PRIMARY KEY,
     decision TEXT NOT NULL,
@@ -1080,6 +1110,16 @@ class MemoryStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def find_improvement_task(self, repo: str, scope: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id, task_id, feedback_id, repo, branch_name, scope, risk_level, "
+                "approval_status, runner_status, created_at, updated_at "
+                "FROM improvement_tasks WHERE repo = ? AND scope = ? ORDER BY id DESC LIMIT 1",
+                (repo, scope),
+            ).fetchone()
+        return dict(row) if row else None
+
     def update_improvement_task(
         self,
         improvement_id: int,
@@ -1357,6 +1397,130 @@ class MemoryStore:
         with self.connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM code_review_runs ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def begin_github_issue(
+        self,
+        github_owner: str,
+        github_repo: str,
+        issue_number: int,
+        issue_url: str,
+        issue_updated_at: str,
+        title: str,
+        body: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM github_issue_runs WHERE github_owner = ? "
+                "AND github_repo = ? AND issue_number = ? AND issue_updated_at = ?",
+                (github_owner, github_repo, issue_number, issue_updated_at),
+            ).fetchone()
+            if row is None:
+                cursor = conn.execute(
+                    "INSERT INTO github_issue_runs "
+                    "(github_owner, github_repo, issue_number, issue_url, issue_updated_at, "
+                    "title, body) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        github_owner,
+                        github_repo,
+                        issue_number,
+                        issue_url,
+                        issue_updated_at,
+                        title,
+                        body,
+                    ),
+                )
+                run_id = int(cursor.lastrowid)
+            else:
+                cursor = conn.execute(
+                    "UPDATE github_issue_runs SET status = 'processing', "
+                    "attempt_count = attempt_count + 1, issue_url = ?, title = ?, body = ?, "
+                    "last_error = '', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND "
+                    "(status = 'failed' OR (status = 'processing' AND "
+                    "updated_at < datetime('now', '-30 minutes')))",
+                    (issue_url, title, body, int(row["id"])),
+                )
+                if cursor.rowcount == 0:
+                    return None
+                run_id = int(row["id"])
+            claimed = conn.execute(
+                "SELECT * FROM github_issue_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+        return dict(claimed) if claimed else None
+
+    def complete_github_issue_evaluation(
+        self,
+        run_id: int,
+        status: str,
+        worthwhile: bool,
+        confidence: float,
+        rationale: str,
+        implementation_summary: str,
+        provider: str,
+        model: str,
+    ) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE github_issue_runs SET status = ?, worthwhile = ?, confidence = ?, "
+                "rationale = ?, implementation_summary = ?, provider = ?, model = ?, "
+                "last_error = '', updated_at = CURRENT_TIMESTAMP, completed_at = "
+                "CASE WHEN ? = 'processing' THEN '' ELSE CURRENT_TIMESTAMP END WHERE id = ?",
+                (
+                    status,
+                    int(worthwhile),
+                    confidence,
+                    rationale[:4000],
+                    implementation_summary[:4000],
+                    provider,
+                    model,
+                    status,
+                    run_id,
+                ),
+            )
+            return cursor.rowcount > 0
+
+    def link_github_issue_improvement(self, run_id: int, improvement_task_id: int) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE github_issue_runs SET improvement_task_id = ?, status = 'processing', "
+                "completed_at = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (improvement_task_id, run_id),
+            )
+            return cursor.rowcount > 0
+
+    def complete_github_issue_run(
+        self,
+        run_id: int,
+        status: str,
+        pr_number: int = 0,
+        pr_url: str = "",
+    ) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE github_issue_runs SET status = ?, pr_number = ?, pr_url = ?, "
+                "last_error = '', updated_at = CURRENT_TIMESTAMP, "
+                "completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (status, pr_number, pr_url, run_id),
+            )
+            return cursor.rowcount > 0
+
+    def fail_github_issue_run(self, run_id: int, error: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE github_issue_runs SET status = 'failed', last_error = ?, "
+                "completed_at = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (error[:1000], run_id),
+            )
+            return cursor.rowcount > 0
+
+    def list_github_issue_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM github_issue_runs ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -1835,6 +1999,7 @@ class MemoryStore:
             "improvement_tasks",
             "pull_requests",
             "code_review_runs",
+            "github_issue_runs",
             "merge_authorizations",
             "improvement_reflections",
             "deployment_records",

@@ -1,6 +1,7 @@
 FROM python:3.11-bookworm
 
 ARG CLAUDE_CODE_VERSION=2.1.202
+ARG CODEX_VERSION=0.134.0
 ARG DEBIAN_MIRROR=
 
 RUN if [ -n "${DEBIAN_MIRROR}" ]; then \
@@ -14,6 +15,7 @@ RUN if [ -n "${DEBIAN_MIRROR}" ]; then \
     && apt-get install -y --no-install-recommends git nodejs npm \
     && npm install --fetch-retries=5 --fetch-retry-maxtimeout=120000 \
       -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+      "@openai/codex@${CODEX_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/gugabobo

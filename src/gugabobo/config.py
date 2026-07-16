@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     github_review_interval_seconds: int = Field(default=300, ge=30)
     github_review_max_files: int = Field(default=3000, ge=1, le=3000)
     github_review_max_patch_chars: int = Field(default=120000, ge=1000, le=1000000)
+    github_issue_enabled: bool = False
+    github_issue_interval_seconds: int = Field(default=600, ge=30)
+    github_issue_max_per_scan: int = Field(default=20, ge=1, le=500)
+    github_issue_min_confidence: float = Field(default=0.75, ge=0, le=1)
+    github_issue_auto_fix_enabled: bool = True
+    github_issue_auto_fix_repositories: str = ""
     git_author_name: str = "GuGabobo"
     git_author_email: str = "263493647+GuGabobo@users.noreply.github.com"
     sandbox_dir: Path = Path(".gugabobo/sandbox")
@@ -51,6 +57,12 @@ class Settings(BaseSettings):
     claude_bin: str = "claude"
     claude_base_url: str = ""
     claude_auth_token: str = Field(default="", repr=False)
+    code_claude_model: str = "claude-opus-4-8"
+    codex_bin: str = "codex"
+    code_openai_model: str = "gpt-5.6-sol"
+    code_deepseek_model: str = "deepseek-v4-pro"
+    code_deepseek_runner_model: str = "deepseek-v4-pro[1m]"
+    code_model_timeout_seconds: int = Field(default=120, ge=1)
     claude_timeout_seconds: int = Field(default=900, ge=1)
     claude_max_budget_usd: float = Field(default=5.0, gt=0, le=100)
     sandbox_check_timeout_seconds: int = Field(default=300, ge=1)
@@ -96,6 +108,15 @@ class Settings(BaseSettings):
             for item in self.telegram_group_wake_words.split(",")
             if item.strip()
         ]
+
+    @property
+    def github_issue_auto_fix_repository_set(self) -> set[str]:
+        configured = {
+            item.strip().casefold()
+            for item in self.github_issue_auto_fix_repositories.split(",")
+            if item.strip()
+        }
+        return configured or {f"{self.github_owner}/{self.github_repo}".casefold()}
 
 
 @lru_cache

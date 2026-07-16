@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
 from gugabobo.config import get_settings
 from gugabobo.core.notifications import OwnerNotifier
-from gugabobo.infra.claude_runner import ClaudeCodeRunner
+from gugabobo.infra.code_runner import CodeRunner, build_code_runner
 from gugabobo.infra.github_client import GitHubClient, PullRequestResult
 from gugabobo.infra.redaction import redact_sensitive
 from gugabobo.infra.sandbox import SandboxManager
@@ -99,6 +100,46 @@ class ImprovementService:
             action="improvement.create",
             target=f"improvement:{improvement_id}",
             detail=f"feedback:{feedback_id}",
+        )
+        return ImprovementCreated(task_id=task_id, improvement_id=improvement_id)
+
+    def create_from_github_issue(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        title: str,
+        body: str,
+        url: str,
+        actor_source: str = "github_issue",
+        actor_user_id: str = "gugabobo",
+    ) -> ImprovementCreated:
+        task_id = self.store.add_task(
+            title=f"Fix #{number}: {title}"[:240],
+            description=(
+                f"GitHub issue: {url}\n\n"
+                f"Title: {title}\n\n"
+                f"Description:\n{body or '(no description)'}"
+            ),
+            status="open",
+            created_by=actor_user_id,
+            assigned_skill="github_issue_fix",
+            requires_approval=False,
+        )
+        improvement_id = self.store.add_improvement_task(
+            task_id=task_id,
+            repo=f"{owner}/{repo}",
+            scope=f"github_issue:{owner}/{repo}#{number}",
+            risk_level="normal",
+            approval_status="approved",
+            runner_status="idle",
+        )
+        self.store.add_audit_log(
+            actor_source=actor_source,
+            actor_user_id=actor_user_id,
+            action="improvement.create_from_issue",
+            target=f"improvement:{improvement_id}",
+            detail=f"{owner}/{repo}#{number}",
         )
         return ImprovementCreated(task_id=task_id, improvement_id=improvement_id)
 
@@ -201,7 +242,7 @@ class ImprovementService:
     def run_improvement(
         self,
         improvement_id: int,
-        runner: ClaudeCodeRunner | None = None,
+        runner: CodeRunner | None = None,
         sandbox: SandboxManager | None = None,
         source_repo: Path | None = None,
         actor_source: str = "cli",
@@ -212,10 +253,10 @@ class ImprovementService:
             raise ImprovementError(f"improvement task #{improvement_id} not found")
         if improvement["approval_status"] != "approved":
             raise ImprovementError("improvement task must be approved before running")
-        runner = runner or ClaudeCodeRunner()
+        runner = runner or build_code_runner()
         sandbox = sandbox or SandboxManager()
         if not runner.configured:
-            raise ImprovementError("isolated Claude Code runner is not available")
+            raise ImprovementError("isolated code runner is not available")
         task = self.store.get_task(int(improvement["task_id"]))
         branch_name = self._branch_name(improvement_id, improvement)
         self.store.update_improvement_task(improvement_id, runner_status="running")
@@ -232,7 +273,7 @@ class ImprovementService:
         try:
             result = runner.run(prompt, cwd=path)
             if not result.ok:
-                raise ImprovementError(result.error or "Claude Code runner failed")
+                raise ImprovementError(result.error or "code runner failed")
             diff = sandbox.collect_diff(path)
         except Exception as error:
             self.store.update_improvement_task(improvement_id, runner_status="failed")
@@ -260,9 +301,10 @@ class ImprovementService:
     def run_and_open_pull_request(
         self,
         improvement_id: int,
-        runner: ClaudeCodeRunner | None = None,
+        runner: CodeRunner | None = None,
         sandbox: SandboxManager | None = None,
         source_repo: Path | None = None,
+        clone_remote: bool = False,
         actor_source: str = "cli",
         actor_user_id: str = "local",
     ) -> RunOutcome:
@@ -306,24 +348,32 @@ class ImprovementService:
                 pr_number=recovered.number,
                 pr_url=recovered.url,
             )
-        runner = runner or ClaudeCodeRunner()
+        runner = runner or build_code_runner()
         sandbox = sandbox or SandboxManager()
         if not runner.configured:
-            raise ImprovementError("isolated Claude Code runner is not available")
+            raise ImprovementError("isolated code runner is not available")
         self.store.update_improvement_task(
             improvement_id,
             runner_status="running",
             branch_name=branch_name,
         )
         try:
-            path = sandbox.prepare(improvement_id, source_repo or Path.cwd(), branch_name)
+            if clone_remote:
+                path = sandbox.prepare_remote(
+                    improvement_id,
+                    self.github.push_url,
+                    branch_name,
+                    self.github.token,
+                )
+            else:
+                path = sandbox.prepare(improvement_id, source_repo or Path.cwd(), branch_name)
         except Exception as error:
             self.store.update_improvement_task(improvement_id, runner_status="failed")
             raise ImprovementError(f"sandbox preparation failed: {error}") from error
         try:
             result = runner.run(self._build_prompt(improvement, task), cwd=path)
             if not result.ok:
-                raise ImprovementError(result.error or "Claude Code runner failed")
+                raise ImprovementError(result.error or "code runner failed")
             diff = sandbox.collect_diff(path)
         except Exception as error:
             self.store.update_improvement_task(improvement_id, runner_status="failed")
@@ -361,7 +411,7 @@ class ImprovementService:
                 detail=checks.output[-2000:],
             )
         try:
-            sandbox.commit_all(path, f"feat(improvement): #{improvement_id} via Claude Code")
+            sandbox.commit_all(path, f"feat(improvement): implement #{improvement_id}")
             sandbox.push_branch(path, self.github.push_url, branch_name, self.github.token)
             pull_request = self.github.create_pull_request(
                 title=title,
@@ -699,6 +749,8 @@ class ImprovementService:
         scope = improvement.get("scope", "") or "(unspecified)"
         risk_level = improvement.get("risk_level", "normal")
         description = str(task["description"]) if task else ""
+        issue_reference = self._issue_reference(str(improvement.get("scope", "")))
+        closes = f"\nCloses #{issue_reference[2]}\n" if issue_reference else ""
         return (
             f"<!-- gugabobo-improvement:{improvement_id} -->\n"
             f"# Improvement proposal #{improvement_id}\n\n"
@@ -710,4 +762,11 @@ class ImprovementService:
             "## Notes\n\n"
             "This proposal was generated by gugabobo. It records the intent only; "
             "actual code changes require owner review before merge.\n"
+            f"{closes}"
         )
+
+    def _issue_reference(self, scope: str) -> tuple[str, str, int] | None:
+        match = re.fullmatch(r"github_issue:([^/]+)/([^#]+)#(\d+)", scope)
+        if not match:
+            return None
+        return match.group(1), match.group(2), int(match.group(3))

@@ -63,5 +63,7 @@ def test_status_reports_claude_gateway_without_exposing_token(monkeypatch):
 
     assert status["claude_gateway_configured"] is True
     assert status["claude_base_url"] == "https://gateway.example.com"
+    assert status["code_models"]["order"] == ["claude", "openai", "deepseek"]
+    assert status["code_models"]["claude"]["configured"] is True
     assert "runner-secret" not in str(status)
     get_settings.cache_clear()

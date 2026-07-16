@@ -12,8 +12,10 @@
 - QQ via NapCat and Telegram via webhook or polling
 - Token-budgeted context, rolling summaries, and explicit long-term memory
 - Dashboard administration and diagnostics
-- Isolated Claude Code changes with CI-gated pull requests
+- Isolated code-runner changes with CI-gated pull requests
 - Organization-wide automated GitHub pull request reviews
+- Organization-wide issue discovery, value evaluation, and allowlisted autonomous PR creation
+- Code-only model routing from Claude to GPT to DeepSeek on consecutive timeouts
 - Automated tests and GitHub Actions CI
 
 ## Quick start
@@ -36,6 +38,8 @@ gugabobo tasks list
 gugabobo pr list
 gugabobo review scan
 gugabobo review list
+gugabobo issue scan
+gugabobo issue list
 gugabobo api
 ```
 
@@ -290,6 +294,21 @@ erDiagram
         string last_error
     }
 
+    GITHUB_ISSUE_RUNS {
+        integer id PK
+        string github_owner
+        string github_repo
+        integer issue_number
+        string issue_updated_at
+        string status
+        boolean worthwhile
+        float confidence
+        string provider
+        string model
+        integer improvement_task_id
+        integer pr_number
+    }
+
     MERGE_AUTHORIZATIONS {
         integer pull_request_id PK
         string decision
@@ -353,6 +372,7 @@ erDiagram
     FEEDBACKS ||--o{ IMPROVEMENT_TASKS : "feedback_id"
     TASKS ||--o| IMPROVEMENT_TASKS : "task_id"
     IMPROVEMENT_TASKS ||--o{ PULL_REQUESTS : "improvement_task_id"
+    GITHUB_ISSUE_RUNS ||--o| IMPROVEMENT_TASKS : "improvement_task_id"
     PULL_REQUESTS ||--o| MERGE_AUTHORIZATIONS : "pull_request_id"
     PULL_REQUESTS ||--o| IMPROVEMENT_REFLECTIONS : "pull_request_id"
     PULL_REQUESTS ||--o{ DEPLOYMENT_RECORDS : "pull_request_id"
@@ -419,9 +439,9 @@ GUGABOBO_GITHUB_REVIEW_MAX_PATCH_CHARS=120000
 The GitHub token must be able to read organization repositories and pull requests and write pull
 request reviews in every target repository. Fine-grained tokens therefore need organization
 repository metadata read access plus repository pull request read/write access for all selected
-repositories. The configured LLM provider receives PR titles, descriptions, filenames, and diff
-patches, including data from private repositories. Use a provider and retention policy approved
-for that source code.
+repositories. The code model chain receives PR titles, descriptions, filenames, and diff patches,
+including data from private repositories. Configure approved retention policies for every provider
+that can be reached by the fallback chain.
 
 ```mermaid
 flowchart LR
@@ -447,6 +467,57 @@ The Dashboard exposes the same configuration, a manual scan button, and the pers
 Automated reviews never use `APPROVE` or `REQUEST_CHANGES`, never authorize merging, and never
 override branch protection.
 
+### GitHub issue automation
+
+The lifecycle daemon can discover open issues across the configured organization, ask the code
+model chain whether each issue is bounded, testable, safe, and valuable, and persist the rationale.
+The durable evaluation key is `(owner, repository, issue number, issue updated_at)`, so unchanged
+issues are processed once and edited issues are reconsidered. Pull requests returned by GitHub's
+issues API are excluded before evaluation.
+
+An issue above the confidence threshold enters the existing isolated improvement workflow only when
+its repository is in the auto-fix allowlist. The workflow clones the target repository with askpass,
+creates a unique branch, edits and checks the code in the runner container, pushes the branch, opens
+a PR containing `Closes #N`, and notifies configured QQ and Telegram owners. PR creation is autonomous;
+merge still requires one explicit authenticated owner authorization and successful GitHub checks.
+
+```env
+GUGABOBO_GITHUB_ISSUE_ENABLED=true
+GUGABOBO_GITHUB_ISSUE_INTERVAL_SECONDS=600
+GUGABOBO_GITHUB_ISSUE_MAX_PER_SCAN=20
+GUGABOBO_GITHUB_ISSUE_MIN_CONFIDENCE=0.75
+GUGABOBO_GITHUB_ISSUE_AUTO_FIX_ENABLED=true
+GUGABOBO_GITHUB_ISSUE_AUTO_FIX_REPOSITORIES=GugaBoBo-s/gugabobo
+```
+
+```mermaid
+flowchart LR
+    D["Lifecycle daemon"] --> I["List organization issues"]
+    I --> K{"Issue version already handled?"}
+    K -->|Yes| S["Skip"]
+    K -->|No| C["Claude value evaluation"]
+    C -->|Timeout| G["GPT evaluation"]
+    G -->|Timeout| X["DeepSeek evaluation"]
+    C --> V{"Worthwhile and confident?"}
+    G --> V
+    X --> V
+    V -->|No| R["Persist rationale"]
+    V -->|Yes, allowlisted| B["Clone and edit in isolated runner"]
+    B --> T["Run repository checks"]
+    T --> P["Push branch and open PR"]
+    P --> N["Notify QQ and Telegram owners"]
+```
+
+Manual operation:
+
+```bash
+gugabobo issue scan
+gugabobo issue list
+```
+
+The Dashboard exposes the issue settings, manual scan, model decision, confidence, rationale,
+linked improvement task, PR, and failures.
+
 Flow:
 
 ```bash
@@ -458,11 +529,14 @@ gugabobo improve pr 1
 gugabobo pr list
 ```
 
-### Claude Code runner (P5 foundation)
+### Code runner chain (P5)
 
-gugabobo does not implement its own coding agent. Its code-editing ability comes
-from calling Claude Code. `gugabobo improve run <id>` clones the repository into a
-sandbox and runs Claude Code headless to edit the code, then collects the diff.
+gugabobo does not implement its own coding agent. Code review, issue evaluation, and code editing
+always start with the latest configured Claude Opus model. A timeout, and only a timeout, advances
+to the latest configured flagship GPT model; a second timeout advances to DeepSeek. Authentication,
+validation, rate-limit, format, and execution errors stop the chain so fallback cannot conceal a
+broken provider or an unsafe result. Ordinary chat continues to use `GUGABOBO_LLM_PROVIDER`
+independently.
 
 ```env
 GUGABOBO_SANDBOX_DIR=.gugabobo/sandbox
@@ -470,6 +544,11 @@ GUGABOBO_RUNNER_CONTAINER_RUNTIME=docker
 GUGABOBO_RUNNER_CONTAINER_IMAGE=gugabobo-runner:local
 GUGABOBO_RUNNER_HOME_DIR=.gugabobo/claude-home
 GUGABOBO_CLAUDE_BIN=claude
+GUGABOBO_CODE_CLAUDE_MODEL=claude-opus-4-8
+GUGABOBO_CODE_OPENAI_MODEL=gpt-5.6-sol
+GUGABOBO_CODE_DEEPSEEK_MODEL=deepseek-v4-pro
+GUGABOBO_CODE_DEEPSEEK_RUNNER_MODEL=deepseek-v4-pro[1m]
+GUGABOBO_CODE_MODEL_TIMEOUT_SECONDS=120
 GUGABOBO_CLAUDE_TIMEOUT_SECONDS=900
 ```
 
@@ -485,7 +564,7 @@ Current behavior:
 
 - the improvement task must be approved before it can run
 - the sandbox is a no-hardlink Git clone under `GUGABOBO_SANDBOX_DIR`
-- Claude Code runs in a resource-limited container with only the sandbox and a
+- Each code runner runs in a resource-limited container with only the sandbox and a
   dedicated credential home mounted; host secrets and the Docker socket are absent
 - `improve run` moves `runner_status` through `running` → `changes_ready` /
   `no_changes` / `failed`
@@ -553,6 +632,8 @@ GET  /prs
 GET  /prs/{id}
 GET  /code-reviews
 POST /code-reviews/scan
+GET  /github-issues
+POST /github-issues/scan
 POST /prs/{id}/sync
 POST /prs/{id}/approve-merge
 POST /prs/{id}/reject-merge

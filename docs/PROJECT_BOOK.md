@@ -497,6 +497,21 @@ erDiagram
         string completed_at
     }
 
+    GITHUB_ISSUE_RUNS {
+        integer id PK
+        string github_owner
+        string github_repo
+        integer issue_number
+        string issue_updated_at
+        string status
+        boolean worthwhile
+        float confidence
+        string provider
+        string model
+        integer improvement_task_id
+        integer pr_number
+    }
+
     CONVERSATION ||--o{ MESSAGES : "conversation_id"
     CONVERSATION ||--o| CONVERSATION_SUMMARIES : "conversation_id"
     CONVERSATION ||--o{ MEMORY_ITEMS : "subject"
@@ -512,6 +527,7 @@ Notes:
 - `memory_items.subject` can point to a canonical conversation id or the global subject `global`.
 - `feedbacks` currently records source and user id only. It is intentionally not tied to a single message yet.
 - `code_review_runs` is independent from the self-improvement `pull_requests` table because it covers PRs in every accessible organization repository.
+- `github_issue_runs` records one decision per issue version and links accepted work to its improvement task and pull request.
 
 #### persons
 
@@ -1188,8 +1204,57 @@ Safety invariants:
 - A review is not an owner merge authorization and cannot trigger the merge lifecycle.
 - Failed runs remain retryable; completed runs are deduplicated in SQLite and by a GitHub body marker.
 - New commits create a new head SHA and therefore a new review run.
-- Diff size and file count are bounded before sending content to the LLM.
-- Private repository content leaves GitHub and is sent to the explicitly configured LLM provider.
+- Diff size and file count are bounded before sending content to the code model chain.
+- Private repository content may reach Claude, GPT after a Claude timeout, or DeepSeek after a
+  second timeout. Every provider in the chain must be approved for that source code.
+
+### 14.2 Organization-Wide Issue Automation
+
+The lifecycle agent discovers open GitHub issues, excludes pull requests returned by the shared
+issues endpoint, and claims each `(owner, repository, issue number, updated_at)` once. A code-specific
+model chain evaluates whether the issue is real, bounded, testable, safe, and valuable. Accepted
+issues above the confidence threshold may create approved improvement tasks and pull requests without
+another owner action, but only for repositories on the explicit auto-fix allowlist.
+
+```mermaid
+sequenceDiagram
+    participant D as Lifecycle daemon
+    participant G as GitHub API
+    participant S as SQLite
+    participant C as Claude
+    participant O as GPT
+    participant X as DeepSeek
+    participant R as Isolated code runner
+
+    D->>G: List organization repositories and open issues
+    D->>S: Claim owner + repo + issue + updated_at
+    alt New or retryable
+        D->>C: Evaluate untrusted issue data
+        alt Claude timeout
+            D->>O: Retry evaluation
+            alt GPT timeout
+                D->>X: Retry evaluation
+            end
+        end
+        D->>S: Persist value, confidence, rationale, provider, and model
+        alt Worthwhile, confident, and allowlisted
+            D->>R: Clone, edit, and test target repository
+            R->>G: Push branch and open PR with Closes #N
+            D->>S: Link issue run, improvement task, and PR
+        end
+    else Already handled
+        S-->>D: Skip
+    end
+```
+
+Safety invariants:
+
+- Issue content is untrusted prompt input.
+- Code functions start with the latest configured Claude Opus model and fall back only on timeout,
+  first to the latest configured flagship GPT model and then to DeepSeek.
+- Auto-fix defaults to the primary configured repository; organization-wide writes require an explicit allowlist or `*`.
+- Generated work stays in a unique branch and pull request; explicit owner authorization remains mandatory for merge.
+- Non-timeout provider errors stop execution and remain visible in SQLite, logs, CLI, API, and Dashboard.
 
 Recommended branch protection:
 
@@ -2058,9 +2123,9 @@ Recommended tasks:
 3. Add structured cost and token usage records for coding runs.
 ```
 
-P0 through P4 are operational. The current P5 foundation includes approval-gated
-Claude Code execution in a restricted Docker container, network-disabled Ruff
-and pytest checks, tokenless Git remote URLs with askpass authentication, unique
+P0 through P5 are operational. The current P6 foundation includes manual approval-gated
+improvements and autonomous allowlisted issue improvements in restricted Docker containers,
+network-disabled Ruff and pytest checks, tokenless Git remote URLs with askpass authentication, unique
 branches, GitHub Actions check-run synchronization, Dashboard controls, and
 audit records. PR creation notifies all configured QQ and Telegram owners. A
 single explicit owner authorization is persisted across channels and triggers an
@@ -2070,3 +2135,6 @@ deployment records visible in Dashboard.
 The lifecycle agent also performs organization-wide GitHub `COMMENT` code reviews,
 deduplicated by repository, PR number, and head SHA. Review history, failures, retries,
 and links are persisted and visible in Dashboard.
+It can additionally evaluate organization issues and autonomously submit allowlisted fixes as pull
+requests. Code review, issue evaluation, and code editing use the timeout-only Claude to GPT to
+DeepSeek chain; ordinary conversation model selection remains independent.

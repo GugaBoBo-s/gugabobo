@@ -9,6 +9,7 @@ from gugabobo.config import get_settings
 from gugabobo.core.channel import ChannelContext
 from gugabobo.core.code_review import OrganizationCodeReviewService
 from gugabobo.core.deployment import DeploymentError, DeploymentService
+from gugabobo.core.github_issues import GitHubIssueAutomationService
 from gugabobo.core.improvement import ImprovementError, ImprovementService
 from gugabobo.core.lifecycle import LifecycleError, PullRequestLifecycleService
 from gugabobo.infra.telegram_client import TelegramClient
@@ -28,6 +29,7 @@ improve_app = typer.Typer(help="Self-improvement commands")
 pr_app = typer.Typer(help="Pull request commands")
 deployment_app = typer.Typer(help="Deployment commands")
 review_app = typer.Typer(help="Organization code review commands")
+issue_app = typer.Typer(help="GitHub issue automation commands")
 app.add_typer(feedback_app, name="feedback")
 app.add_typer(messages_app, name="messages")
 app.add_typer(config_app, name="config")
@@ -40,6 +42,7 @@ app.add_typer(improve_app, name="improve")
 app.add_typer(pr_app, name="pr")
 app.add_typer(deployment_app, name="deployment")
 app.add_typer(review_app, name="review")
+app.add_typer(issue_app, name="issue")
 
 
 def echo_mapping(data: dict[str, object]) -> None:
@@ -455,6 +458,24 @@ def review_list(limit: int = 50) -> None:
         )
 
 
+@issue_app.command("scan")
+def issue_scan() -> None:
+    """Evaluate open GitHub issues and implement eligible changes."""
+    echo_mapping(GitHubIssueAutomationService(build_agent().store).tick())
+
+
+@issue_app.command("list")
+def issue_list(limit: int = 50) -> None:
+    """List recent GitHub issue automation runs."""
+    for item in build_agent().store.list_github_issue_runs(limit=limit):
+        typer.echo(
+            f"#{item['id']} [{item['status']}] {item['github_owner']}/"
+            f"{item['github_repo']} issue #{item['issue_number']} "
+            f"worthwhile={bool(item['worthwhile'])} confidence={item['confidence']:.2f} "
+            f"PR={item['pr_number'] or '-'}"
+        )
+
+
 @config_app.command("show")
 def config_show() -> None:
     """Show effective configuration."""
@@ -492,6 +513,12 @@ def config_show() -> None:
             "github_review_interval_seconds": settings.github_review_interval_seconds,
             "github_review_max_files": settings.github_review_max_files,
             "github_review_max_patch_chars": settings.github_review_max_patch_chars,
+            "github_issue_enabled": settings.github_issue_enabled,
+            "github_issue_interval_seconds": settings.github_issue_interval_seconds,
+            "github_issue_max_per_scan": settings.github_issue_max_per_scan,
+            "github_issue_min_confidence": settings.github_issue_min_confidence,
+            "github_issue_auto_fix_enabled": settings.github_issue_auto_fix_enabled,
+            "github_issue_auto_fix_repositories": settings.github_issue_auto_fix_repositories,
             "git_author_name": settings.git_author_name,
             "git_author_email": settings.git_author_email,
             "sandbox_dir": settings.sandbox_dir,
@@ -502,6 +529,12 @@ def config_show() -> None:
             "claude_base_url": settings.claude_base_url,
             "claude_auth_token": "***" if settings.claude_auth_token else "",
             "claude_permission_mode": "acceptEdits",
+            "code_claude_model": settings.code_claude_model,
+            "codex_bin": settings.codex_bin,
+            "code_openai_model": settings.code_openai_model,
+            "code_deepseek_model": settings.code_deepseek_model,
+            "code_deepseek_runner_model": settings.code_deepseek_runner_model,
+            "code_model_timeout_seconds": settings.code_model_timeout_seconds,
             "claude_timeout_seconds": settings.claude_timeout_seconds,
             "llm_provider": settings.llm_provider,
             "moonshot_base_url": settings.moonshot_base_url,
@@ -543,7 +576,9 @@ def daemon(interval: int = 30) -> None:
     agent = build_agent()
     lifecycle = PullRequestLifecycleService(agent.store)
     code_reviews = OrganizationCodeReviewService(agent.store)
+    github_issues = GitHubIssueAutomationService(agent.store)
     next_review_scan = 0.0
+    next_issue_scan = 0.0
     logger.info("daemon started interval=%s", interval)
     typer.echo("gugabobo daemon started")
     while True:
@@ -551,9 +586,13 @@ def daemon(interval: int = 30) -> None:
         lifecycle_result = lifecycle.tick()
         now = time.monotonic()
         review_result: dict[str, object] | None = None
+        issue_result: dict[str, object] | None = None
         if now >= next_review_scan:
             review_result = code_reviews.tick()
             next_review_scan = now + code_reviews.settings.github_review_interval_seconds
+        if now >= next_issue_scan:
+            issue_result = github_issues.tick()
+            next_issue_scan = now + github_issues.settings.github_issue_interval_seconds
         logger.info(
             "daemon heartbeat messages=%s feedbacks=%s prs=%s merged=%s errors=%s notifications=%s",
             status_data["messages"],
@@ -572,6 +611,18 @@ def daemon(interval: int = 30) -> None:
                 review_result["reviewed"],
                 review_result["skipped"],
                 review_result["errors"],
+            )
+        if issue_result is not None:
+            logger.info(
+                "daemon issue automation status=%s repos=%s issues=%s evaluated=%s "
+                "worthwhile=%s prs=%s errors=%s",
+                issue_result["status"],
+                issue_result["repositories"],
+                issue_result["issues"],
+                issue_result["evaluated"],
+                issue_result["worthwhile"],
+                issue_result["pull_requests"],
+                issue_result["errors"],
             )
         typer.echo(
             f"heartbeat messages={status_data['messages']} feedbacks={status_data['feedbacks']} "

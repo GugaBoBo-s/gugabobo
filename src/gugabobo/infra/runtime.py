@@ -71,6 +71,22 @@ class RuntimeManager:
                 "claude_gateway_configured": bool(
                     self.settings.claude_base_url and self.settings.claude_auth_token
                 ),
+                "code_models": {
+                    "order": ["claude", "openai", "deepseek"],
+                    "claude": {
+                        "configured": bool(self.settings.claude_auth_token),
+                        "model": self.settings.code_claude_model,
+                    },
+                    "openai": {
+                        "configured": bool(self.settings.openai_api_key),
+                        "model": self.settings.code_openai_model,
+                    },
+                    "deepseek": {
+                        "configured": bool(self.settings.deepseek_api_key),
+                        "model": self.settings.code_deepseek_model,
+                        "runner_model": self.settings.code_deepseek_runner_model,
+                    },
+                },
             },
         }
 

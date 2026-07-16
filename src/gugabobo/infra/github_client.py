@@ -253,6 +253,48 @@ class GitHubClient:
     def list_pull_requests(self, state: str = "open") -> list[dict]:
         return self._paginate(self._url("/pulls"), {"state": state})
 
+    def list_issues(self, state: str = "open", limit: int | None = None) -> list[dict]:
+        page = 1
+        issues: list[dict] = []
+        while limit is None or len(issues) < limit:
+            data = self._request(
+                "GET",
+                "/issues",
+                params={
+                    "state": state,
+                    "sort": "updated",
+                    "direction": "desc",
+                    "per_page": 100,
+                    "page": page,
+                },
+            )
+            if not isinstance(data, list):
+                break
+            issues.extend(
+                dict(item)
+                for item in data
+                if isinstance(item, dict) and "pull_request" not in item
+            )
+            if len(data) < 100:
+                break
+            page += 1
+        return issues if limit is None else issues[:limit]
+
+    def has_open_linked_pull_request(self, issue_number: int) -> bool:
+        timeline = self._paginate(self._url(f"/issues/{issue_number}/timeline"))
+        for event in timeline:
+            if str(event.get("event", "")) != "cross-referenced":
+                continue
+            source = event.get("source", {})
+            linked = source.get("issue", {}) if isinstance(source, dict) else {}
+            if (
+                isinstance(linked, dict)
+                and "pull_request" in linked
+                and str(linked.get("state", "")) == "open"
+            ):
+                return True
+        return False
+
     def find_pull_request_by_head(self, branch: str) -> dict:
         canonical_owner = self.get_repository_owner_login()
         pulls = self._paginate(

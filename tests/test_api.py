@@ -292,6 +292,17 @@ def test_dashboard_config_control_updates_env_file(tmp_path, monkeypatch):
                 "GUGABOBO_GITHUB_REVIEW_ENABLED": True,
                 "GUGABOBO_GITHUB_ORGANIZATION": "GugaBoBo-s",
                 "GUGABOBO_GITHUB_REVIEW_INTERVAL_SECONDS": 10,
+                "GUGABOBO_GITHUB_ISSUE_ENABLED": True,
+                "GUGABOBO_GITHUB_ISSUE_AUTO_FIX_ENABLED": True,
+                "GUGABOBO_GITHUB_ISSUE_INTERVAL_SECONDS": 10,
+                "GUGABOBO_GITHUB_ISSUE_MAX_PER_SCAN": 999,
+                "GUGABOBO_GITHUB_ISSUE_MIN_CONFIDENCE": 1.5,
+                "GUGABOBO_GITHUB_ISSUE_AUTO_FIX_REPOSITORIES": "GugaBoBo-s/gugabobo",
+                "GUGABOBO_CODE_CLAUDE_MODEL": "claude-code",
+                "GUGABOBO_CODE_OPENAI_MODEL": "gpt-code",
+                "GUGABOBO_CODE_DEEPSEEK_MODEL": "deepseek-code",
+                "GUGABOBO_CODE_DEEPSEEK_RUNNER_MODEL": "deepseek-runner-code",
+                "GUGABOBO_CODE_MODEL_TIMEOUT_SECONDS": 0,
                 "GUGABOBO_TELEGRAM_PROXY": "http://127.0.0.1:1080\nINJECTED=true",
                 "GUGABOBO_DEEPSEEK_API_KEY": "should-not-save",
             }
@@ -312,6 +323,17 @@ def test_dashboard_config_control_updates_env_file(tmp_path, monkeypatch):
     assert "GUGABOBO_GITHUB_REVIEW_ENABLED=true" in env_text
     assert "GUGABOBO_GITHUB_ORGANIZATION=GugaBoBo-s" in env_text
     assert "GUGABOBO_GITHUB_REVIEW_INTERVAL_SECONDS=30" in env_text
+    assert "GUGABOBO_GITHUB_ISSUE_ENABLED=true" in env_text
+    assert "GUGABOBO_GITHUB_ISSUE_AUTO_FIX_ENABLED=true" in env_text
+    assert "GUGABOBO_GITHUB_ISSUE_INTERVAL_SECONDS=30" in env_text
+    assert "GUGABOBO_GITHUB_ISSUE_MAX_PER_SCAN=500" in env_text
+    assert "GUGABOBO_GITHUB_ISSUE_MIN_CONFIDENCE=1.0" in env_text
+    assert "GUGABOBO_GITHUB_ISSUE_AUTO_FIX_REPOSITORIES=GugaBoBo-s/gugabobo" in env_text
+    assert "GUGABOBO_CODE_CLAUDE_MODEL=claude-code" in env_text
+    assert "GUGABOBO_CODE_OPENAI_MODEL=gpt-code" in env_text
+    assert "GUGABOBO_CODE_DEEPSEEK_MODEL=deepseek-code" in env_text
+    assert "GUGABOBO_CODE_DEEPSEEK_RUNNER_MODEL=deepseek-runner-code" in env_text
+    assert "GUGABOBO_CODE_MODEL_TIMEOUT_SECONDS=1" in env_text
     assert "INJECTED=true" in env_text
     assert "\nINJECTED=true\n" not in env_text
     assert "should-not-save" not in env_text
@@ -352,6 +374,44 @@ def test_code_review_scan_requires_admin_and_returns_result(tmp_path, monkeypatc
     assert response.status_code == 200
     assert response.json()["reviewed"] == 2
     assert audits[0]["action"] == "code_review.scan"
+    get_settings.cache_clear()
+
+
+def test_github_issue_scan_requires_admin_and_returns_result(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+
+    class FakeIssueService:
+        def __init__(self, store):
+            self.store = store
+
+        def tick(self):
+            return {
+                "status": "ok",
+                "enabled": True,
+                "organization": "GugaBoBo-s",
+                "repositories": 2,
+                "issues": 4,
+                "evaluated": 2,
+                "worthwhile": 1,
+                "pull_requests": 1,
+                "skipped": 0,
+                "errors": 0,
+            }
+
+    monkeypatch.setattr(
+        "gugabobo.api.server.GitHubIssueAutomationService",
+        FakeIssueService,
+    )
+    client = TestClient(app)
+
+    unauthorized = client.post("/github-issues/scan")
+    response = client.post("/github-issues/scan", headers=admin_headers())
+    audits = client.get("/audit-logs").json()
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 200
+    assert response.json()["pull_requests"] == 1
+    assert audits[0]["action"] == "github_issue.scan"
     get_settings.cache_clear()
 
 

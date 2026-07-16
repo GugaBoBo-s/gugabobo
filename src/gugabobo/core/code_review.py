@@ -6,7 +6,7 @@ from typing import Any
 
 from gugabobo.config import Settings, get_settings
 from gugabobo.infra.github_client import GitHubClient
-from gugabobo.infra.llm import OpenAICompatibleClient, build_llm_client
+from gugabobo.infra.code_models import CodeModelClient, build_code_model_router
 from gugabobo.infra.logs import get_logger
 from gugabobo.infra.redaction import redact_sensitive
 from gugabobo.memory.store import MemoryStore
@@ -19,7 +19,7 @@ class OrganizationCodeReviewService:
         settings: Settings | None = None,
         organization_client: GitHubClient | None = None,
         github_factory: Callable[[str, str], GitHubClient] | None = None,
-        llm_client: OpenAICompatibleClient | None = None,
+        llm_client: CodeModelClient | None = None,
     ) -> None:
         self.store = store
         self.settings = settings or get_settings()
@@ -27,7 +27,7 @@ class OrganizationCodeReviewService:
         self.github_factory = github_factory or (
             lambda owner, repo: GitHubClient(self.settings, owner=owner, repo=repo)
         )
-        self.llm = llm_client or build_llm_client(self.settings)
+        self.llm = llm_client or build_code_model_router(self.settings)
         self.logger = get_logger()
         self.reviewer_login = ""
 

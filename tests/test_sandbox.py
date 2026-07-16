@@ -57,6 +57,25 @@ def test_prepare_clones_and_branches(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
+def test_prepare_remote_uses_authenticated_clone(tmp_path, monkeypatch):
+    configure_sandbox(tmp_path, monkeypatch)
+    source = init_source_repo(tmp_path / "remote")
+    manager = SandboxManager()
+
+    path = manager.prepare_remote(8, str(source), "gugabobo/issue-8", "secret")
+
+    assert (path / "readme.txt").exists()
+    branch = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert branch.stdout.strip() == "gugabobo/issue-8"
+    get_settings.cache_clear()
+
+
 def test_collect_diff_detects_new_file(tmp_path, monkeypatch):
     configure_sandbox(tmp_path, monkeypatch)
     source = init_source_repo(tmp_path / "source")

@@ -12,6 +12,7 @@ from gugabobo.core.access import context_with_access_role, evaluate_access, role
 from gugabobo.core.channel import ChannelContext
 from gugabobo.core.code_review import OrganizationCodeReviewService
 from gugabobo.core.deployment import DeploymentError, DeploymentService
+from gugabobo.core.github_issues import GitHubIssueAutomationService
 from gugabobo.core.improvement import ImprovementError, ImprovementService
 from gugabobo.core.lifecycle import (
     LifecycleError,
@@ -210,6 +211,7 @@ def dashboard_data() -> dict[str, object]:
             "telegram_reply_enabled": settings.telegram_reply_enabled,
             "github_review_enabled": settings.github_review_enabled,
             "github_organization": settings.github_organization,
+            "github_issue_enabled": settings.github_issue_enabled,
         },
         "conversations": agent.store.list_conversations(limit=20),
         "messages": agent.store.list_messages(limit=20),
@@ -222,6 +224,7 @@ def dashboard_data() -> dict[str, object]:
         "improvements": agent.store.list_improvement_tasks(limit=50),
         "pull_requests": agent.store.list_pull_requests(limit=50),
         "code_reviews": agent.store.list_code_reviews(limit=50),
+        "github_issue_runs": agent.store.list_github_issue_runs(limit=50),
         "merge_authorizations": agent.store.list_merge_authorizations(limit=50),
         "improvement_reflections": agent.store.list_improvement_reflections(limit=50),
         "deployment_records": agent.store.list_deployment_records(limit=50),
@@ -294,6 +297,12 @@ def dashboard_control_config(_: None = Depends(require_admin_token)) -> dict[str
             "GUGABOBO_GITHUB_REVIEW_INTERVAL_SECONDS": settings.github_review_interval_seconds,
             "GUGABOBO_GITHUB_REVIEW_MAX_FILES": settings.github_review_max_files,
             "GUGABOBO_GITHUB_REVIEW_MAX_PATCH_CHARS": settings.github_review_max_patch_chars,
+            "GUGABOBO_GITHUB_ISSUE_ENABLED": settings.github_issue_enabled,
+            "GUGABOBO_GITHUB_ISSUE_INTERVAL_SECONDS": settings.github_issue_interval_seconds,
+            "GUGABOBO_GITHUB_ISSUE_MAX_PER_SCAN": settings.github_issue_max_per_scan,
+            "GUGABOBO_GITHUB_ISSUE_MIN_CONFIDENCE": settings.github_issue_min_confidence,
+            "GUGABOBO_GITHUB_ISSUE_AUTO_FIX_ENABLED": settings.github_issue_auto_fix_enabled,
+            "GUGABOBO_GITHUB_ISSUE_AUTO_FIX_REPOSITORIES": settings.github_issue_auto_fix_repositories,
             "GUGABOBO_LLM_PROVIDER": settings.llm_provider,
             "GUGABOBO_MOONSHOT_BASE_URL": settings.moonshot_base_url,
             "GUGABOBO_MOONSHOT_MODEL": settings.moonshot_model,
@@ -310,6 +319,11 @@ def dashboard_control_config(_: None = Depends(require_admin_token)) -> dict[str
             "GUGABOBO_RUNNER_CONTAINER_RUNTIME": settings.runner_container_runtime,
             "GUGABOBO_RUNNER_CONTAINER_IMAGE": settings.runner_container_image,
             "GUGABOBO_CLAUDE_BASE_URL": settings.claude_base_url,
+            "GUGABOBO_CODE_CLAUDE_MODEL": settings.code_claude_model,
+            "GUGABOBO_CODE_OPENAI_MODEL": settings.code_openai_model,
+            "GUGABOBO_CODE_DEEPSEEK_MODEL": settings.code_deepseek_model,
+            "GUGABOBO_CODE_DEEPSEEK_RUNNER_MODEL": settings.code_deepseek_runner_model,
+            "GUGABOBO_CODE_MODEL_TIMEOUT_SECONDS": settings.code_model_timeout_seconds,
         },
         "secrets": {
             "GUGABOBO_ADMIN_TOKEN": bool(settings.admin_token),
@@ -438,6 +452,29 @@ def scan_code_reviews(
         detail=(
             f"repositories={result['repositories']},pull_requests={result['pull_requests']},"
             f"reviewed={result['reviewed']},errors={result['errors']}"
+        ),
+    )
+    return result
+
+
+@app.get("/github-issues")
+def github_issue_runs(limit: int = 50) -> list[dict[str, object]]:
+    return build_agent().store.list_github_issue_runs(limit=limit)
+
+
+@app.post("/github-issues/scan")
+def scan_github_issues(
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    result = GitHubIssueAutomationService(build_agent().store).tick()
+    add_dashboard_audit(
+        "github_issue.scan",
+        get_settings().github_organization,
+        status=str(result["status"]),
+        detail=(
+            f"repositories={result['repositories']},issues={result['issues']},"
+            f"worthwhile={result['worthwhile']},pull_requests={result['pull_requests']},"
+            f"errors={result['errors']}"
         ),
     )
     return result
