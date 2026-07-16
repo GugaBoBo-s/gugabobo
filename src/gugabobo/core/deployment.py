@@ -82,6 +82,7 @@ class DeploymentService:
         revision: str,
         status: str,
         detail: str,
+        current_revision: str = "",
         actor_source: str = "deployment",
         actor_user_id: str = "server",
     ) -> DeploymentReportOutcome:
@@ -97,11 +98,14 @@ class DeploymentService:
             if record["target_revision"] == revision
             and record["status"] in {"pending", status}
         ]
+        reported_current = current_revision or (
+            revision if status == "deployed" else "unknown"
+        )
         for record in matching:
             self.store.mark_deployment_record(
                 int(record["id"]),
                 status,
-                deployed_revision=revision if status == "deployed" else "",
+                deployed_revision=current_revision or (revision if status == "deployed" else ""),
                 detail=detail,
             )
             self.store.add_audit_log(
@@ -111,7 +115,7 @@ class DeploymentService:
                 target=f"deployment:{record['id']}",
                 status="success" if status == "deployed" else "failed",
                 risk_level="high",
-                detail=revision,
+                detail=f"target={revision} current={reported_current}",
             )
         return DeploymentReportOutcome(revision, status, len(matching))
 

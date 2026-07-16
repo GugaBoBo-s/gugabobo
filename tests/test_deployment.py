@@ -33,7 +33,8 @@ def test_auto_deploy_validates_before_activation_and_supports_rollback() -> None
     assert "commits/{revision}/check-runs" in script
     assert 'run.get("name") == "test"' in script
     assert "verify_pending_deployment" in script
-    assert "target_revision = ? AND status = 'pending'" in script
+    assert "deployment_records.pull_request_id" in script
+    assert 'str(pull.get("number")) == pull_request_number' in script
     assert "mark_pending_deployment_failed" in script
 
 
@@ -113,9 +114,11 @@ def test_failed_deployment_report_updates_matching_pending_revision(tmp_path) ->
         "abc123",
         "failed",
         "health check failed",
+        current_revision="previous456",
     )
 
     assert outcome.updated == 1
     record = store.list_deployment_records()[0]
     assert record["status"] == "failed"
     assert record["detail"] == "health check failed"
+    assert record["deployed_revision"] == "previous456"

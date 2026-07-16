@@ -446,12 +446,18 @@ def deployment_list(limit: int = 50) -> None:
 def deployment_report(
     status: str,
     revision: str,
+    current_revision: str = typer.Option("", "--current-revision"),
     detail: str = typer.Option("", "--detail"),
 ) -> None:
     """Record and notify the owner about an automated deployment result."""
     agent = build_agent()
     try:
-        outcome = DeploymentService(agent.store).report(revision, status, detail)
+        outcome = DeploymentService(agent.store).report(
+            revision,
+            status,
+            detail,
+            current_revision=current_revision,
+        )
     except DeploymentError as error:
         raise typer.BadParameter(str(error)) from error
     OwnerNotifier(agent.store).notify_deployment(status, revision, detail)

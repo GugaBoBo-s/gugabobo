@@ -19,6 +19,7 @@ old_image=""
 activated=0
 telegram_was_active=0
 failure_detail="Automated deployment failed during initialization."
+deployment_current_revision=""
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "gugabobo auto deployment must run as root" >&2
@@ -65,15 +66,17 @@ verify_github_target() {
   local github_api_url="$2"
   local github_owner="$3"
   local github_repo="$4"
+  local pull_request_number="$5"
   GITHUB_TOKEN="$github_token" python3 - \
-    "$github_api_url" "$github_owner" "$github_repo" "$target_revision" <<'PY'
+    "$github_api_url" "$github_owner" "$github_repo" "$target_revision" \
+    "$pull_request_number" <<'PY'
 import json
 import os
 import sys
 import urllib.error
 import urllib.request
 
-base_url, owner, repo, revision = sys.argv[1:]
+base_url, owner, repo, revision, pull_request_number = sys.argv[1:]
 headers = {
     "Accept": "application/vnd.github+json",
     "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
@@ -96,7 +99,9 @@ except (urllib.error.URLError, ValueError, KeyError) as error:
 merged = [
     pull
     for pull in pulls
-    if pull.get("merged_at") and (pull.get("base") or {}).get("ref") == "main"
+    if str(pull.get("number")) == pull_request_number
+    and pull.get("merged_at")
+    and (pull.get("base") or {}).get("ref") == "main"
 ]
 if not merged:
     raise SystemExit(2)
@@ -120,33 +125,39 @@ if not path.exists():
     raise SystemExit(2)
 try:
     with sqlite3.connect(path) as connection:
-        row = connection.execute(
-            "SELECT 1 FROM deployment_records "
-            "WHERE target_revision = ? AND status = 'pending' LIMIT 1",
+        rows = connection.execute(
+            "SELECT pull_requests.github_owner, pull_requests.github_repo, "
+            "pull_requests.number FROM deployment_records "
+            "JOIN pull_requests ON pull_requests.id = deployment_records.pull_request_id "
+            "WHERE deployment_records.target_revision = ? "
+            "AND deployment_records.status = 'pending'",
             (sys.argv[2],),
-        ).fetchone()
+        ).fetchall()
 except sqlite3.Error:
     raise SystemExit(2)
-raise SystemExit(0 if row else 2)
+if len(rows) != 1:
+    raise SystemExit(2)
+print(f"{rows[0][0]}\t{rows[0][1]}\t{rows[0][2]}")
 PY
 }
 
 mark_pending_deployment_failed() {
   local db_path="$1"
   local detail="$2"
+  local current_revision="$3"
   if [ -z "$target_revision" ] || [ ! -f "$db_path" ]; then
     return
   fi
-  python3 - "$db_path" "$target_revision" "$detail" <<'PY'
+  python3 - "$db_path" "$target_revision" "$detail" "$current_revision" <<'PY'
 import sqlite3
 import sys
 
 with sqlite3.connect(sys.argv[1]) as connection:
     connection.execute(
         "UPDATE deployment_records SET status = 'failed', detail = ?, "
-        "deployed_revision = '', deployed_at = '', updated_at = CURRENT_TIMESTAMP "
+        "deployed_revision = ?, deployed_at = '', updated_at = CURRENT_TIMESTAMP "
         "WHERE target_revision = ? AND status = 'pending'",
-        (sys.argv[3], sys.argv[2]),
+        (sys.argv[3], sys.argv[4], sys.argv[2]),
     )
 PY
 }
@@ -191,9 +202,14 @@ report_deployment() {
   if [ -z "$target_revision" ] || [ ! -x "$reporter" ]; then
     return
   fi
+  local current_revision="${deployment_current_revision:-$old_revision}"
+  if [ "$status" = "deployed" ]; then
+    current_revision="$target_revision"
+  fi
   (
     cd "$REPO_DIR"
-    run_as_user "$reporter" deployment report "$status" "$target_revision" --detail "$detail"
+    run_as_user "$reporter" deployment report "$status" "$target_revision" \
+      --current-revision "$current_revision" --detail "$detail"
   ) || true
 }
 
@@ -229,12 +245,20 @@ on_error() {
   if [ -n "$target_revision" ]; then
     printf '%s\n' "$target_revision" > "$FAILED_TARGET_FILE"
   fi
-  rollback
-  if [ -n "${db_path:-}" ]; then
-    mark_pending_deployment_failed "$db_path" "$failure_detail"
+  rollback_status=0
+  rollback || rollback_status=$?
+  deployment_current_revision="$old_revision"
+  if [ "$rollback_status" -eq 0 ]; then
+    rollback_detail="Production remained on or was restored to the previous revision."
+  else
+    deployment_current_revision=""
+    rollback_detail="Rollback did not pass its health check; operator action is required."
   fi
-  write_status "failed" "$failure_detail Production was left on the previous revision."
-  report_deployment "failed" "$failure_detail"
+  if [ -n "${db_path:-}" ]; then
+    mark_pending_deployment_failed "$db_path" "$failure_detail" "$deployment_current_revision"
+  fi
+  write_status "failed" "$failure_detail $rollback_detail"
+  report_deployment "failed" "$failure_detail $rollback_detail"
   exit "$exit_code"
 }
 
@@ -290,27 +314,25 @@ case "$db_path" in
   *) db_path="$REPO_DIR/$db_path" ;;
 esac
 set +e
-verify_pending_deployment "$db_path"
+deployment_reference=$(verify_pending_deployment "$db_path")
 pending_status=$?
 set -e
 if [ "$pending_status" -ne 0 ]; then
   write_status "waiting" "Waiting for the lifecycle agent to create a pending deployment record."
   exit 0
 fi
+IFS=$'\t' read -r deployment_owner deployment_repo deployment_pr_number <<< "$deployment_reference"
 
 github_token=$(sed -n 's/^GUGABOBO_GITHUB_TOKEN=//p' "$REPO_DIR/.env" | head -n 1 | tr -d '\r')
 github_api_url=$(sed -n 's/^GUGABOBO_GITHUB_API_URL=//p' "$REPO_DIR/.env" | head -n 1 | tr -d '\r')
-github_owner=$(sed -n 's/^GUGABOBO_GITHUB_OWNER=//p' "$REPO_DIR/.env" | head -n 1 | tr -d '\r')
-github_repo=$(sed -n 's/^GUGABOBO_GITHUB_REPO=//p' "$REPO_DIR/.env" | head -n 1 | tr -d '\r')
 github_api_url="${github_api_url:-https://api.github.com}"
-github_owner="${github_owner:-GugaBoBo-s}"
-github_repo="${github_repo:-gugabobo}"
 if [ -z "$github_token" ]; then
   write_status "blocked" "GitHub token is required to verify the deployment target."
   exit 0
 fi
 set +e
-verify_github_target "$github_token" "$github_api_url" "$github_owner" "$github_repo"
+verify_github_target "$github_token" "$github_api_url" "$deployment_owner" \
+  "$deployment_repo" "$deployment_pr_number"
 verification_status=$?
 set -e
 case "$verification_status" in
