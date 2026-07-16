@@ -97,7 +97,10 @@ docker build "${BUILD_ARGS[@]}" \
   -f "$REPO_DIR/deploy/Dockerfile.runner" -t "$RUNNER_IMAGE" "$REPO_DIR"
 
 sudo -u "$RUN_USER" "$REPO_DIR/.venv/bin/python" -m ruff check "$REPO_DIR"
-sudo -u "$RUN_USER" "$REPO_DIR/.venv/bin/python" -m pytest -q "$REPO_DIR"
+(
+  cd "$DATA_DIR"
+  sudo -u "$RUN_USER" "$REPO_DIR/.venv/bin/python" -m pytest -q "$REPO_DIR"
+)
 
 cp "$REPO_DIR/deploy/gugabobo-api.service" /etc/systemd/system/gugabobo-api.service
 cp "$REPO_DIR/deploy/gugabobo-telegram.service" /etc/systemd/system/gugabobo-telegram.service
