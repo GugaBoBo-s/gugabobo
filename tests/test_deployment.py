@@ -1,8 +1,18 @@
 import subprocess
+from pathlib import Path
 
 from gugabobo.config import Settings
 from gugabobo.core.deployment import DeploymentService
 from gugabobo.memory.store import MemoryStore
+
+
+def test_runner_dockerfile_uses_supported_node_runtime() -> None:
+    dockerfile = (
+        Path(__file__).parents[1] / "deploy" / "Dockerfile.runner"
+    ).read_text(encoding="utf-8")
+
+    assert "FROM node:22-bookworm-slim AS node-runtime" in dockerfile
+    assert "apt-get install -y --no-install-recommends git nodejs npm" not in dockerfile
 
 
 def git(repo, *args: str) -> str:
