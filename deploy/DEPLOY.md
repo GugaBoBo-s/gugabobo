@@ -104,6 +104,11 @@ and the relevant QQ or Telegram values. For self-improvement, use a fine-grained
 PAT from the GuGabobo GitHub account with **Contents: read/write** and **Pull
 requests: read/write** on this repository.
 
+If Docker Hub or `github.com` requires the server's local HTTP proxy, set
+`GUGABOBO_DOCKER_PROXY=http://127.0.0.1:<port>`. When this value is empty, setup
+also accepts a local HTTP `GUGABOBO_TELEGRAM_PROXY`. Only loopback HTTP proxy
+URLs are accepted for automatic Docker daemon configuration.
+
 ## Isolated Claude Code authentication
 
 Claude Code runs only in `gugabobo-runner:local`. Its dedicated home directory

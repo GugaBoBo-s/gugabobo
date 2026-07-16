@@ -9,6 +9,7 @@ REPO_URL="${GUGABOBO_REPO_URL:-git@github.com:GugaBoBo-s/gugabobo.git}"
 HTTPS_REPO_URL="${GUGABOBO_HTTPS_REPO_URL:-https://github.com/GugaBoBo-s/gugabobo.git}"
 RUNNER_IMAGE="${GUGABOBO_RUNNER_IMAGE:-gugabobo-runner:local}"
 CREDENTIAL_HELPER="$REPO_DIR/deploy/git-credential-gugabobo"
+DOCKER_PROXY="${GUGABOBO_DOCKER_PROXY:-}"
 
 configure_repo_auth() {
   if [ ! -f "$CREDENTIAL_HELPER" ] || [ ! -f "$REPO_DIR/.env" ]; then
@@ -21,6 +22,24 @@ configure_repo_auth() {
   chmod 700 "$CREDENTIAL_HELPER"
   sudo -u "$RUN_USER" git -C "$REPO_DIR" config --local credential.helper "$CREDENTIAL_HELPER"
   sudo -u "$RUN_USER" git -C "$REPO_DIR" remote set-url origin "$HTTPS_REPO_URL"
+}
+
+configure_docker_proxy() {
+  if [ -z "$DOCKER_PROXY" ] && [ -f "$REPO_DIR/.env" ]; then
+    DOCKER_PROXY=$(sed -n 's/^GUGABOBO_DOCKER_PROXY=//p' "$REPO_DIR/.env" | head -n 1 | tr -d '\r')
+  fi
+  if [ -z "$DOCKER_PROXY" ] && [ -f "$REPO_DIR/.env" ]; then
+    DOCKER_PROXY=$(sed -n 's/^GUGABOBO_TELEGRAM_PROXY=//p' "$REPO_DIR/.env" | head -n 1 | tr -d '\r')
+  fi
+  if ! printf '%s' "$DOCKER_PROXY" | grep -Eq '^https?://(127\.0\.0\.1|localhost):[0-9]+/?$'; then
+    DOCKER_PROXY=""
+    return
+  fi
+  mkdir -p /etc/systemd/system/docker.service.d
+  printf '[Service]\nEnvironment="HTTP_PROXY=%s"\nEnvironment="HTTPS_PROXY=%s"\nEnvironment="NO_PROXY=127.0.0.1,localhost"\n' \
+    "$DOCKER_PROXY" "$DOCKER_PROXY" > /etc/systemd/system/docker.service.d/http-proxy.conf
+  systemctl daemon-reload
+  systemctl restart docker
 }
 
 echo "[gugabobo] root=$ROOT user=$RUN_USER"
@@ -52,8 +71,16 @@ if [ ! -f "$REPO_DIR/.env" ]; then
 fi
 chmod 600 "$REPO_DIR/.env"
 configure_repo_auth
+configure_docker_proxy
 
-docker build -f "$REPO_DIR/deploy/Dockerfile.runner" -t "$RUNNER_IMAGE" "$REPO_DIR"
+if [ -n "$DOCKER_PROXY" ]; then
+  docker build --network=host \
+    --build-arg HTTP_PROXY="$DOCKER_PROXY" \
+    --build-arg HTTPS_PROXY="$DOCKER_PROXY" \
+    -f "$REPO_DIR/deploy/Dockerfile.runner" -t "$RUNNER_IMAGE" "$REPO_DIR"
+else
+  docker build -f "$REPO_DIR/deploy/Dockerfile.runner" -t "$RUNNER_IMAGE" "$REPO_DIR"
+fi
 
 sudo -u "$RUN_USER" "$REPO_DIR/.venv/bin/python" -m ruff check "$REPO_DIR"
 sudo -u "$RUN_USER" "$REPO_DIR/.venv/bin/python" -m pytest -q "$REPO_DIR"
