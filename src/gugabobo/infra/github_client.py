@@ -41,6 +41,7 @@ class GitHubClient:
         self.settings = settings or get_settings()
         self._owner = owner or self.settings.github_owner
         self._repo = repo or self.settings.github_repo
+        self._canonical_owner = ""
 
     @property
     def configured(self) -> bool:
@@ -130,7 +131,15 @@ class GitHubClient:
 
     def get_default_branch(self) -> str:
         data = self._request("GET", "")
+        self._remember_canonical_owner(data)
         return str(data.get("default_branch", "main"))
+
+    def get_repository_owner_login(self) -> str:
+        if self._canonical_owner:
+            return self._canonical_owner
+        data = self._request("GET", "")
+        self._remember_canonical_owner(data)
+        return self._canonical_owner or self.owner
 
     def get_authenticated_login(self) -> str:
         data = self._request_url("GET", self._api_url("/user"))
@@ -245,12 +254,20 @@ class GitHubClient:
         return self._paginate(self._url("/pulls"), {"state": state})
 
     def find_pull_request_by_head(self, branch: str) -> dict:
+        canonical_owner = self.get_repository_owner_login()
         pulls = self._paginate(
             self._url("/pulls"),
-            {"state": "all", "head": f"{self.owner}:{branch}"},
+            {"state": "all", "head": f"{canonical_owner}:{branch}"},
             limit=1,
         )
         return pulls[0] if pulls else {}
+
+    def _remember_canonical_owner(self, data: object) -> None:
+        if not isinstance(data, dict):
+            return
+        owner = data.get("owner", {})
+        if isinstance(owner, dict):
+            self._canonical_owner = str(owner.get("login", ""))
 
     def list_pull_request_files(self, number: int, limit: int = 100) -> list[dict]:
         return self._paginate(self._url(f"/pulls/{number}/files"), limit=limit)

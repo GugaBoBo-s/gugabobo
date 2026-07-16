@@ -50,6 +50,7 @@ class FakeGitHubClient:
             "number": 7,
             "html_url": "https://github.com/x/y/pull/7",
             "head": {"ref": head},
+            "body": body,
         }
         return PullRequestResult(number=7, url="https://github.com/x/y/pull/7", branch_name=head)
 
@@ -416,6 +417,7 @@ def test_ship_recovers_remote_pr_created_before_database_write(tmp_path):
         "number": 19,
         "html_url": "https://github.com/x/y/pull/19",
         "head": {"ref": branch},
+        "body": f"<!-- gugabobo-improvement:{improvement_id} -->",
     }
 
     outcome = service.run_and_open_pull_request(
@@ -427,6 +429,32 @@ def test_ship_recovers_remote_pr_created_before_database_write(tmp_path):
     assert outcome.status == "pr_open"
     assert outcome.pr_number == 19
     assert store.list_pull_requests()[0]["number"] == 19
+
+
+def test_ship_rejects_remote_pr_owned_by_another_improvement(tmp_path):
+    get_settings.cache_clear()
+    store, service, improvement_id = approved_improvement(tmp_path)
+    github = service.github
+    branch = f"gugabobo/improvement-{improvement_id}-stale"
+    store.update_improvement_task(improvement_id, branch_name=branch)
+    github.remote_pull = {
+        "number": 21,
+        "html_url": "https://github.com/x/y/pull/21",
+        "head": {"ref": branch},
+        "body": "<!-- gugabobo-improvement:999 -->",
+    }
+    runner = FakeRunner()
+
+    with pytest.raises(ImprovementError, match="does not belong"):
+        service.run_and_open_pull_request(
+            improvement_id,
+            runner=runner,
+            sandbox=FakeSandbox(),
+        )
+
+    assert runner.calls == []
+    assert store.list_pull_requests() == []
+    get_settings.cache_clear()
 
 
 @pytest.mark.parametrize(
@@ -446,6 +474,7 @@ def test_ship_recovers_finished_remote_pr_state(tmp_path, merged, expected_statu
         "merged": merged,
         "merged_at": "2026-07-17T00:00:00Z" if merged else None,
         "head": {"ref": branch},
+        "body": f"<!-- gugabobo-improvement:{improvement_id} -->",
     }
 
     outcome = service.run_and_open_pull_request(

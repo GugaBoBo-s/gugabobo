@@ -164,8 +164,10 @@ def test_authenticated_login_and_pull_request_recovery(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/user":
             return httpx.Response(200, json={"login": "gugabobo-agent"})
+        if request.url.path == "/repos/GugaBoBo-s/gugabobo":
+            return httpx.Response(200, json={"owner": {"login": "GugaBoBo-S"}})
         if request.url.path.endswith("/pulls"):
-            assert request.url.params["head"] == "GugaBoBo-s:gugabobo/improvement-7"
+            assert request.url.params["head"] == "GugaBoBo-S:gugabobo/improvement-7"
             assert request.url.params["state"] == "all"
             return httpx.Response(200, json=[{"number": 17, "html_url": "https://example/pr/17"}])
         if request.url.path.endswith("/git/ref/heads/missing"):

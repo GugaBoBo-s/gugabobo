@@ -472,6 +472,7 @@ class ImprovementService:
     ) -> PullRequestOpened | None:
         remote = self.github.find_pull_request_by_head(branch_name)
         if remote:
+            self._require_improvement_marker(remote, improvement_id)
             return self._persist_pull_request(
                 improvement_id,
                 self._pull_request_result(remote, branch_name),
@@ -496,6 +497,7 @@ class ImprovementService:
                 raise ImprovementError(
                     f"remote branch exists but pull request recovery failed: {detail}"
                 ) from error
+            self._require_improvement_marker(remote, improvement_id)
             pull_request = self._pull_request_result(remote, branch_name)
         return self._persist_pull_request(
             improvement_id,
@@ -596,6 +598,17 @@ class ImprovementService:
             status=status,
             merged_at=str(remote.get("merged_at") or ""),
         )
+
+    def _require_improvement_marker(
+        self,
+        remote: dict[str, object],
+        improvement_id: int,
+    ) -> None:
+        marker = f"<!-- gugabobo-improvement:{improvement_id} -->"
+        if marker not in str(remote.get("body", "")):
+            raise ImprovementError(
+                "remote pull request does not belong to this improvement task"
+            )
 
     def _audit_run(
         self,
