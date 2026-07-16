@@ -253,7 +253,11 @@ class OrganizationCodeReviewService:
             chunks = chunks or [""]
             for index, chunk in enumerate(chunks, start=1):
                 chunk_label = f"patch_chunk={index}/{len(chunks)}\n" if len(chunks) > 1 else ""
-                sections.append(header + chunk_label + chunk)
+                section = header + chunk_label + chunk
+                sections.extend(
+                    section[offset : offset + max_chars]
+                    for offset in range(0, len(section), max_chars)
+                )
         if not sections:
             return ["(no file patches available)"]
         batches: list[str] = []

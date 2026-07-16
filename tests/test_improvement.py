@@ -286,10 +286,20 @@ def test_open_pull_request_retry_delivers_one_owner_notification(tmp_path):
 
     first = service.open_pull_request(created.improvement_id)
     second = service.open_pull_request(created.improvement_id)
+    github.pull_state = {
+        "state": "closed",
+        "merged": False,
+        "merged_at": None,
+        "head": {"sha": "commitsha"},
+    }
+    third = service.open_pull_request(created.improvement_id)
 
     assert first.pull_request_id == second.pull_request_id
+    assert third.status == "closed"
     assert len(napcat.messages) == 1
     assert len(store.list_owner_notifications()) == 1
+    assert store.get_pull_request(first.pull_request_id)["status"] == "closed"
+    assert store.get_improvement_task(created.improvement_id)["runner_status"] == "pr_closed"
     get_settings.cache_clear()
 
 

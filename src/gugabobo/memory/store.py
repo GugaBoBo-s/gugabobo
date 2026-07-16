@@ -1246,6 +1246,8 @@ class MemoryStore:
         status: str | None = None,
         checks_status: str | None = None,
         merged_at: str | None = None,
+        url: str | None = None,
+        branch_name: str | None = None,
     ) -> bool:
         fields: list[str] = []
         values: list[Any] = []
@@ -1258,6 +1260,12 @@ class MemoryStore:
         if merged_at is not None:
             fields.append("merged_at = ?")
             values.append(merged_at)
+        if url is not None:
+            fields.append("url = ?")
+            values.append(url)
+        if branch_name is not None:
+            fields.append("branch_name = ?")
+            values.append(branch_name)
         if not fields:
             return False
         fields.append("updated_at = CURRENT_TIMESTAMP")

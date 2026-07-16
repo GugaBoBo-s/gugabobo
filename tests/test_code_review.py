@@ -225,6 +225,29 @@ def test_prompt_treats_pull_request_content_as_untrusted_and_batches_full_diff(t
     assert sum(prompt.count("x") for prompt in user_prompts) >= 5000
 
 
+def test_file_batches_never_exceed_configured_character_limit(tmp_path) -> None:
+    service = build_service(
+        tmp_path,
+        {},
+        FakeLLM(),
+        github_review_max_patch_chars=1000,
+    )
+    files = [
+        {
+            "filename": "f" * 2000,
+            "status": "modified",
+            "additions": 5000,
+            "deletions": 0,
+            "patch": "x" * 5000,
+        }
+    ]
+
+    batches = service._file_batches(files)
+
+    assert all(len(batch) <= 1000 for batch in batches)
+    assert sum(batch.count("x") for batch in batches) == 5000
+
+
 def test_spoofed_marker_from_another_reviewer_does_not_skip(tmp_path) -> None:
     repository = FakeRepositoryClient("GugaBoBo-s", "alpha", [pull_request(1, "sha-a")])
     repository.reviews = [

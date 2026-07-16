@@ -531,12 +531,13 @@ class ImprovementService:
             runner_status=runner_status,
             branch_name=pull_request.branch_name,
         )
-        if pull_request.merged_at:
-            self.store.update_pull_request(
-                pull_request_id,
-                status=pull_request.status,
-                merged_at=pull_request.merged_at,
-            )
+        self.store.update_pull_request(
+            pull_request_id,
+            status=pull_request.status,
+            merged_at=pull_request.merged_at,
+            url=pull_request.url,
+            branch_name=pull_request.branch_name,
+        )
         if existing is None:
             self.store.add_audit_log(
                 actor_source=actor_source,
@@ -561,6 +562,7 @@ class ImprovementService:
         record: dict[str, object],
         title: str,
     ) -> PullRequestOpened:
+        record = self._refresh_tracked_pull_request(record)
         improvement_id = int(record["improvement_task_id"])
         branch_name = str(record["branch_name"])
         status = str(record["status"])
@@ -582,6 +584,33 @@ class ImprovementService:
             branch_name=branch_name,
             status=status,
         )
+
+    def _refresh_tracked_pull_request(
+        self,
+        record: dict[str, object],
+    ) -> dict[str, object]:
+        owner = str(record["github_owner"])
+        repo = str(record["github_repo"])
+        github = self.github
+        if github.owner != owner or github.repo != repo:
+            github = GitHubClient(github.settings, owner=owner, repo=repo)
+        try:
+            remote = github.get_pull_request(int(record["number"]))
+        except Exception:
+            return record
+        merged = bool(remote.get("merged"))
+        state = str(remote.get("state", ""))
+        status = "merged" if merged else ("closed" if state == "closed" else "open")
+        head = remote.get("head", {})
+        branch_name = str(head.get("ref", "")) if isinstance(head, dict) else ""
+        self.store.update_pull_request(
+            int(record["id"]),
+            status=status,
+            merged_at=str(remote.get("merged_at") or ""),
+            url=str(remote.get("html_url") or record["url"]),
+            branch_name=branch_name or str(record["branch_name"]),
+        )
+        return self.store.get_pull_request(int(record["id"])) or record
 
     def _pull_request_result(
         self,

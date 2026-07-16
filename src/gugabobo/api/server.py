@@ -138,7 +138,7 @@ def require_danger_confirmation(
 
 def require_admin_token(x_gugabobo_admin_token: str | None = Header(default=None)) -> None:
     settings = get_settings()
-    configured_token = settings.admin_token.strip()
+    configured_token = (settings.admin_token or "").strip()
     if not configured_token or configured_token == "change-me":
         raise HTTPException(status_code=503, detail="Admin token is not configured")
     if x_gugabobo_admin_token is None or not hmac.compare_digest(
