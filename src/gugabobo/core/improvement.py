@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from gugabobo.config import get_settings
 from gugabobo.infra.claude_runner import ClaudeCodeRunner
 from gugabobo.infra.github_client import GitHubClient
+from gugabobo.infra.redaction import redact_sensitive
 from gugabobo.infra.sandbox import SandboxManager
 from gugabobo.memory.store import MemoryStore
 
@@ -143,11 +145,19 @@ class ImprovementService:
             raise ImprovementError("improvement task must be approved before opening a pull request")
         if not self.github.configured:
             raise ImprovementError("GUGABOBO_GITHUB_TOKEN is not configured")
+        existing = self.store.get_pull_request_for_improvement(improvement_id)
+        if existing:
+            return PullRequestOpened(
+                pull_request_id=int(existing["id"]),
+                number=int(existing["number"]),
+                url=str(existing["url"]),
+                branch_name=str(existing["branch_name"]),
+            )
         task = self.store.get_task(int(improvement["task_id"]))
         title = str(task["title"]) if task else f"Improvement #{improvement_id}"
         base_branch = self.github.get_default_branch()
         base_sha = self.github.get_branch_sha(base_branch)
-        branch_name = f"gugabobo/improvement-{improvement_id}"
+        branch_name = self._branch_name(improvement_id)
         self.github.create_branch(branch_name, base_sha)
         proposal = self._proposal_markdown(improvement_id, improvement, task)
         self.github.put_file(
@@ -207,9 +217,9 @@ class ImprovementService:
         runner = runner or ClaudeCodeRunner()
         sandbox = sandbox or SandboxManager()
         if not runner.configured:
-            raise ImprovementError("Claude Code (claude) is not available on this machine")
+            raise ImprovementError("isolated Claude Code runner is not available")
         task = self.store.get_task(int(improvement["task_id"]))
-        branch_name = f"gugabobo/improvement-{improvement_id}"
+        branch_name = self._branch_name(improvement_id)
         self.store.update_improvement_task(improvement_id, runner_status="running")
         try:
             path = sandbox.prepare(
@@ -221,12 +231,16 @@ class ImprovementService:
             self.store.update_improvement_task(improvement_id, runner_status="failed")
             raise ImprovementError(f"sandbox preparation failed: {error}") from error
         prompt = self._build_prompt(improvement, task)
-        result = runner.run(prompt, cwd=path)
-        if not result.ok:
+        try:
+            result = runner.run(prompt, cwd=path)
+            if not result.ok:
+                raise ImprovementError(result.error or "Claude Code runner failed")
+            diff = sandbox.collect_diff(path)
+        except Exception as error:
             self.store.update_improvement_task(improvement_id, runner_status="failed")
-            self._audit_run(actor_source, actor_user_id, improvement_id, "failed", result.error)
-            return RunOutcome(status="failed", branch_name=branch_name, detail=result.error[:500])
-        diff = sandbox.collect_diff(path)
+            detail = self._safe_error(error)
+            self._audit_run(actor_source, actor_user_id, improvement_id, "failed", detail)
+            return RunOutcome(status="failed", branch_name=branch_name, detail=detail[:500])
         if not diff.strip():
             self.store.update_improvement_task(improvement_id, runner_status="no_changes")
             self._audit_run(actor_source, actor_user_id, improvement_id, "no_changes", "")
@@ -262,29 +276,47 @@ class ImprovementService:
         runner = runner or ClaudeCodeRunner()
         sandbox = sandbox or SandboxManager()
         if not runner.configured:
-            raise ImprovementError("Claude Code (claude) is not available on this machine")
+            raise ImprovementError("isolated Claude Code runner is not available")
         if not self.github.configured:
             raise ImprovementError("GUGABOBO_GITHUB_TOKEN is not configured")
+        existing = self.store.get_pull_request_for_improvement(improvement_id)
+        if existing:
+            return RunOutcome(
+                status="pr_open",
+                branch_name=str(existing["branch_name"]),
+                pr_number=int(existing["number"]),
+                pr_url=str(existing["url"]),
+            )
         task = self.store.get_task(int(improvement["task_id"]))
         title = str(task["title"]) if task else f"Improvement #{improvement_id}"
-        branch_name = f"gugabobo/improvement-{improvement_id}"
+        branch_name = self._branch_name(improvement_id)
         self.store.update_improvement_task(improvement_id, runner_status="running")
         try:
             path = sandbox.prepare(improvement_id, source_repo or Path.cwd(), branch_name)
         except Exception as error:
             self.store.update_improvement_task(improvement_id, runner_status="failed")
             raise ImprovementError(f"sandbox preparation failed: {error}") from error
-        result = runner.run(self._build_prompt(improvement, task), cwd=path)
-        if not result.ok:
+        try:
+            result = runner.run(self._build_prompt(improvement, task), cwd=path)
+            if not result.ok:
+                raise ImprovementError(result.error or "Claude Code runner failed")
+            diff = sandbox.collect_diff(path)
+        except Exception as error:
             self.store.update_improvement_task(improvement_id, runner_status="failed")
-            self._audit_run(actor_source, actor_user_id, improvement_id, "failed", result.error)
-            return RunOutcome(status="failed", branch_name=branch_name, detail=result.error[:500])
-        diff = sandbox.collect_diff(path)
+            detail = self._safe_error(error)
+            self._audit_run(actor_source, actor_user_id, improvement_id, "failed", detail)
+            return RunOutcome(status="failed", branch_name=branch_name, detail=detail[:500])
         if not diff.strip():
             self.store.update_improvement_task(improvement_id, runner_status="no_changes")
             self._audit_run(actor_source, actor_user_id, improvement_id, "no_changes", "")
             return RunOutcome(status="no_changes", branch_name=branch_name)
-        checks = sandbox.run_checks(path)
+        try:
+            checks = sandbox.run_checks(path)
+        except Exception as error:
+            self.store.update_improvement_task(improvement_id, runner_status="failed")
+            detail = self._safe_error(error)
+            self._audit_run(actor_source, actor_user_id, improvement_id, "failed", detail)
+            return RunOutcome(status="failed", branch_name=branch_name, diff=diff, detail=detail)
         if not checks.passed:
             self.store.update_improvement_task(
                 improvement_id,
@@ -304,15 +336,25 @@ class ImprovementService:
                 diff=diff,
                 detail=checks.output[-2000:],
             )
-        sandbox.commit_all(path, f"feat(improvement): #{improvement_id} via Claude Code")
-        sandbox.push_branch(path, self.github.push_url, branch_name)
-        base_branch = self.github.get_default_branch()
-        pull_request = self.github.create_pull_request(
-            title=title,
-            head=branch_name,
-            base=base_branch,
-            body=self._proposal_markdown(improvement_id, improvement, task),
-        )
+        try:
+            sandbox.commit_all(path, f"feat(improvement): #{improvement_id} via Claude Code")
+            sandbox.push_branch(path, self.github.push_url, branch_name, self.github.token)
+            base_branch = self.github.get_default_branch()
+            pull_request = self.github.create_pull_request(
+                title=title,
+                head=branch_name,
+                base=base_branch,
+                body=self._proposal_markdown(improvement_id, improvement, task),
+            )
+        except Exception as error:
+            self.store.update_improvement_task(
+                improvement_id,
+                runner_status="failed",
+                branch_name=branch_name,
+            )
+            detail = self._safe_error(error)
+            self._audit_run(actor_source, actor_user_id, improvement_id, "failed", detail)
+            return RunOutcome(status="failed", branch_name=branch_name, diff=diff, detail=detail)
         self.store.add_pull_request(
             improvement_task_id=improvement_id,
             github_owner=self.github.owner,
@@ -355,7 +397,13 @@ class ImprovementService:
         if not self.github.configured:
             raise ImprovementError("GUGABOBO_GITHUB_TOKEN is not configured")
         number = int(record["number"])
-        remote = self.github.get_pull_request(number)
+        owner = str(record["github_owner"])
+        repo = str(record["github_repo"])
+        if self.github.owner == owner and self.github.repo == repo:
+            github = self.github
+        else:
+            github = GitHubClient(owner=owner, repo=repo)
+        remote = github.get_pull_request(number)
         merged = bool(remote.get("merged"))
         state = str(remote.get("state", ""))
         status = "merged" if merged else ("closed" if state == "closed" else "open")
@@ -363,7 +411,7 @@ class ImprovementService:
         head_sha = str(remote.get("head", {}).get("sha", ""))
         checks_status = "unknown"
         if head_sha:
-            checks_status = str(self.github.get_commit_status(head_sha).get("state", "unknown"))
+            checks_status = github.get_checks_status(head_sha)
         self.store.update_pull_request(
             pull_request_id,
             status=status,
@@ -402,6 +450,24 @@ class ImprovementService:
             risk_level="high",
             detail=detail[:1000],
         )
+
+    def _branch_name(self, improvement_id: int) -> str:
+        return f"gugabobo/improvement-{improvement_id}-{uuid4().hex[:8]}"
+
+    def _safe_error(self, error: object) -> str:
+        settings = get_settings()
+        return redact_sensitive(
+            error,
+            (
+                settings.admin_token,
+                settings.github_token,
+                settings.telegram_bot_token,
+                settings.telegram_webhook_secret,
+                settings.moonshot_api_key,
+                settings.deepseek_api_key,
+                settings.openai_api_key,
+            ),
+        )[:2000]
 
     def _build_prompt(self, improvement: dict, task: dict | None) -> str:
         description = str(task["description"]) if task else ""

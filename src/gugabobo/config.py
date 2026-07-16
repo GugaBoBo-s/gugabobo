@@ -37,9 +37,16 @@ class Settings(BaseSettings):
     git_author_name: str = "GuGabobo"
     git_author_email: str = "263493647+GuGabobo@users.noreply.github.com"
     sandbox_dir: Path = Path(".gugabobo/sandbox")
+    runner_container_runtime: str = "docker"
+    runner_container_image: str = "gugabobo-runner:local"
+    runner_home_dir: Path = Path(".gugabobo/claude-home")
+    runner_memory_limit: str = "2g"
+    runner_cpu_limit: str = "2"
+    runner_pids_limit: int = Field(default=256, ge=16)
     claude_bin: str = "claude"
-    claude_permission_mode: str = "bypassPermissions"
-    claude_timeout_seconds: int = 900
+    claude_timeout_seconds: int = Field(default=900, ge=1)
+    claude_max_budget_usd: float = Field(default=5.0, gt=0, le=100)
+    sandbox_check_timeout_seconds: int = Field(default=300, ge=1)
     llm_provider: str = "moonshot"
     moonshot_api_key: str = Field(default="", repr=False)
     moonshot_base_url: str = "https://api.moonshot.ai/v1"
@@ -50,20 +57,18 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(default="", repr=False)
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-5.6"
-    llm_timeout_seconds: int = 60
-    llm_context_messages: int = 400
-    llm_memory_items: int = 12
-    llm_summary_trigger_messages: int = 40
-    llm_summary_keep_recent: int = 20
-    # Token-based context management (primary). Message counts above are safety caps.
-    llm_history_token_budget: int = 24000
-    llm_summary_trigger_tokens: int = 24000
-    llm_summary_keep_recent_tokens: int = 8000
+    llm_timeout_seconds: int = Field(default=60, ge=1)
+    llm_context_messages: int = Field(default=400, ge=1)
+    llm_memory_items: int = Field(default=12, ge=0)
+    llm_history_token_budget: int = Field(default=24000, ge=1)
+    llm_summary_trigger_tokens: int = Field(default=24000, ge=1)
+    llm_summary_keep_recent_tokens: int = Field(default=8000, ge=0)
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.runner_home_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def owner_qq_id_set(self) -> set[str]:

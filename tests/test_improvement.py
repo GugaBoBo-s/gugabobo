@@ -10,6 +10,7 @@ class FakeGitHubClient:
     configured = True
     owner = "GugaBoBo-s"
     repo = "gugabobo"
+    token = "token"
 
     def __init__(self) -> None:
         self.created_branches: list[tuple[str, str]] = []
@@ -21,8 +22,8 @@ class FakeGitHubClient:
     def get_pull_request(self, number):
         return self.pull_state
 
-    def get_commit_status(self, ref):
-        return {"state": self.checks_state}
+    def get_checks_status(self, ref):
+        return self.checks_state
 
     def get_default_branch(self) -> str:
         return "main"
@@ -44,7 +45,7 @@ class FakeGitHubClient:
 
     @property
     def push_url(self) -> str:
-        return "https://x-access-token:tok@github.com/GugaBoBo-s/gugabobo.git"
+        return "https://x-access-token@github.com/GugaBoBo-s/gugabobo.git"
 
 
 class UnconfiguredGitHubClient(FakeGitHubClient):
@@ -91,8 +92,8 @@ class FakeSandbox:
     def commit_all(self, path, message):
         self.committed.append(message)
 
-    def push_branch(self, path, remote_url, branch):
-        self.pushed.append({"remote_url": remote_url, "branch": branch})
+    def push_branch(self, path, remote_url, branch, token):
+        self.pushed.append({"remote_url": remote_url, "branch": branch, "token": token})
 
     def cleanup(self, improvement_id):
         self.cleaned.append(improvement_id)
@@ -180,7 +181,9 @@ def test_open_pull_request_creates_branch_file_and_pr(tmp_path):
     result = service.open_pull_request(created.improvement_id)
 
     assert result.number == 7
-    assert github.created_branches[0][0] == f"gugabobo/improvement-{created.improvement_id}"
+    assert github.created_branches[0][0].startswith(
+        f"gugabobo/improvement-{created.improvement_id}-"
+    )
     assert github.put_files[0]["path"] == f"improvements/{created.improvement_id}.md"
     assert github.created_pulls[0]["base"] == "main"
     improvement = store.get_improvement_task(created.improvement_id)
@@ -297,7 +300,10 @@ def test_ship_opens_pull_request_when_checks_pass(tmp_path):
     assert outcome.status == "pr_open"
     assert outcome.pr_number == 7
     assert sandbox.committed and sandbox.pushed
-    assert sandbox.pushed[0]["branch"] == f"gugabobo/improvement-{improvement_id}"
+    assert sandbox.pushed[0]["branch"].startswith(
+        f"gugabobo/improvement-{improvement_id}-"
+    )
+    assert sandbox.pushed[0]["token"] == "token"
     assert sandbox.cleaned == [improvement_id]
     assert store.get_improvement_task(improvement_id)["runner_status"] == "pr_open"
     assert store.list_pull_requests()[0]["number"] == 7

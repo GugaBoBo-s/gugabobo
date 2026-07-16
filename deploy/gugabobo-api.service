@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=ubuntu
+SupplementaryGroups=docker
 WorkingDirectory=/opt/gugabobo/repo
 EnvironmentFile=/opt/gugabobo/repo/.env
 ExecStart=/opt/gugabobo/repo/.venv/bin/gugabobo api
@@ -13,6 +14,16 @@ Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+ReadWritePaths=/opt/gugabobo/repo/.env /opt/gugabobo/data
 
 [Install]
 WantedBy=multi-user.target

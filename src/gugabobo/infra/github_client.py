@@ -16,8 +16,15 @@ class PullRequestResult:
 
 
 class GitHubClient:
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        owner: str | None = None,
+        repo: str | None = None,
+    ) -> None:
         self.settings = settings or get_settings()
+        self._owner = owner or self.settings.github_owner
+        self._repo = repo or self.settings.github_repo
 
     @property
     def configured(self) -> bool:
@@ -25,18 +32,19 @@ class GitHubClient:
 
     @property
     def owner(self) -> str:
-        return self.settings.github_owner
+        return self._owner
 
     @property
     def repo(self) -> str:
-        return self.settings.github_repo
+        return self._repo
+
+    @property
+    def token(self) -> str:
+        return self.settings.github_token
 
     @property
     def push_url(self) -> str:
-        return (
-            f"https://x-access-token:{self.settings.github_token}"
-            f"@github.com/{self.owner}/{self.repo}.git"
-        )
+        return f"https://x-access-token@github.com/{self.owner}/{self.repo}.git"
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -106,6 +114,21 @@ class GitHubClient:
     def get_commit_status(self, ref: str) -> dict:
         result = self._request("GET", f"/commits/{ref}/status")
         return dict(result) if isinstance(result, dict) else {}
+
+    def get_check_runs(self, ref: str) -> dict:
+        result = self._request("GET", f"/commits/{ref}/check-runs")
+        return dict(result) if isinstance(result, dict) else {}
+
+    def get_checks_status(self, ref: str) -> str:
+        data = self.get_check_runs(ref)
+        check_runs = data.get("check_runs", [])
+        if not isinstance(check_runs, list) or not check_runs:
+            return "unknown"
+        if any(str(item.get("status", "")) != "completed" for item in check_runs):
+            return "pending"
+        successful = {"success", "neutral", "skipped"}
+        conclusions = {str(item.get("conclusion", "")) for item in check_runs}
+        return "success" if conclusions <= successful else "failure"
 
     def list_pull_requests(self, state: str = "open") -> list[dict]:
         data = self._request("GET", f"/pulls?state={state}")

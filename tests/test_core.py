@@ -318,7 +318,6 @@ def _make_summary_agent(tmp_path):
 def test_summary_not_triggered_below_threshold(tmp_path, monkeypatch):
     monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
     monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
-    # High token budget: day-to-day chat stays verbatim, never summarized.
     monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_TRIGGER_TOKENS", "24000")
     get_settings.cache_clear()
     agent, client = _make_summary_agent(tmp_path)
@@ -334,7 +333,6 @@ def test_summary_not_triggered_below_threshold(tmp_path, monkeypatch):
 def test_summary_triggered_and_advances_boundary(tmp_path, monkeypatch):
     monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
     monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
-    # Low token thresholds so a handful of short turns crosses the trigger.
     monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_TRIGGER_TOKENS", "40")
     monkeypatch.setenv("GUGABOBO_LLM_SUMMARY_KEEP_RECENT_TOKENS", "16")
     get_settings.cache_clear()
@@ -346,7 +344,6 @@ def test_summary_triggered_and_advances_boundary(tmp_path, monkeypatch):
     summary = agent.store.get_conversation_summary("qq:user:a")
     assert summary is not None
     assert summary["summary"].startswith("滚动摘要")
-    # boundary advanced past 0, keeping the most recent messages unsummarized
     assert summary["updated_until_message_id"] > 0
     assert len(client.complete_calls) >= 1
     get_settings.cache_clear()
@@ -365,7 +362,6 @@ def test_history_excludes_summarized_messages(tmp_path, monkeypatch):
 
     summary = agent.store.get_conversation_summary("qq:user:a")
     boundary = summary["updated_until_message_id"]
-    # next turn should only load history after the boundary
     agent.handle_message("最新消息", source="qq_private", user_id="a", conversation_id="qq:user:a")
     last_chat = client.chat_calls[-1]
     history_contents = [m["content"] for m in last_chat["history"]]
@@ -406,7 +402,6 @@ def test_trim_history_keeps_recent_within_budget(tmp_path):
 
     trimmed = agent._trim_history_to_budget(history, token_budget=60)
 
-    # oldest large messages dropped, most recent kept
     assert history[-1] in trimmed
     assert history[-2] in trimmed
     assert history[0] not in trimmed
@@ -420,11 +415,9 @@ def test_trim_history_zero_budget_returns_all(tmp_path):
     assert agent._trim_history_to_budget(history, token_budget=0) == history
 
 
-# ── Router: prefix-only feedback matching ──────────────────────────────────
 def test_router_feedback_requires_prefix():
     from gugabobo.core.router import Router
     r = Router()
-    # These contain feedback keywords but mid-sentence → must go to chat
     assert r.route("这问题挺难的").skill == "chat"
     assert r.route("这电影我建议你看看").skill == "chat"
     assert r.route("你太长知识渊博了").skill == "chat"
@@ -440,7 +433,6 @@ def test_router_feedback_matches_on_prefix():
     assert r.route("回复太长了，能短一点吗").skill == "feedback"
 
 
-# ── Agent: background_summarize flag defaults off ──────────────────────────
 def test_agent_background_summarize_off_by_default(tmp_path):
     store = MemoryStore(tmp_path / "bg.db")
     agent = CoreAgent(store)

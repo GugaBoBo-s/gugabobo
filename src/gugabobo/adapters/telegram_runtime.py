@@ -19,8 +19,19 @@ def handle_telegram_update(
 ) -> dict[str, object]:
     logger = get_logger()
     event = TelegramMessageEvent.from_payload(payload)
+    event_id = event.update_id
+    existing = agent.store.get_inbound_event("telegram", event_id) if event_id else None
+    if existing and existing["status"] == "completed":
+        result = dict(existing.get("result", {}))
+        result["duplicate"] = True
+        return result
+    if event_id:
+        existing = agent.store.begin_inbound_event("telegram", event_id)
     if not event.has_content():
-        return {"status": "ignored", "reason": "empty message"}
+        result = {"status": "ignored", "reason": "empty message"}
+        if event_id:
+            agent.store.complete_inbound_event("telegram", event_id, result)
+        return result
     telegram_client = client or TelegramClient()
     context = event.to_channel_context(
         owner_ids=settings.owner_telegram_id_set,
@@ -35,32 +46,66 @@ def handle_telegram_update(
             context.user_id,
             access.reason,
         )
-        return {"status": "ignored", "reason": access.reason}
+        result = {"status": "ignored", "reason": access.reason}
+        if event_id:
+            agent.store.complete_inbound_event("telegram", event_id, result)
+        return result
     context = context_with_access_role(context, access)
     if not context.is_wake_triggered:
         route = agent.router.route(event.text)
         if route.skill == "feedback":
             if not role_can_use_skill(access.role, "feedback"):
-                return {"status": "ignored", "reason": "insufficient role"}
+                result = {"status": "ignored", "reason": "insufficient role"}
+                if event_id:
+                    agent.store.complete_inbound_event("telegram", event_id, result)
+                return result
             feedback_id = agent.store.add_feedback(
                 source=context.source,
                 user_id=context.user_id,
                 content=event.text,
             )
             logger.info("telegram feedback recorded id=%s source=%s", feedback_id, context.source)
-            return {"status": "recorded", "feedback_id": feedback_id}
-        return {"status": "ignored", "reason": "reply not allowed"}
-    images = None
-    if event.photo_file_ids and telegram_client.configured:
-        images = telegram_client.file_ids_to_data_uris(list(event.photo_file_ids)) or None
-    reply = agent.handle_context_message(event.text, context, images=images)
+            result = {"status": "recorded", "feedback_id": feedback_id}
+            if event_id:
+                agent.store.complete_inbound_event("telegram", event_id, result)
+            return result
+        result = {"status": "ignored", "reason": "reply not allowed"}
+        if event_id:
+            agent.store.complete_inbound_event("telegram", event_id, result)
+        return result
+    cached_reply = str(existing.get("reply", "")) if existing else ""
+    if existing and existing["status"] == "reply_ready" and cached_reply:
+        reply = cached_reply
+    else:
+        images = None
+        if event.photo_file_ids and telegram_client.configured:
+            images = telegram_client.file_ids_to_data_uris(list(event.photo_file_ids)) or None
+        reply = agent.handle_context_message(event.text, context, images=images)
+        if event_id:
+            agent.store.save_inbound_event_reply(
+                "telegram",
+                event_id,
+                reply,
+                {"status": "reply_ready", "sent": False},
+            )
     if send_reply:
-        telegram_client.send_message(context.chat_id or context.user_id, reply)
+        try:
+            telegram_client.send_message(context.chat_id or context.user_id, reply)
+        except Exception as error:
+            if event_id:
+                agent.store.fail_inbound_event("telegram", event_id, str(error))
+            raise
         logger.info(
             "telegram message handled source=%s user_id=%s sent=true",
             context.source,
             context.user_id,
         )
-        return {"status": "ok", "sent": True}
+        result = {"status": "ok", "sent": True}
+        if event_id:
+            agent.store.complete_inbound_event("telegram", event_id, result)
+        return result
     logger.info("telegram message handled source=%s user_id=%s", context.source, context.user_id)
-    return {"status": "ok", "sent": False, "reply_available": True}
+    result = {"status": "ok", "sent": False, "reply_available": True}
+    if event_id:
+        agent.store.complete_inbound_event("telegram", event_id, result)
+    return result

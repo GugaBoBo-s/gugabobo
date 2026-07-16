@@ -3,6 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from gugabobo.config import get_settings
+from gugabobo.infra.redaction import redact_sensitive
 
 
 @lru_cache
@@ -25,4 +26,15 @@ def read_log_lines(limit: int = 100) -> list[str]:
     if not log_path.exists():
         return []
     lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    return lines[-limit:]
+    settings = get_settings()
+    secrets = (
+        settings.admin_token,
+        settings.github_token,
+        settings.telegram_bot_token,
+        settings.telegram_webhook_secret,
+        settings.napcat_access_token,
+        settings.moonshot_api_key,
+        settings.deepseek_api_key,
+        settings.openai_api_key,
+    )
+    return [redact_sensitive(line, secrets) for line in lines[-limit:]]

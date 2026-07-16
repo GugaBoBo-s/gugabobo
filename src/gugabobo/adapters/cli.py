@@ -1,4 +1,5 @@
 import time
+from pathlib import Path
 
 import typer
 import uvicorn
@@ -48,7 +49,7 @@ def status() -> None:
 @app.command()
 def chat(message: str = typer.Argument("")) -> None:
     """Send one message to gugabobo."""
-    agent = build_agent()
+    agent = build_agent(background_summarize=False)
     reply = agent.handle_context_message(message, ChannelContext.local())
     get_logger().info("cli chat user_id=local")
     typer.echo(reply)
@@ -175,17 +176,10 @@ def telegram_poll(
     if not client.configured:
         raise typer.BadParameter("GUGABOBO_TELEGRAM_BOT_TOKEN is not configured")
     effective_send = send or settings.telegram_reply_enabled
-    # Build the agent once and reuse it across all updates in this session.
     agent = build_agent()
     agent.background_summarize = True
-    # Persist the offset between restarts so we never reprocess old updates.
     offset_file = settings.data_dir / "telegram_offset"
-    offset: int | None = None
-    if offset_file.exists():
-        try:
-            offset = int(offset_file.read_text(encoding="utf-8").strip())
-        except ValueError:
-            offset = None
+    offset = _load_telegram_offset(offset_file)
     typer.echo(
         "telegram polling started "
         f"(send={effective_send}, timeout={timeout}, "
@@ -196,18 +190,14 @@ def telegram_poll(
         while True:
             try:
                 updates = client.get_updates(offset=offset, timeout=timeout)
-                error_backoff = 1
             except Exception as exc:
                 get_logger().warning("telegram get_updates failed: %s", exc)
                 time.sleep(min(error_backoff, 60))
                 error_backoff = min(error_backoff * 2, 60)
                 continue
+            batch_failed = False
             for update in updates:
                 update_id = int(update.get("update_id", 0))
-                offset = update_id + 1
-                # Persist offset immediately so a crash after this point will
-                # not replay the current update on restart.
-                offset_file.write_text(str(offset), encoding="utf-8")
                 try:
                     result = handle_telegram_update(
                         update,
@@ -219,8 +209,32 @@ def telegram_poll(
                     typer.echo(f"telegram update {update_id}: {result}")
                 except Exception as exc:
                     get_logger().warning("telegram update %d failed: %s", update_id, exc)
+                    time.sleep(min(error_backoff, 60))
+                    error_backoff = min(error_backoff * 2, 60)
+                    batch_failed = True
+                    break
+                offset = update_id + 1
+                _save_telegram_offset(offset_file, offset)
+            if not batch_failed:
+                error_backoff = 1
     finally:
         client.close()
+
+
+def _load_telegram_offset(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _save_telegram_offset(path: Path, offset: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(str(offset), encoding="utf-8")
+    temp_path.replace(path)
 
 
 @tasks_app.command("list")
@@ -383,6 +397,7 @@ def config_show() -> None:
             "telegram_webhook_secret": "***" if settings.telegram_webhook_secret else "",
             "telegram_reply_enabled": settings.telegram_reply_enabled,
             "telegram_group_wake_words": settings.telegram_group_wake_words,
+            "telegram_proxy": settings.telegram_proxy,
             "github_token": "***" if settings.github_token else "",
             "github_owner": settings.github_owner,
             "github_repo": settings.github_repo,
@@ -390,8 +405,11 @@ def config_show() -> None:
             "git_author_name": settings.git_author_name,
             "git_author_email": settings.git_author_email,
             "sandbox_dir": settings.sandbox_dir,
+            "runner_container_runtime": settings.runner_container_runtime,
+            "runner_container_image": settings.runner_container_image,
+            "runner_home_dir": settings.runner_home_dir,
             "claude_bin": settings.claude_bin,
-            "claude_permission_mode": settings.claude_permission_mode,
+            "claude_permission_mode": "acceptEdits",
             "claude_timeout_seconds": settings.claude_timeout_seconds,
             "llm_provider": settings.llm_provider,
             "moonshot_base_url": settings.moonshot_base_url,
@@ -400,9 +418,15 @@ def config_show() -> None:
             "deepseek_base_url": settings.deepseek_base_url,
             "deepseek_model": settings.deepseek_model,
             "deepseek_api_key": "***" if settings.deepseek_api_key else "",
+            "openai_base_url": settings.openai_base_url,
+            "openai_model": settings.openai_model,
+            "openai_api_key": "***" if settings.openai_api_key else "",
             "llm_timeout_seconds": settings.llm_timeout_seconds,
             "llm_context_messages": settings.llm_context_messages,
             "llm_memory_items": settings.llm_memory_items,
+            "llm_history_token_budget": settings.llm_history_token_budget,
+            "llm_summary_trigger_tokens": settings.llm_summary_trigger_tokens,
+            "llm_summary_keep_recent_tokens": settings.llm_summary_keep_recent_tokens,
         }
     )
 

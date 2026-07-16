@@ -1,4 +1,5 @@
-import threading
+from concurrent.futures import ThreadPoolExecutor
+from threading import BoundedSemaphore, Lock
 
 from gugabobo.core.channel import ChannelContext
 from gugabobo.core.access import context_access_role, role_can_use_skill
@@ -15,6 +16,12 @@ from gugabobo.skills.outbound import OutboundSkill
 from gugabobo.skills.summarizer import SummarizerSkill
 
 
+_SUMMARY_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gugabobo-summary")
+_SUMMARY_CAPACITY = BoundedSemaphore(32)
+_SUMMARY_LOCK = Lock()
+_SUMMARY_IN_FLIGHT: set[str] = set()
+
+
 class CoreAgent:
     def __init__(
         self,
@@ -28,12 +35,8 @@ class CoreAgent:
         self.chat_skill = ChatSkill(self.persona)
         self.feedback_skill = FeedbackSkill(store)
         self.memory_skill = MemorySkill(store)
-        self.outbound_skill = OutboundSkill(self.chat_skill.llm_client)
+        self.outbound_skill = OutboundSkill(self.chat_skill.llm_client, store)
         self.summarizer_skill = SummarizerSkill(self.chat_skill.llm_client)
-        # When True, summarization (which may call the LLM) runs in a background
-        # thread so it never delays the user-facing reply. Off by default so
-        # tests and the CLI observe summaries synchronously; long-running
-        # processes like Telegram polling opt in.
         self.background_summarize = False
 
     def handle_message(
@@ -66,9 +69,10 @@ class CoreAgent:
         settings = get_settings()
         summary_row = self.store.get_conversation_summary(context.conversation_id)
         summarized_until = int(summary_row["updated_until_message_id"]) if summary_row else 0
-        history = self.store.list_messages_after(
+        history = self.store.list_recent_messages_after(
             context.conversation_id,
-            after_message_id=summarized_until,
+            summarized_until,
+            settings.llm_context_messages,
         )
         llm_history = self._trim_history_to_budget(
             [
@@ -108,7 +112,7 @@ class CoreAgent:
         else:
             outbound_reply = None
             if access_role == "owner" and not images:
-                outbound_reply = self.outbound_skill.handle(text)
+                outbound_reply = self.outbound_skill.handle(text, context)
             if outbound_reply is not None:
                 response = outbound_reply
             else:
@@ -129,30 +133,39 @@ class CoreAgent:
         return response
 
     def _run_summarize(self, conversation_id: str, settings: Settings) -> None:
-        # Summarization can invoke the LLM again. When enabled, run it off the
-        # reply path in a background thread so the user is not blocked waiting
-        # for a second LLM round-trip. The store opens a fresh connection per
-        # call, so a background thread is safe.
         if not self.background_summarize:
             self.maybe_summarize(conversation_id, settings)
             return
+        with _SUMMARY_LOCK:
+            if conversation_id in _SUMMARY_IN_FLIGHT:
+                return
+            if not _SUMMARY_CAPACITY.acquire(blocking=False):
+                get_logger().warning("summary queue capacity reached")
+                return
+            _SUMMARY_IN_FLIGHT.add(conversation_id)
+        try:
+            _SUMMARY_EXECUTOR.submit(self._summary_worker, conversation_id, settings)
+        except Exception:
+            with _SUMMARY_LOCK:
+                _SUMMARY_IN_FLIGHT.discard(conversation_id)
+            _SUMMARY_CAPACITY.release()
+            raise
 
-        def _worker() -> None:
-            try:
-                self.maybe_summarize(conversation_id, settings)
-            except Exception as exc:  # pragma: no cover - defensive logging
-                get_logger().warning("background summarize failed: %s", exc)
-
-        threading.Thread(target=_worker, daemon=True).start()
+    def _summary_worker(self, conversation_id: str, settings: Settings) -> None:
+        try:
+            self.maybe_summarize(conversation_id, settings)
+        except Exception as exc:
+            get_logger().warning("background summarize failed: %s", exc)
+        finally:
+            with _SUMMARY_LOCK:
+                _SUMMARY_IN_FLIGHT.discard(conversation_id)
+            _SUMMARY_CAPACITY.release()
 
     def _trim_history_to_budget(
         self,
         history: list[dict[str, str]],
         token_budget: int,
     ) -> list[dict[str, str]]:
-        # Keep the most recent messages that fit within the token budget. Older
-        # messages beyond the budget are dropped from the live window (they are
-        # preserved in the rolling summary once maybe_summarize runs).
         if token_budget <= 0:
             return history
         kept: list[dict[str, str]] = []
@@ -178,12 +191,8 @@ class CoreAgent:
             estimate_message_tokens(str(item["role"]), str(item["content"]))
             for item in unsummarized
         )
-        # Only summarize when unsummarized content approaches the budget. Day-to-day
-        # conversations stay well under this and are kept verbatim (ChatGPT-like).
         if pending_tokens < settings.llm_summary_trigger_tokens:
             return
-        # Keep the most recent messages (by token budget) verbatim; summarize the
-        # older remainder into the rolling summary.
         keep_tokens = settings.llm_summary_keep_recent_tokens
         kept: list[dict[str, object]] = []
         running = 0

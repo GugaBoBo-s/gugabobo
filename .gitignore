@@ -7,9 +7,9 @@ __pycache__/
 .mypy_cache/
 .obsidian/
 .env
+.env.bak.*
 .gugabobo/
 dist/
 build/
 
-# transient login QR codes
 *qrcode*.png

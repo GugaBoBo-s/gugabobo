@@ -12,6 +12,7 @@ EDITABLE_CONFIG_KEYS = {
     "GUGABOBO_TELEGRAM_BOT_USERNAME",
     "GUGABOBO_TELEGRAM_REPLY_ENABLED",
     "GUGABOBO_TELEGRAM_GROUP_WAKE_WORDS",
+    "GUGABOBO_TELEGRAM_PROXY",
     "GUGABOBO_GITHUB_OWNER",
     "GUGABOBO_GITHUB_REPO",
     "GUGABOBO_GITHUB_API_URL",
@@ -20,9 +21,16 @@ EDITABLE_CONFIG_KEYS = {
     "GUGABOBO_MOONSHOT_MODEL",
     "GUGABOBO_DEEPSEEK_BASE_URL",
     "GUGABOBO_DEEPSEEK_MODEL",
+    "GUGABOBO_OPENAI_BASE_URL",
+    "GUGABOBO_OPENAI_MODEL",
     "GUGABOBO_LLM_TIMEOUT_SECONDS",
     "GUGABOBO_LLM_CONTEXT_MESSAGES",
     "GUGABOBO_LLM_MEMORY_ITEMS",
+    "GUGABOBO_LLM_HISTORY_TOKEN_BUDGET",
+    "GUGABOBO_LLM_SUMMARY_TRIGGER_TOKENS",
+    "GUGABOBO_LLM_SUMMARY_KEEP_RECENT_TOKENS",
+    "GUGABOBO_RUNNER_CONTAINER_RUNTIME",
+    "GUGABOBO_RUNNER_CONTAINER_IMAGE",
 }
 
 BOOLEAN_CONFIG_KEYS = {
@@ -35,6 +43,18 @@ INTEGER_CONFIG_KEYS = {
     "GUGABOBO_LLM_TIMEOUT_SECONDS",
     "GUGABOBO_LLM_CONTEXT_MESSAGES",
     "GUGABOBO_LLM_MEMORY_ITEMS",
+    "GUGABOBO_LLM_HISTORY_TOKEN_BUDGET",
+    "GUGABOBO_LLM_SUMMARY_TRIGGER_TOKENS",
+    "GUGABOBO_LLM_SUMMARY_KEEP_RECENT_TOKENS",
+}
+
+INTEGER_CONFIG_MINIMUMS = {
+    "GUGABOBO_LLM_TIMEOUT_SECONDS": 1,
+    "GUGABOBO_LLM_CONTEXT_MESSAGES": 1,
+    "GUGABOBO_LLM_MEMORY_ITEMS": 0,
+    "GUGABOBO_LLM_HISTORY_TOKEN_BUDGET": 1,
+    "GUGABOBO_LLM_SUMMARY_TRIGGER_TOKENS": 1,
+    "GUGABOBO_LLM_SUMMARY_KEEP_RECENT_TOKENS": 0,
 }
 
 
@@ -81,9 +101,9 @@ class EnvFile:
                 normalized[key] = self._bool_string(value)
                 continue
             if key in INTEGER_CONFIG_KEYS:
-                normalized[key] = str(max(0, int(value)))
+                normalized[key] = str(max(INTEGER_CONFIG_MINIMUMS[key], int(value)))
                 continue
-            normalized[key] = str(value).strip()
+            normalized[key] = str(value).replace("\r", "").replace("\n", "").strip()
         return normalized
 
     def _bool_string(self, value: object) -> str:

@@ -262,6 +262,8 @@ def test_dashboard_config_control_updates_env_file(tmp_path, monkeypatch):
                 "GUGABOBO_LLM_CONTEXT_MESSAGES": 80,
                 "GUGABOBO_TELEGRAM_REPLY_ENABLED": True,
                 "GUGABOBO_NAPCAT_DIR": "D:/tools/napcat",
+                "GUGABOBO_LLM_HISTORY_TOKEN_BUDGET": 0,
+                "GUGABOBO_TELEGRAM_PROXY": "http://127.0.0.1:1080\nINJECTED=true",
                 "GUGABOBO_DEEPSEEK_API_KEY": "should-not-save",
             }
         },
@@ -276,6 +278,9 @@ def test_dashboard_config_control_updates_env_file(tmp_path, monkeypatch):
     assert "GUGABOBO_LLM_CONTEXT_MESSAGES=80" in env_text
     assert "GUGABOBO_TELEGRAM_REPLY_ENABLED=true" in env_text
     assert "GUGABOBO_NAPCAT_DIR=D:/tools/napcat" in env_text
+    assert "GUGABOBO_LLM_HISTORY_TOKEN_BUDGET=1" in env_text
+    assert "INJECTED=true" in env_text
+    assert "\nINJECTED=true\n" not in env_text
     assert "should-not-save" not in env_text
     assert "GUGABOBO_DEEPSEEK_API_KEY=secret" in env_text
     get_settings.cache_clear()
@@ -534,6 +539,11 @@ class FakeGitHubClient:
     configured = True
     owner = "GugaBoBo-s"
     repo = "gugabobo"
+    token = "token"
+
+    def __init__(self, settings=None, owner=None, repo=None):
+        self.owner = owner or "GugaBoBo-s"
+        self.repo = repo or "gugabobo"
 
     def get_default_branch(self):
         return "main"
@@ -556,8 +566,8 @@ class FakeGitHubClient:
         return {"state": "closed", "merged": True, "merged_at": "2026-07-09T10:00:00Z",
                 "head": {"sha": "abc"}}
 
-    def get_commit_status(self, ref):
-        return {"state": "success"}
+    def get_checks_status(self, ref):
+        return "success"
 
 
 def test_improvement_endpoints_require_admin_token(tmp_path, monkeypatch):
@@ -584,6 +594,7 @@ def test_improvement_create_approve_and_open_pr(tmp_path, monkeypatch):
     improvement_id = create_response.json()["improvement_id"]
     approve_response = client.post(
         f"/improvements/{improvement_id}/approve",
+        json={"confirm_text": "APPROVE"},
         headers=admin_headers(),
     )
     missing_confirm = client.post(
@@ -619,7 +630,11 @@ def test_sync_pull_request_endpoint(tmp_path, monkeypatch):
         json={"feedback_id": feedback_id},
         headers=admin_headers(),
     ).json()["improvement_id"]
-    client.post(f"/improvements/{improvement_id}/approve", headers=admin_headers())
+    client.post(
+        f"/improvements/{improvement_id}/approve",
+        json={"confirm_text": "APPROVE"},
+        headers=admin_headers(),
+    )
     client.post(
         f"/improvements/{improvement_id}/pull-request",
         json={"confirm_text": "OPEN"},

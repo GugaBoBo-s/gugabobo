@@ -1,8 +1,7 @@
 [Unit]
 Description=gugabobo Telegram polling
-After=network-online.target xray.service
+After=network-online.target
 Wants=network-online.target
-Requires=xray.service
 
 [Service]
 Type=simple
@@ -14,6 +13,16 @@ Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+ReadWritePaths=/opt/gugabobo/data
 
 [Install]
 WantedBy=multi-user.target

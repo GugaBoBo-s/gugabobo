@@ -146,9 +146,8 @@ def dashboard_html() -> str:
             font-size: 13px;
           }
           .control-grid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 12px;
+            columns: 2;
+            column-gap: 12px;
             padding: 12px;
           }
           .control-box {
@@ -158,6 +157,8 @@ def dashboard_html() -> str:
             display: grid;
             gap: 8px;
             align-content: start;
+            break-inside: avoid;
+            margin-bottom: 12px;
           }
           .control-box h3 {
             margin: 0;
@@ -215,7 +216,7 @@ def dashboard_html() -> str:
           @media (max-width: 960px) {
             main { grid-template-columns: 1fr; }
             .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            .control-grid { grid-template-columns: 1fr; }
+            .control-grid { columns: 1; }
           }
         </style>
       </head>
@@ -246,11 +247,20 @@ def dashboard_html() -> str:
                   <select id="configLlmProvider">
                     <option value="moonshot">moonshot</option>
                     <option value="deepseek">deepseek</option>
+                    <option value="openai">openai</option>
                   </select>
+                  <input id="configMoonshotBaseUrl" placeholder="Moonshot base URL">
                   <input id="configMoonshotModel" placeholder="Moonshot model">
+                  <input id="configDeepseekBaseUrl" placeholder="DeepSeek base URL">
                   <input id="configDeepseekModel" placeholder="DeepSeek model">
+                  <input id="configOpenaiBaseUrl" placeholder="OpenAI base URL">
+                  <input id="configOpenaiModel" placeholder="OpenAI model">
+                  <input id="configLlmTimeout" type="number" min="1" placeholder="LLM timeout seconds">
                   <input id="configContextMessages" type="number" min="1" placeholder="上下文消息数">
                   <input id="configMemoryItems" type="number" min="0" placeholder="长期记忆条数">
+                  <input id="configHistoryTokenBudget" type="number" min="1" placeholder="历史 token 预算">
+                  <input id="configSummaryTriggerTokens" type="number" min="1" placeholder="摘要触发 token">
+                  <input id="configSummaryKeepRecentTokens" type="number" min="1" placeholder="摘要保留 token">
                   <label><input id="configTelegramReplyEnabled" type="checkbox"> Telegram 发送回复</label>
                   <label><input id="configNapcatReplyEnabled" type="checkbox"> NapCat 主动回复</label>
                   <label><input id="configNapcatPassiveReplyEnabled" type="checkbox"> NapCat 被动回复</label>
@@ -261,6 +271,9 @@ def dashboard_html() -> str:
                   <input id="configNapcatDir" placeholder="NapCat 目录">
                   <input id="configNapcatApiUrl" placeholder="NapCat API URL">
                   <input id="configTelegramBotUsername" placeholder="Telegram bot username">
+                  <input id="configTelegramProxy" placeholder="Telegram proxy URL">
+                  <input id="configRunnerRuntime" placeholder="Container runtime">
+                  <input id="configRunnerImage" placeholder="Runner image">
                   <div id="configSecrets" class="muted"></div>
                   <button id="loadConfigButton" type="button">加载配置</button>
                   <button id="saveConfigButton" type="button">保存配置</button>
@@ -321,6 +334,25 @@ def dashboard_html() -> str:
                     <option value="ignored">ignored</option>
                   </select>
                   <button id="feedbackButton" type="button">更新反馈</button>
+                </div>
+                <div class="control-box">
+                  <h3>自改进</h3>
+                  <input id="improvementFeedbackId" type="number" min="1" placeholder="反馈 ID">
+                  <input id="improvementScope" placeholder="scope">
+                  <select id="improvementRisk">
+                    <option value="normal">normal</option>
+                    <option value="low">low</option>
+                    <option value="high">high</option>
+                  </select>
+                  <button id="createImprovementButton" type="button">创建改进任务</button>
+                  <input id="improvementId" type="number" min="1" placeholder="改进任务 ID">
+                  <button id="approveImprovementButton" class="danger" type="button">批准</button>
+                  <button id="rejectImprovementButton" type="button">拒绝</button>
+                  <button id="runImprovementButton" class="danger" type="button">运行隔离修改</button>
+                  <button id="shipImprovementButton" class="danger" type="button">检查并提交 PR</button>
+                  <button id="openProposalPrButton" class="danger" type="button">仅创建提案 PR</button>
+                  <input id="pullRequestId" type="number" min="1" placeholder="PR 记录 ID">
+                  <button id="syncPullRequestButton" type="button">同步 PR 状态</button>
                 </div>
                 <div class="control-box">
                   <h3>访问权限</h3>
@@ -390,6 +422,15 @@ def dashboard_html() -> str:
                 <tbody id="accessRules"></tbody>
               </table>
             </section>
+            <section>
+              <h2>发送草稿</h2>
+              <table>
+                <thead>
+                  <tr><th style="width: 54px;">ID</th><th style="width: 90px;">状态</th><th style="width: 150px;">发起人</th><th style="width: 150px;">收件人</th><th>内容</th><th style="width: 150px;">过期时间</th></tr>
+                </thead>
+                <tbody id="outboundDrafts"></tbody>
+              </table>
+            </section>
           </div>
           <div class="stack">
             <section>
@@ -425,6 +466,33 @@ def dashboard_html() -> str:
                   <tr><th style="width: 190px;">conversation_id</th><th>摘要</th><th style="width: 160px;">更新时间</th><th style="width: 92px;">操作</th></tr>
                 </thead>
                 <tbody id="summaries"></tbody>
+              </table>
+            </section>
+            <section>
+              <h2>任务</h2>
+              <table>
+                <thead>
+                  <tr><th style="width: 54px;">ID</th><th style="width: 90px;">状态</th><th>标题</th><th style="width: 130px;">能力</th><th style="width: 150px;">更新时间</th></tr>
+                </thead>
+                <tbody id="tasks"></tbody>
+              </table>
+            </section>
+            <section>
+              <h2>自改进任务</h2>
+              <table>
+                <thead>
+                  <tr><th style="width: 54px;">ID</th><th style="width: 70px;">反馈</th><th style="width: 100px;">批准</th><th style="width: 120px;">运行</th><th>分支</th><th style="width: 90px;">风险</th></tr>
+                </thead>
+                <tbody id="improvements"></tbody>
+              </table>
+            </section>
+            <section>
+              <h2>Pull Requests</h2>
+              <table>
+                <thead>
+                  <tr><th style="width: 54px;">ID</th><th style="width: 70px;">#</th><th style="width: 90px;">状态</th><th style="width: 90px;">检查</th><th>分支</th><th style="width: 100px;">链接</th></tr>
+                </thead>
+                <tbody id="pullRequests"></tbody>
               </table>
             </section>
             <section>
@@ -469,6 +537,13 @@ def dashboard_html() -> str:
           function row(cells) {
             return `<tr>${cells.map((cell) => `<td>${cell}</td>`).join("")}</tr>`;
           }
+          function githubLink(value) {
+            const url = String(value || "");
+            if (!url.startsWith("https://github.com/")) {
+              return esc(url || "-");
+            }
+            return `<a href="${esc(url)}" target="_blank" rel="noreferrer">打开</a>`;
+          }
           function diagnosticItem(label, value) {
             return `<div class="diagnostic-item"><strong>${esc(label)}</strong><div>${value}</div></div>`;
           }
@@ -486,10 +561,18 @@ def dashboard_html() -> str:
           function applyEditableConfig(config) {
             const values = config.values;
             byId("configLlmProvider").value = values.GUGABOBO_LLM_PROVIDER || "moonshot";
+            byId("configMoonshotBaseUrl").value = values.GUGABOBO_MOONSHOT_BASE_URL || "";
             byId("configMoonshotModel").value = values.GUGABOBO_MOONSHOT_MODEL || "";
+            byId("configDeepseekBaseUrl").value = values.GUGABOBO_DEEPSEEK_BASE_URL || "";
             byId("configDeepseekModel").value = values.GUGABOBO_DEEPSEEK_MODEL || "";
-            byId("configContextMessages").value = values.GUGABOBO_LLM_CONTEXT_MESSAGES || 40;
+            byId("configOpenaiBaseUrl").value = values.GUGABOBO_OPENAI_BASE_URL || "";
+            byId("configOpenaiModel").value = values.GUGABOBO_OPENAI_MODEL || "";
+            byId("configLlmTimeout").value = values.GUGABOBO_LLM_TIMEOUT_SECONDS || 60;
+            byId("configContextMessages").value = values.GUGABOBO_LLM_CONTEXT_MESSAGES || 400;
             byId("configMemoryItems").value = values.GUGABOBO_LLM_MEMORY_ITEMS || 12;
+            byId("configHistoryTokenBudget").value = values.GUGABOBO_LLM_HISTORY_TOKEN_BUDGET || 24000;
+            byId("configSummaryTriggerTokens").value = values.GUGABOBO_LLM_SUMMARY_TRIGGER_TOKENS || 24000;
+            byId("configSummaryKeepRecentTokens").value = values.GUGABOBO_LLM_SUMMARY_KEEP_RECENT_TOKENS || 8000;
             byId("configTelegramReplyEnabled").checked = Boolean(values.GUGABOBO_TELEGRAM_REPLY_ENABLED);
             byId("configNapcatReplyEnabled").checked = Boolean(values.GUGABOBO_NAPCAT_REPLY_ENABLED);
             byId("configNapcatPassiveReplyEnabled").checked = Boolean(values.GUGABOBO_NAPCAT_PASSIVE_REPLY_ENABLED);
@@ -500,6 +583,9 @@ def dashboard_html() -> str:
             byId("configNapcatDir").value = values.GUGABOBO_NAPCAT_DIR || "";
             byId("configNapcatApiUrl").value = values.GUGABOBO_NAPCAT_API_URL || "";
             byId("configTelegramBotUsername").value = values.GUGABOBO_TELEGRAM_BOT_USERNAME || "";
+            byId("configTelegramProxy").value = values.GUGABOBO_TELEGRAM_PROXY || "";
+            byId("configRunnerRuntime").value = values.GUGABOBO_RUNNER_CONTAINER_RUNTIME || "docker";
+            byId("configRunnerImage").value = values.GUGABOBO_RUNNER_CONTAINER_IMAGE || "gugabobo-runner:local";
             byId("configSecrets").innerHTML = Object.entries(config.secrets)
               .map(([key, configured]) => `${esc(key.replace("GUGABOBO_", ""))}: ${pill(configured ? "configured" : "missing", configured)}`)
               .join("<br>");
@@ -507,10 +593,18 @@ def dashboard_html() -> str:
           function collectEditableConfig() {
             return {
               GUGABOBO_LLM_PROVIDER: byId("configLlmProvider").value,
+              GUGABOBO_MOONSHOT_BASE_URL: byId("configMoonshotBaseUrl").value,
               GUGABOBO_MOONSHOT_MODEL: byId("configMoonshotModel").value,
+              GUGABOBO_DEEPSEEK_BASE_URL: byId("configDeepseekBaseUrl").value,
               GUGABOBO_DEEPSEEK_MODEL: byId("configDeepseekModel").value,
-              GUGABOBO_LLM_CONTEXT_MESSAGES: Number(byId("configContextMessages").value || 40),
+              GUGABOBO_OPENAI_BASE_URL: byId("configOpenaiBaseUrl").value,
+              GUGABOBO_OPENAI_MODEL: byId("configOpenaiModel").value,
+              GUGABOBO_LLM_TIMEOUT_SECONDS: Number(byId("configLlmTimeout").value || 60),
+              GUGABOBO_LLM_CONTEXT_MESSAGES: Number(byId("configContextMessages").value || 400),
               GUGABOBO_LLM_MEMORY_ITEMS: Number(byId("configMemoryItems").value || 12),
+              GUGABOBO_LLM_HISTORY_TOKEN_BUDGET: Number(byId("configHistoryTokenBudget").value || 24000),
+              GUGABOBO_LLM_SUMMARY_TRIGGER_TOKENS: Number(byId("configSummaryTriggerTokens").value || 24000),
+              GUGABOBO_LLM_SUMMARY_KEEP_RECENT_TOKENS: Number(byId("configSummaryKeepRecentTokens").value || 8000),
               GUGABOBO_TELEGRAM_REPLY_ENABLED: byId("configTelegramReplyEnabled").checked,
               GUGABOBO_NAPCAT_REPLY_ENABLED: byId("configNapcatReplyEnabled").checked,
               GUGABOBO_NAPCAT_PASSIVE_REPLY_ENABLED: byId("configNapcatPassiveReplyEnabled").checked,
@@ -520,7 +614,10 @@ def dashboard_html() -> str:
               GUGABOBO_OWNER_TELEGRAM_IDS: byId("configOwnerTelegramIds").value,
               GUGABOBO_NAPCAT_DIR: byId("configNapcatDir").value,
               GUGABOBO_NAPCAT_API_URL: byId("configNapcatApiUrl").value,
-              GUGABOBO_TELEGRAM_BOT_USERNAME: byId("configTelegramBotUsername").value
+              GUGABOBO_TELEGRAM_BOT_USERNAME: byId("configTelegramBotUsername").value,
+              GUGABOBO_TELEGRAM_PROXY: byId("configTelegramProxy").value,
+              GUGABOBO_RUNNER_CONTAINER_RUNTIME: byId("configRunnerRuntime").value,
+              GUGABOBO_RUNNER_CONTAINER_IMAGE: byId("configRunnerImage").value
             };
           }
           async function loadEditableConfig() {
@@ -577,7 +674,8 @@ def dashboard_html() -> str:
               metric("审计", data.status.audit_logs),
               metric("LLM", data.config.llm_provider),
               metric("回复", data.config.napcat_passive_reply_enabled ? "被动" : (data.config.napcat_reply_enabled ? "主动" : "关闭"), data.config.napcat_passive_reply_enabled || data.config.napcat_reply_enabled ? "ok" : "warn"),
-              metric("窗口", data.config.llm_context_messages)
+              metric("历史预算", data.config.llm_history_token_budget),
+              metric("摘要阈值", data.config.llm_summary_trigger_tokens)
             ].join("");
             byId("runtimePanel").innerHTML = [
               `<div>API ${pill(data.runtime.api.running ? `running pid=${data.runtime.api.pid}` : "stopped", data.runtime.api.running)}</div>`,
@@ -587,6 +685,9 @@ def dashboard_html() -> str:
               `<div>NapCat ${pill(data.runtime.napcat.reply_enabled ? "active reply" : (data.runtime.napcat.passive_reply_enabled ? "passive reply" : "reply off"), data.runtime.napcat.reply_enabled || data.runtime.napcat.passive_reply_enabled)}</div>`,
               `<div>NapCat process ${pill(data.runtime.napcat.running ? `running ${data.runtime.napcat.pids.join(",")}` : "stopped", data.runtime.napcat.running)}</div>`,
               `<div>NapCat WebUI ${pill(data.runtime.napcat.webui.configured ? "configured" : "missing", data.runtime.napcat.webui.configured)}</div>`,
+              `<div>Runner ${pill(data.runtime.self_improvement.runtime_configured ? data.runtime.self_improvement.runtime : "missing", data.runtime.self_improvement.runtime_configured)}</div>`,
+              `<div>Runner image ${pill(data.runtime.self_improvement.image_available ? data.runtime.self_improvement.image : "missing", data.runtime.self_improvement.image_available)}</div>`,
+              `<div>GitHub ${pill(data.runtime.self_improvement.github_configured ? "configured" : "missing", data.runtime.self_improvement.github_configured)}</div>`,
               `<div class="muted">${esc(data.runtime.napcat.api_url)}</div>`
             ].join("");
             const qq = data.qq_diagnostics;
@@ -641,6 +742,14 @@ def dashboard_html() -> str:
               `${esc(item.display_name)} ${esc(item.notes)}`,
               `<button type="button" data-rule-id="${esc(item.id)}" class="delete-access-rule danger">删除</button>`
             ])).join("");
+            byId("outboundDrafts").innerHTML = data.outbound_drafts.map((item) => row([
+              esc(item.id),
+              esc(item.status),
+              `${esc(item.actor_source)}:${esc(item.actor_user_id)}`,
+              `${esc(item.recipient_label)} (${esc(item.recipient_user_id)})`,
+              esc(item.content),
+              `<span class="muted">${esc(item.expires_at)}</span>`
+            ])).join("");
             byId("messages").innerHTML = currentMessages.map((item) => row([
               esc(item.id),
               esc(item.role),
@@ -661,6 +770,29 @@ def dashboard_html() -> str:
               esc(item.summary),
               `<span class="muted">${esc(item.updated_at)}</span>`,
               `<button type="button" data-conversation-id="${esc(item.conversation_id)}" class="edit-summary">编辑</button>`
+            ])).join("");
+            byId("tasks").innerHTML = data.tasks.map((item) => row([
+              esc(item.id),
+              esc(item.status),
+              esc(item.title),
+              esc(item.assigned_skill),
+              `<span class="muted">${esc(item.updated_at)}</span>`
+            ])).join("");
+            byId("improvements").innerHTML = data.improvements.map((item) => row([
+              esc(item.id),
+              esc(item.feedback_id),
+              esc(item.approval_status),
+              esc(item.runner_status),
+              esc(item.branch_name),
+              esc(item.risk_level)
+            ])).join("");
+            byId("pullRequests").innerHTML = data.pull_requests.map((item) => row([
+              esc(item.id),
+              esc(item.number),
+              esc(item.status),
+              esc(item.checks_status),
+              esc(item.branch_name),
+              githubLink(item.url)
             ])).join("");
             byId("auditLogs").innerHTML = data.audit_logs.map((item) => row([
               esc(item.id),
@@ -871,6 +1003,107 @@ def dashboard_html() -> str:
               body: JSON.stringify({ status: byId("feedbackStatus").value })
             }).catch((error) => showControlResult(error.message));
           });
+          byId("createImprovementButton").addEventListener("click", () => {
+            controlFetch("/improvements", {
+              method: "POST",
+              headers: adminHeaders(),
+              body: JSON.stringify({
+                feedback_id: Number(byId("improvementFeedbackId").value),
+                scope: byId("improvementScope").value,
+                risk_level: byId("improvementRisk").value
+              })
+            }).then((data) => {
+              byId("improvementId").value = data.improvement_id;
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("approveImprovementButton").addEventListener("click", () => {
+            const improvementId = byId("improvementId").value;
+            if (!improvementId) {
+              showControlResult("missing improvement id");
+              return;
+            }
+            const confirmation = requireConfirmText("APPROVE", `批准改进任务 #${improvementId}`);
+            if (!confirmation) {
+              return;
+            }
+            controlFetch(`/improvements/${improvementId}/approve`, {
+              method: "POST",
+              headers: adminHeaders(),
+              body: JSON.stringify(confirmation)
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("rejectImprovementButton").addEventListener("click", () => {
+            const improvementId = byId("improvementId").value;
+            if (!improvementId) {
+              showControlResult("missing improvement id");
+              return;
+            }
+            controlFetch(`/improvements/${improvementId}/reject`, {
+              method: "POST",
+              headers: adminHeaders()
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("runImprovementButton").addEventListener("click", () => {
+            const improvementId = byId("improvementId").value;
+            if (!improvementId) {
+              showControlResult("missing improvement id");
+              return;
+            }
+            const confirmation = requireConfirmText("RUN", `运行改进任务 #${improvementId}`);
+            if (!confirmation) {
+              return;
+            }
+            controlFetch(`/improvements/${improvementId}/run`, {
+              method: "POST",
+              headers: adminHeaders(),
+              body: JSON.stringify(confirmation)
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("shipImprovementButton").addEventListener("click", () => {
+            const improvementId = byId("improvementId").value;
+            if (!improvementId) {
+              showControlResult("missing improvement id");
+              return;
+            }
+            const confirmation = requireConfirmText("SHIP", `检查并提交改进任务 #${improvementId}`);
+            if (!confirmation) {
+              return;
+            }
+            controlFetch(`/improvements/${improvementId}/ship`, {
+              method: "POST",
+              headers: adminHeaders(),
+              body: JSON.stringify(confirmation)
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("openProposalPrButton").addEventListener("click", () => {
+            const improvementId = byId("improvementId").value;
+            if (!improvementId) {
+              showControlResult("missing improvement id");
+              return;
+            }
+            const confirmation = requireConfirmText("OPEN", `创建提案 PR #${improvementId}`);
+            if (!confirmation) {
+              return;
+            }
+            controlFetch(`/improvements/${improvementId}/pull-request`, {
+              method: "POST",
+              headers: adminHeaders(),
+              body: JSON.stringify(confirmation)
+            }).then((data) => {
+              byId("pullRequestId").value = data.pull_request_id;
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("syncPullRequestButton").addEventListener("click", () => {
+            const pullRequestId = byId("pullRequestId").value;
+            if (!pullRequestId) {
+              showControlResult("missing pull request id");
+              return;
+            }
+            controlFetch(`/prs/${pullRequestId}/sync`, {
+              method: "POST",
+              headers: adminHeaders()
+            }).catch((error) => showControlResult(error.message));
+          });
           byId("accessRuleButton").addEventListener("click", () => {
             controlFetch("/dashboard-control/access-rules", {
               method: "POST",
@@ -907,6 +1140,20 @@ def dashboard_html() -> str:
               return;
             }
             selectConversation(rowElement.dataset.conversationId);
+          });
+          byId("improvements").addEventListener("click", (event) => {
+            const rowElement = event.target.closest("tr");
+            if (!rowElement || !rowElement.firstElementChild) {
+              return;
+            }
+            byId("improvementId").value = rowElement.firstElementChild.textContent;
+          });
+          byId("pullRequests").addEventListener("click", (event) => {
+            const rowElement = event.target.closest("tr");
+            if (!rowElement || !rowElement.firstElementChild) {
+              return;
+            }
+            byId("pullRequestId").value = rowElement.firstElementChild.textContent;
           });
           byId("summaries").addEventListener("click", (event) => {
             if (!event.target.classList.contains("edit-summary")) {

@@ -16,6 +16,20 @@ class FakeTelegramClient:
         self.sent_messages.append({"chat_id": chat_id, "text": text})
 
 
+class FlakyTelegramClient(FakeTelegramClient):
+    configured = False
+
+    def __init__(self):
+        super().__init__()
+        self.attempts = 0
+
+    def send_message(self, chat_id: str, text: str) -> None:
+        self.attempts += 1
+        if self.attempts == 1:
+            raise RuntimeError("temporary send failure")
+        super().send_message(chat_id, text)
+
+
 def configure_test_env(tmp_path, monkeypatch):
     monkeypatch.setenv("GUGABOBO_DB_PATH", str(tmp_path / "telegram.db"))
     monkeypatch.setenv("GUGABOBO_DATA_DIR", str(tmp_path))
@@ -245,6 +259,49 @@ def test_telegram_runtime_can_send_reply(tmp_path, monkeypatch):
     assert result["sent"] is True
     assert client.sent_messages[0]["chat_id"] == "10001"
     assert "已收到" in client.sent_messages[0]["text"]
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
+def test_telegram_retry_reuses_reply_without_reprocessing(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    settings = get_settings()
+    agent = build_agent(background_summarize=False)
+    client = FlakyTelegramClient()
+
+    try:
+        handle_telegram_update(
+            private_payload(),
+            agent=agent,
+            settings=settings,
+            send_reply=True,
+            client=client,
+        )
+    except RuntimeError:
+        pass
+
+    assert agent.store.count_messages() == 2
+    assert agent.store.get_inbound_event("telegram", "1")["status"] == "reply_ready"
+
+    retry = handle_telegram_update(
+        private_payload(),
+        agent=agent,
+        settings=settings,
+        send_reply=True,
+        client=client,
+    )
+    duplicate = handle_telegram_update(
+        private_payload(),
+        agent=agent,
+        settings=settings,
+        send_reply=True,
+        client=client,
+    )
+
+    assert retry == {"status": "ok", "sent": True}
+    assert duplicate["duplicate"] is True
+    assert agent.store.count_messages() == 2
+    assert client.attempts == 2
     get_settings.cache_clear()
     get_logger.cache_clear()
 

@@ -85,3 +85,35 @@ def test_put_file_encodes_content(monkeypatch):
     assert base64.b64decode(body["content"]).decode("utf-8") == "hello"
     assert body["branch"] == "b"
     get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("runs", "expected"),
+    [
+        ([], "unknown"),
+        ([{"status": "in_progress", "conclusion": None}], "pending"),
+        ([{"status": "completed", "conclusion": "success"}], "success"),
+        ([{"status": "completed", "conclusion": "failure"}], "failure"),
+    ],
+)
+def test_check_run_status_is_aggregated(monkeypatch, runs, expected):
+    configure_token(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/commits/abc/check-runs")
+        return httpx.Response(200, json={"check_runs": runs})
+
+    install_mock(monkeypatch, handler)
+
+    assert GitHubClient().get_checks_status("abc") == expected
+    get_settings.cache_clear()
+
+
+def test_push_url_does_not_embed_token(monkeypatch):
+    configure_token(monkeypatch, token="ghp_secret_value")
+
+    url = GitHubClient().push_url
+
+    assert "ghp_secret_value" not in url
+    assert url == "https://x-access-token@github.com/GugaBoBo-s/gugabobo.git"
+    get_settings.cache_clear()

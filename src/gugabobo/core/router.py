@@ -8,9 +8,6 @@ class Route:
 
 
 class Router:
-    # These prefixes trigger feedback when the message *starts* with one of
-    # them. Substring matching ("建议" anywhere) is too broad: "这电影我建议
-    # 你看看" or "这问题挺难的" would be misrouted.
     _FEEDBACK_PREFIXES = (
         "bug",
         "建议",

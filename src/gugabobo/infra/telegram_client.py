@@ -5,6 +5,7 @@ import httpx
 from gugabobo.config import get_settings
 from gugabobo.infra.images import bytes_to_data_uri
 from gugabobo.infra.logs import get_logger
+from gugabobo.infra.redaction import redact_sensitive
 
 
 class TelegramClient:
@@ -28,8 +29,6 @@ class TelegramClient:
 
     @property
     def client(self) -> httpx.Client:
-        # A single pooled client is reused across calls so long polling does not
-        # pay a fresh TLS (and SOCKS, when proxied) handshake on every request.
         if self._client is None:
             self._client = httpx.Client(proxy=self._proxy, follow_redirects=True)
         return self._client
@@ -46,11 +45,16 @@ class TelegramClient:
         timeout: float = 35.0,
     ) -> dict[str, object]:
         url = f"{self.base_url}/{method}"
-        response = self.client.post(url, json=payload or {}, timeout=timeout)
-        response.raise_for_status()
-        data = response.json()
+        try:
+            response = self.client.post(url, json=payload or {}, timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+        except Exception as error:
+            detail = redact_sensitive(error, (self.settings.telegram_bot_token,))
+            raise RuntimeError(f"Telegram API {method} failed: {detail}") from None
         if not data.get("ok"):
-            raise RuntimeError(f"Telegram API call failed: {data}")
+            detail = redact_sensitive(data, (self.settings.telegram_bot_token,))
+            raise RuntimeError(f"Telegram API {method} failed: {detail}")
         return dict(data)
 
     def get_updates(
@@ -66,8 +70,6 @@ class TelegramClient:
         }
         if offset is not None:
             payload["offset"] = offset
-        # Long polling holds the connection for `timeout` seconds server-side,
-        # so the client read timeout must exceed it or every poll would abort.
         data = self.call("getUpdates", payload, timeout=timeout + 15)
         result = data.get("result", [])
         if not isinstance(result, list):
@@ -80,12 +82,11 @@ class TelegramClient:
         return dict(result) if isinstance(result, dict) else {}
 
     def send_message(self, chat_id: str, text: str) -> None:
-        self.call("sendMessage", {"chat_id": chat_id, "text": text})
+        chunks = _split_message(text)
+        for chunk in chunks:
+            self.call("sendMessage", {"chat_id": chat_id, "text": chunk})
 
     def _download_file(self, file_id: str, timeout: float = 20.0) -> bytes | None:
-        # Telegram photos are two-step: getFile returns a file_path, then the
-        # file is fetched from the /file/bot<token>/ endpoint. The token stays
-        # inside this method and is never logged.
         try:
             data = self.call("getFile", {"file_id": file_id})
             file_path = str(data.get("result", {}).get("file_path", ""))
@@ -97,7 +98,8 @@ class TelegramClient:
             response.raise_for_status()
             return response.content
         except Exception as exc:
-            get_logger().warning("telegram file download failed file_id=%s error=%s", file_id, exc)
+            detail = redact_sensitive(exc, (self.settings.telegram_bot_token,))
+            get_logger().warning("telegram file download failed file_id=%s error=%s", file_id, detail)
             return None
 
     def file_ids_to_data_uris(self, file_ids: list[str], timeout: float = 20.0) -> list[str]:
@@ -110,3 +112,20 @@ class TelegramClient:
             if data_uri:
                 data_uris.append(data_uri)
         return data_uris
+
+
+def _split_message(text: str, limit: int = 4000) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= limit:
+            chunks.append(remaining)
+            break
+        split_at = remaining.rfind("\n", 0, limit + 1)
+        if split_at < limit // 2:
+            split_at = limit
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:].lstrip("\n")
+    return chunks

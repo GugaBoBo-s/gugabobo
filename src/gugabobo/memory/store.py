@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -107,6 +108,33 @@ CREATE TABLE IF NOT EXISTS pull_requests (
     merged_at TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS outbound_drafts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    actor_source TEXT NOT NULL,
+    actor_user_id TEXT NOT NULL,
+    target TEXT NOT NULL,
+    recipient_user_id TEXT NOT NULL,
+    recipient_label TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    expires_at TEXT NOT NULL DEFAULT (datetime('now', '+10 minutes')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS inbound_events (
+    platform TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'processing',
+    reply TEXT NOT NULL DEFAULT '',
+    result_json TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(platform, event_id)
 );
 """
 
@@ -258,6 +286,24 @@ class MemoryStore:
                 query += " LIMIT ?"
                 params.append(limit)
             rows = conn.execute(query, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_recent_messages_after(
+        self,
+        conversation_id: str,
+        after_message_id: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return self.list_messages_after(conversation_id, after_message_id)
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, conversation_id, source, user_id, role, content, created_at FROM ("
+                "SELECT id, conversation_id, source, user_id, role, content, created_at "
+                "FROM messages WHERE conversation_id = ? AND id > ? "
+                "ORDER BY id DESC LIMIT ?) ORDER BY id ASC",
+                (conversation_id, after_message_id, limit),
+            ).fetchall()
         return [dict(row) for row in rows]
 
     def count_messages_after(self, conversation_id: str, after_message_id: int = 0) -> int:
@@ -656,6 +702,19 @@ class MemoryStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_pull_request_for_improvement(
+        self,
+        improvement_task_id: int,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id, improvement_task_id, github_owner, github_repo, number, url, "
+                "branch_name, status, checks_status, merged_at, created_at, updated_at "
+                "FROM pull_requests WHERE improvement_task_id = ? ORDER BY id DESC LIMIT 1",
+                (improvement_task_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def update_pull_request(
         self,
         pr_id: int,
@@ -684,6 +743,144 @@ class MemoryStore:
                 values,
             )
             return cursor.rowcount > 0
+
+    def add_outbound_draft(
+        self,
+        conversation_id: str,
+        actor_source: str,
+        actor_user_id: str,
+        target: str,
+        recipient_user_id: str,
+        recipient_label: str,
+        content: str,
+    ) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "INSERT INTO outbound_drafts "
+                "(conversation_id, actor_source, actor_user_id, target, recipient_user_id, "
+                "recipient_label, content) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    conversation_id,
+                    actor_source,
+                    actor_user_id,
+                    target,
+                    recipient_user_id,
+                    recipient_label,
+                    content,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def get_outbound_draft(self, draft_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id, conversation_id, actor_source, actor_user_id, target, "
+                "recipient_user_id, recipient_label, content, status, expires_at, "
+                "created_at, updated_at FROM outbound_drafts WHERE id = ?",
+                (draft_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_outbound_draft_status(self, draft_id: int, status: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE outbound_drafts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (status, draft_id),
+            )
+            return cursor.rowcount > 0
+
+    def claim_outbound_draft(
+        self,
+        draft_id: int,
+        actor_user_id: str,
+        conversation_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE outbound_drafts SET status = 'sending', "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ? AND actor_user_id = ? "
+                "AND conversation_id = ? AND status = 'pending' "
+                "AND expires_at > CURRENT_TIMESTAMP",
+                (draft_id, actor_user_id, conversation_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+            row = conn.execute(
+                "SELECT id, conversation_id, actor_source, actor_user_id, target, "
+                "recipient_user_id, recipient_label, content, status, expires_at, "
+                "created_at, updated_at FROM outbound_drafts WHERE id = ?",
+                (draft_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_outbound_drafts(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, conversation_id, actor_source, actor_user_id, target, "
+                "recipient_user_id, recipient_label, content, status, expires_at, "
+                "created_at, updated_at FROM outbound_drafts ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_inbound_event(self, platform: str, event_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT platform, event_id, status, reply, result_json, last_error, "
+                "created_at, updated_at FROM inbound_events WHERE platform = ? AND event_id = ?",
+                (platform, event_id),
+            ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["result"] = json.loads(result["result_json"]) if result["result_json"] else {}
+        return result
+
+    def begin_inbound_event(self, platform: str, event_id: str) -> dict[str, Any]:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO inbound_events (platform, event_id) VALUES (?, ?)",
+                (platform, event_id),
+            )
+        result = self.get_inbound_event(platform, event_id)
+        return result or {"platform": platform, "event_id": event_id, "status": "processing"}
+
+    def save_inbound_event_reply(
+        self,
+        platform: str,
+        event_id: str,
+        reply: str,
+        result: dict[str, object],
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE inbound_events SET status = 'reply_ready', reply = ?, result_json = ?, "
+                "last_error = '', updated_at = CURRENT_TIMESTAMP "
+                "WHERE platform = ? AND event_id = ?",
+                (reply, json.dumps(result, ensure_ascii=False), platform, event_id),
+            )
+
+    def complete_inbound_event(
+        self,
+        platform: str,
+        event_id: str,
+        result: dict[str, object],
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE inbound_events SET status = 'completed', result_json = ?, "
+                "last_error = '', updated_at = CURRENT_TIMESTAMP "
+                "WHERE platform = ? AND event_id = ?",
+                (json.dumps(result, ensure_ascii=False), platform, event_id),
+            )
+
+    def fail_inbound_event(self, platform: str, event_id: str, error: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE inbound_events SET last_error = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE platform = ? AND event_id = ?",
+                (error[:1000], platform, event_id),
+            )
 
     def add_feedback(self, source: str, user_id: str, content: str) -> int:
         with self.connect() as conn:
@@ -754,6 +951,8 @@ class MemoryStore:
             "tasks",
             "improvement_tasks",
             "pull_requests",
+            "outbound_drafts",
+            "inbound_events",
         ]
         with self.connect() as conn:
             return [

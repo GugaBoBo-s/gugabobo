@@ -1,66 +1,68 @@
-import subprocess
-
 from gugabobo.config import get_settings
-from gugabobo.infra import claude_runner as runner_module
 from gugabobo.infra.claude_runner import ClaudeCodeRunner
+from gugabobo.infra.container_runtime import ContainerResult
 
 
-def test_configured_reflects_which(monkeypatch):
+class FakeContainerRuntime:
+    def __init__(self, ready=True, result=None):
+        self.ready = ready
+        self.result = result or ContainerResult(returncode=0, stdout="done", stderr="")
+        self.calls = []
+
+    def run(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.result
+
+
+def test_configured_requires_isolated_runtime():
     get_settings.cache_clear()
-    monkeypatch.setattr(runner_module.shutil, "which", lambda name: "/usr/bin/claude")
-    assert ClaudeCodeRunner().configured is True
-
-    monkeypatch.setattr(runner_module.shutil, "which", lambda name: None)
-    assert ClaudeCodeRunner().configured is False
+    assert ClaudeCodeRunner(container_runtime=FakeContainerRuntime()).configured is True
+    assert ClaudeCodeRunner(container_runtime=FakeContainerRuntime(ready=False)).configured is False
     get_settings.cache_clear()
 
 
-def test_run_builds_headless_command(monkeypatch, tmp_path):
+def test_run_builds_isolated_headless_command(tmp_path, monkeypatch):
+    monkeypatch.setenv("GUGABOBO_CLAUDE_PERMISSION_MODE", "bypassPermissions")
+    monkeypatch.setenv("GUGABOBO_CLAUDE_ALLOWED_TOOLS", "Bash,Read,Write")
     get_settings.cache_clear()
-    captured = {}
+    runtime = FakeContainerRuntime()
 
-    def fake_run(command, **kwargs):
-        captured["command"] = command
-        captured["cwd"] = kwargs.get("cwd")
-        return subprocess.CompletedProcess(command, 0, stdout="done", stderr="")
-
-    monkeypatch.setattr(runner_module.subprocess, "run", fake_run)
-
-    result = ClaudeCodeRunner().run("fix the bug", cwd=tmp_path)
+    result = ClaudeCodeRunner(container_runtime=runtime).run("fix the bug", cwd=tmp_path)
 
     assert result.ok is True
     assert result.output == "done"
-    assert captured["command"][0:4] == ["claude", "-p", "fix the bug", "--output-format"]
-    assert "bypassPermissions" in captured["command"]
-    assert captured["cwd"] == str(tmp_path)
+    call = runtime.calls[0]
+    assert call["workspace"] == tmp_path
+    assert call["network"] == "bridge"
+    assert call["input_text"] == "fix the bug"
+    assert "fix the bug" not in call["command"]
+    assert "acceptEdits" in call["command"]
+    assert "bypassPermissions" not in call["command"]
+    assert "Bash,Read,Write" not in call["command"]
+    assert "--no-session-persistence" in call["command"]
     get_settings.cache_clear()
 
 
-def test_run_reports_failure(monkeypatch, tmp_path):
+def test_run_reports_container_failure(tmp_path):
     get_settings.cache_clear()
+    runtime = FakeContainerRuntime(
+        result=ContainerResult(returncode=1, stdout="", stderr="boom")
+    )
 
-    def fake_run(command, **kwargs):
-        return subprocess.CompletedProcess(command, 1, stdout="", stderr="boom")
-
-    monkeypatch.setattr(runner_module.subprocess, "run", fake_run)
-
-    result = ClaudeCodeRunner().run("do it", cwd=tmp_path)
+    result = ClaudeCodeRunner(container_runtime=runtime).run("do it", cwd=tmp_path)
 
     assert result.ok is False
     assert result.error == "boom"
     get_settings.cache_clear()
 
 
-def test_run_handles_timeout(monkeypatch, tmp_path):
+def test_run_fails_closed_when_runtime_is_missing(tmp_path):
     get_settings.cache_clear()
+    runtime = FakeContainerRuntime(ready=False)
 
-    def fake_run(command, **kwargs):
-        raise subprocess.TimeoutExpired(command, 1)
-
-    monkeypatch.setattr(runner_module.subprocess, "run", fake_run)
-
-    result = ClaudeCodeRunner().run("slow", cwd=tmp_path)
+    result = ClaudeCodeRunner(container_runtime=runtime).run("do it", cwd=tmp_path)
 
     assert result.ok is False
-    assert "timed out" in result.error
+    assert "isolated runner" in result.error
+    assert runtime.calls == []
     get_settings.cache_clear()

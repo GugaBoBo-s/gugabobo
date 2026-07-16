@@ -1,7 +1,19 @@
 import subprocess
 
 from gugabobo.config import get_settings
+from gugabobo.infra.container_runtime import ContainerResult
 from gugabobo.infra.sandbox import SandboxManager
+
+
+class FakeContainerRuntime:
+    def __init__(self, results=None, ready=True):
+        self.ready = ready
+        self.results = list(results or [])
+        self.calls = []
+
+    def run(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.results.pop(0)
 
 
 def init_source_repo(path):
@@ -104,24 +116,34 @@ def test_commit_all_commits_changes(tmp_path, monkeypatch):
 
 def test_run_checks_reports_pass_and_fail(tmp_path, monkeypatch):
     configure_sandbox(tmp_path, monkeypatch)
-    from gugabobo.infra import sandbox as sandbox_module
-
-    manager = SandboxManager()
-
-    monkeypatch.setattr(
-        sandbox_module.subprocess,
-        "run",
-        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok", stderr=""),
+    passing_runtime = FakeContainerRuntime(
+        [
+            ContainerResult(returncode=0, stdout="lint ok", stderr=""),
+            ContainerResult(returncode=0, stdout="tests ok", stderr=""),
+        ]
     )
+    manager = SandboxManager(container_runtime=passing_runtime)
+
     passed = manager.run_checks(tmp_path)
     assert passed.passed is True
+    assert all(call["network"] == "none" for call in passing_runtime.calls)
 
-    monkeypatch.setattr(
-        sandbox_module.subprocess,
-        "run",
-        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, stdout="", stderr="fail"),
+    failing_runtime = FakeContainerRuntime(
+        [ContainerResult(returncode=1, stdout="", stderr="fail")]
     )
+    manager = SandboxManager(container_runtime=failing_runtime)
     failed = manager.run_checks(tmp_path)
     assert failed.passed is False
     assert "fail" in failed.output
+    get_settings.cache_clear()
+
+
+def test_run_checks_fails_closed_without_container(tmp_path, monkeypatch):
+    configure_sandbox(tmp_path, monkeypatch)
+    manager = SandboxManager(container_runtime=FakeContainerRuntime(ready=False))
+
+    result = manager.run_checks(tmp_path)
+
+    assert result.passed is False
+    assert "host execution is disabled" in result.output
     get_settings.cache_clear()

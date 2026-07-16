@@ -162,6 +162,8 @@ def dashboard() -> HTMLResponse:
 def dashboard_data() -> dict[str, object]:
     settings = get_settings()
     agent = build_agent()
+    runtime_manager = RuntimeManager()
+    runtime_data = runtime_manager.status()
     status_data = agent.status()
     status_data["memory_items"] = agent.store.count_memory_items()
     status_data["conversation_summaries"] = agent.store.count_conversation_summaries()
@@ -172,6 +174,9 @@ def dashboard_data() -> dict[str, object]:
         "config": {
             "llm_provider": settings.llm_provider,
             "llm_context_messages": settings.llm_context_messages,
+            "llm_history_token_budget": settings.llm_history_token_budget,
+            "llm_summary_trigger_tokens": settings.llm_summary_trigger_tokens,
+            "llm_summary_keep_recent_tokens": settings.llm_summary_keep_recent_tokens,
             "llm_memory_items": settings.llm_memory_items,
             "napcat_reply_enabled": settings.napcat_reply_enabled,
             "napcat_passive_reply_enabled": settings.napcat_passive_reply_enabled,
@@ -184,10 +189,17 @@ def dashboard_data() -> dict[str, object]:
         "summaries": agent.store.list_conversation_summaries(limit=20),
         "access_rules": agent.store.list_access_rules(limit=50),
         "audit_logs": agent.store.list_audit_logs(limit=50),
+        "tasks": agent.store.list_tasks(limit=50),
+        "improvements": agent.store.list_improvement_tasks(limit=50),
+        "pull_requests": agent.store.list_pull_requests(limit=50),
+        "outbound_drafts": agent.store.list_outbound_drafts(limit=50),
         "table_counts": agent.store.table_counts(),
-        "runtime": RuntimeManager().status(),
-        "qq_diagnostics": RuntimeManager().qq_diagnostics(agent.store),
-        "telegram_diagnostics": RuntimeManager().telegram_diagnostics(agent.store),
+        "runtime": runtime_data,
+        "qq_diagnostics": runtime_manager.qq_diagnostics(agent.store),
+        "telegram_diagnostics": runtime_manager.telegram_diagnostics(
+            agent.store,
+            runtime_data["telegram_polling"],
+        ),
         "logs": read_log_lines(limit=80),
     }
 
@@ -239,6 +251,7 @@ def dashboard_control_config(_: None = Depends(require_admin_token)) -> dict[str
             "GUGABOBO_TELEGRAM_BOT_USERNAME": settings.telegram_bot_username,
             "GUGABOBO_TELEGRAM_REPLY_ENABLED": settings.telegram_reply_enabled,
             "GUGABOBO_TELEGRAM_GROUP_WAKE_WORDS": settings.telegram_group_wake_words,
+            "GUGABOBO_TELEGRAM_PROXY": settings.telegram_proxy,
             "GUGABOBO_GITHUB_OWNER": settings.github_owner,
             "GUGABOBO_GITHUB_REPO": settings.github_repo,
             "GUGABOBO_GITHUB_API_URL": settings.github_api_url,
@@ -247,9 +260,16 @@ def dashboard_control_config(_: None = Depends(require_admin_token)) -> dict[str
             "GUGABOBO_MOONSHOT_MODEL": settings.moonshot_model,
             "GUGABOBO_DEEPSEEK_BASE_URL": settings.deepseek_base_url,
             "GUGABOBO_DEEPSEEK_MODEL": settings.deepseek_model,
+            "GUGABOBO_OPENAI_BASE_URL": settings.openai_base_url,
+            "GUGABOBO_OPENAI_MODEL": settings.openai_model,
             "GUGABOBO_LLM_TIMEOUT_SECONDS": settings.llm_timeout_seconds,
             "GUGABOBO_LLM_CONTEXT_MESSAGES": settings.llm_context_messages,
             "GUGABOBO_LLM_MEMORY_ITEMS": settings.llm_memory_items,
+            "GUGABOBO_LLM_HISTORY_TOKEN_BUDGET": settings.llm_history_token_budget,
+            "GUGABOBO_LLM_SUMMARY_TRIGGER_TOKENS": settings.llm_summary_trigger_tokens,
+            "GUGABOBO_LLM_SUMMARY_KEEP_RECENT_TOKENS": settings.llm_summary_keep_recent_tokens,
+            "GUGABOBO_RUNNER_CONTAINER_RUNTIME": settings.runner_container_runtime,
+            "GUGABOBO_RUNNER_CONTAINER_IMAGE": settings.runner_container_image,
         },
         "secrets": {
             "GUGABOBO_ADMIN_TOKEN": bool(settings.admin_token),
@@ -259,6 +279,7 @@ def dashboard_control_config(_: None = Depends(require_admin_token)) -> dict[str
             "GUGABOBO_TELEGRAM_WEBHOOK_SECRET": bool(settings.telegram_webhook_secret),
             "GUGABOBO_MOONSHOT_API_KEY": bool(settings.moonshot_api_key),
             "GUGABOBO_DEEPSEEK_API_KEY": bool(settings.deepseek_api_key),
+            "GUGABOBO_OPENAI_API_KEY": bool(settings.openai_api_key),
         },
     }
 
@@ -409,8 +430,10 @@ def create_improvement(
 @app.post("/improvements/{improvement_id}/approve")
 def approve_improvement(
     improvement_id: int,
+    request: DangerousActionRequest | None = None,
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
+    require_danger_confirmation(request, "APPROVE")
     try:
         ImprovementService(build_agent().store).approve(
             improvement_id, actor_source="dashboard", actor_user_id="admin"
@@ -418,6 +441,55 @@ def approve_improvement(
     except ImprovementError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     return {"improvement_id": improvement_id, "approval_status": "approved"}
+
+
+@app.post("/improvements/{improvement_id}/run")
+def run_improvement(
+    improvement_id: int,
+    request: DangerousActionRequest | None = None,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    require_danger_confirmation(request, "RUN")
+    try:
+        outcome = ImprovementService(build_agent().store).run_improvement(
+            improvement_id,
+            actor_source="dashboard",
+            actor_user_id="admin",
+        )
+    except ImprovementError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {
+        "improvement_id": improvement_id,
+        "status": outcome.status,
+        "branch_name": outcome.branch_name,
+        "detail": outcome.detail,
+        "diff": outcome.diff,
+    }
+
+
+@app.post("/improvements/{improvement_id}/ship")
+def ship_improvement(
+    improvement_id: int,
+    request: DangerousActionRequest | None = None,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    require_danger_confirmation(request, "SHIP")
+    try:
+        outcome = ImprovementService(build_agent().store).run_and_open_pull_request(
+            improvement_id,
+            actor_source="dashboard",
+            actor_user_id="admin",
+        )
+    except ImprovementError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {
+        "improvement_id": improvement_id,
+        "status": outcome.status,
+        "branch_name": outcome.branch_name,
+        "detail": outcome.detail,
+        "pr_number": outcome.pr_number,
+        "pr_url": outcome.pr_url,
+    }
 
 
 @app.post("/improvements/{improvement_id}/reject")

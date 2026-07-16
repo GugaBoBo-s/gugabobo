@@ -659,6 +659,26 @@ erDiagram
         string updated_at
     }
 
+    OUTBOUND_DRAFTS {
+        integer id PK
+        string conversation_id FK
+        string actor_source
+        string actor_user_id
+        string recipient_user_id
+        string content
+        string status
+        string expires_at
+    }
+
+    INBOUND_EVENTS {
+        string platform PK
+        string event_id PK
+        string status
+        string reply
+        string result_json
+        string last_error
+    }
+
     TOOL_CALLS {
         integer id PK
         integer task_id FK
@@ -691,6 +711,7 @@ erDiagram
     FEEDBACKS ||--o{ IMPROVEMENT_TASKS : "informs"
     IMPROVEMENT_TASKS ||--o| PULL_REQUESTS : "opens"
     TASKS ||--o{ TOOL_CALLS : "uses"
+    CONVERSATIONS ||--o{ OUTBOUND_DRAFTS : "creates"
 ```
 
 #### users
@@ -1132,8 +1153,8 @@ Current local dashboard:
 ```text
 URL: http://127.0.0.1:8765/dashboard
 Refresh: polls /dashboard-data every 3 seconds
-Displays: status, LLM config, reply mode, conversations, recent messages, feedbacks, memories, logs
-Controls: test chat, conversation context view/clear, long-term memory add/filter/update/delete, conversation summary set/delete, feedback status update, access rule management
+Displays: status, token budgets, runtime diagnostics, conversations, messages, feedbacks, memories, summaries, access rules, audit logs, tasks, improvement tasks, pull requests, outbound drafts, database table counts, logs
+Controls: test chat, QQ/NapCat and Telegram runtime, non-secret config, conversation context, long-term memory, summaries, feedback status, access rules, improvement creation/approval/run/ship, proposal PR creation, PR status synchronization
 Auth: admin actions require GUGABOBO_ADMIN_TOKEN through the X-Gugabobo-Admin-Token header
 ```
 
@@ -1212,6 +1233,8 @@ group wake-word reply decision
 silent group feedback recording
 NapCat HTTP send client
 FastAPI webhook endpoint
+owner-only outbound message drafts with same-user confirmation
+atomic draft claiming and send audit records
 ```
 
 ## 19. Telegram Integration Plan
@@ -1222,7 +1245,7 @@ Milestone:
 P1/P2
 ```
 
-Telegram is a required social chat adapter. It must not fork the agent into a separate Telegram-only personality. The local webhook skeleton is implemented; production use still requires BotFather token setup and public webhook registration.
+Telegram is a required social chat adapter. It uses the same core identity as QQ. Both webhook and local polling are implemented; server polling does not require a public webhook.
 
 Target flow:
 
@@ -1264,6 +1287,7 @@ GUGABOBO_TELEGRAM_WEBHOOK_SECRET=
 GUGABOBO_TELEGRAM_REPLY_ENABLED=false
 GUGABOBO_TELEGRAM_GROUP_WAKE_WORDS=gugabobo,咕嘎BoBo
 GUGABOBO_OWNER_TELEGRAM_IDS=
+GUGABOBO_TELEGRAM_PROXY=
 ```
 
 Implemented:
@@ -1278,6 +1302,9 @@ owner id mapping
 Telegram sendMessage client
 Telegram local polling command
 webhook secret validation
+durable update idempotency and reply reuse after send failure
+offset persistence only after successful processing
+long-message chunking and token-redacted errors
 adapter tests
 ```
 
@@ -1286,7 +1313,7 @@ Implementation notes:
 - Use the same `CoreAgent`, `Persona`, memory store, LLM provider, and dashboard.
 - Keep Telegram-specific parsing and sending in the adapter layer.
 - Do not put Telegram permission logic directly into skills.
-- Prefer webhook on server deployment; use `gugabobo telegram poll --send` for local development.
+- Use local polling for the current localhost-only deployment; webhook remains available when a public HTTPS endpoint is intentionally configured.
 
 ## 20. Deployment Design
 
@@ -1294,20 +1321,22 @@ Implementation notes:
 
 ```text
 /opt/gugabobo/
-├─ app/
-├─ sandbox/
-├─ data/
-├─ logs/
-├─ secrets/
-└─ scripts/
+├─ repo/
+│  ├─ .venv/
+│  └─ .env
+└─ data/
+   ├─ gugabobo.db
+   ├─ logs/
+   ├─ sandbox/
+   └─ claude-home/
 ```
 
 ### 20.2 Early Services
 
 ```text
 gugabobo-api.service
-gugabobo-daemon.service
-gugabobo-worker.service
+gugabobo-telegram.service (optional alternative to Dashboard-managed polling)
+docker.service
 ```
 
 ### 20.3 Later Infrastructure
@@ -1562,6 +1591,8 @@ Goal:
 Make gugabobo available in QQ private chats and groups.
 ```
 
+Status: complete for the NapCat/OneBot HTTP path.
+
 Tasks:
 
 ```text
@@ -1583,6 +1614,8 @@ Goal:
 Make gugabobo available in Telegram private chats and groups without forking the core agent.
 ```
 
+Status: complete for webhook and local polling, including photos and durable retry handling.
+
 Tasks:
 
 ```text
@@ -1602,6 +1635,8 @@ Goal:
 ```text
 Provide a local cockpit for status, feedback, tasks, logs, and approvals.
 ```
+
+Status: complete for the current SQLite/systemd deployment.
 
 Tasks:
 
@@ -1624,6 +1659,8 @@ Goal:
 Allow approved tasks to become branches and pull requests.
 ```
 
+Status: implemented with GitHub Checks API synchronization and GitHub Actions CI.
+
 Tasks:
 
 ```text
@@ -1644,6 +1681,8 @@ Goal:
 ```text
 Turn external feedback into proposed code changes.
 ```
+
+Status: foundation implemented. Approved feedback can run Claude Code in a restricted container, run network-disabled checks, and open a unique pull-request branch.
 
 Tasks:
 
@@ -1718,6 +1757,7 @@ secret scanning
 no secrets in prompts where possible
 GitHub secret scanning
 review generated diffs
+container execution without host business secrets or Docker socket mounts
 ```
 
 ### 25.4 Scope Creep Risk
@@ -1727,9 +1767,9 @@ Too many adapters too early may destabilize the core.
 Mitigation:
 
 ```text
-finish P0/P0.5 before P1
 keep milestones explicit
-avoid dashboard/social/runner until needed
+keep adapters thin and preserve one core
+avoid new infrastructure until measured load requires it
 ```
 
 ### 25.5 Cost Risk
@@ -1821,21 +1861,21 @@ reflection recorded after outcome
 Recommended next milestone:
 
 ```text
-P5 feedback-driven self-improvement
+P5 self-improvement hardening and post-merge reflection
 ```
 
 Recommended tasks:
 
 ```text
-1. Add a sandbox clone and test runner around the P4 GitHub client.
-2. Introduce a Claude Code / LLM runner that produces real code diffs.
-3. Replace the proposal-file commit with the runner's actual changes.
-4. Read GitHub Actions status back into pull_requests.checks_status.
-5. Add reflection records after merge or rejection.
+1. Add reflection records after merge or rejection.
+2. Add a deployment record tied to the merged pull request and server revision.
+3. Add stale-run recovery and cancellation for long-running improvements.
+4. Add repository-level policy tests for generated diffs.
+5. Add structured cost and token usage records for coding runs.
 ```
 
-P0 through P3 are complete. P4 delivered the self-improvement foundation:
-GitHub PAT client, tasks / improvement_tasks / pull_requests tables, an
-approval-gated proposal pull request flow, and CLI plus API surfaces. Actual
-AI-generated code changes and sandbox runners remain intentionally out of scope
-until P5.
+P0 through P4 are operational. The current P5 foundation includes approval-gated
+Claude Code execution in a restricted Docker container, network-disabled Ruff
+and pytest checks, tokenless Git remote URLs with askpass authentication, unique
+branches, GitHub Actions check-run synchronization, Dashboard controls, and
+audit records. Generated pull requests are never merged automatically.

@@ -25,7 +25,6 @@ class TelegramMessageEvent:
         user = message.get("from") or {}
         chat_id = str(chat.get("id", ""))
         user_id = str(user.get("id", chat_id))
-        # A photo caption arrives as `caption`, not `text`.
         text = str(message.get("text") or message.get("caption") or "").strip()
         return cls(
             update_id=str(payload.get("update_id", "")),
@@ -110,8 +109,6 @@ class TelegramMessageEvent:
 
 
 def _extract_photo_file_ids(message: dict[str, Any]) -> tuple[str, ...]:
-    # Telegram sends a photo as an array of PhotoSize objects (same image at
-    # different resolutions). The largest is last; use it for best vision quality.
     photo = message.get("photo")
     if isinstance(photo, list) and photo:
         largest = photo[-1]
