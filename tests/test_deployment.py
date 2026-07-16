@@ -36,6 +36,8 @@ def test_auto_deploy_validates_before_activation_and_supports_rollback() -> None
     assert "deployment_records.pull_request_id" in script
     assert 'str(pull.get("number")) == pull_request_number' in script
     assert "mark_pending_deployment_failed" in script
+    assert "read_env_value GUGABOBO_AUTO_DEPLOY_ENABLED" in script
+    assert "read_env_value GUGABOBO_GITHUB_TOKEN" in script
 
 
 def git(repo, *args: str) -> str:

@@ -61,6 +61,17 @@ run_as_user() {
   runuser -u "$RUN_USER" -- "$@"
 }
 
+read_env_value() {
+  local key="$1"
+  local value
+  value=$(sed -n "s/^${key}=//p" "$REPO_DIR/.env" | head -n 1 | tr -d '\r')
+  case "$value" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+  esac
+  printf '%s' "$value"
+}
+
 verify_github_target() {
   local github_token="$1"
   local github_api_url="$2"
@@ -265,7 +276,7 @@ on_error() {
 trap on_error ERR
 trap cleanup EXIT
 
-auto_deploy_enabled=$(sed -n 's/^GUGABOBO_AUTO_DEPLOY_ENABLED=//p' "$REPO_DIR/.env" | head -n 1 | tr -d '\r' | tr '[:upper:]' '[:lower:]')
+auto_deploy_enabled=$(read_env_value GUGABOBO_AUTO_DEPLOY_ENABLED | tr '[:upper:]' '[:lower:]')
 case "$auto_deploy_enabled" in
   0|false|no|off)
     write_status "disabled" "Automatic deployment is disabled by configuration."
@@ -307,7 +318,7 @@ if ! run_as_user git -C "$REPO_DIR" merge-base --is-ancestor "$old_revision" "$t
   exit 1
 fi
 
-db_path=$(sed -n 's/^GUGABOBO_DB_PATH=//p' "$REPO_DIR/.env" | head -n 1 | tr -d '\r')
+db_path=$(read_env_value GUGABOBO_DB_PATH)
 db_path="${db_path:-$DATA_DIR/gugabobo.db}"
 case "$db_path" in
   /*) ;;
@@ -323,8 +334,8 @@ if [ "$pending_status" -ne 0 ]; then
 fi
 IFS=$'\t' read -r deployment_owner deployment_repo deployment_pr_number <<< "$deployment_reference"
 
-github_token=$(sed -n 's/^GUGABOBO_GITHUB_TOKEN=//p' "$REPO_DIR/.env" | head -n 1 | tr -d '\r')
-github_api_url=$(sed -n 's/^GUGABOBO_GITHUB_API_URL=//p' "$REPO_DIR/.env" | head -n 1 | tr -d '\r')
+github_token=$(read_env_value GUGABOBO_GITHUB_TOKEN)
+github_api_url=$(read_env_value GUGABOBO_GITHUB_API_URL)
 github_api_url="${github_api_url:-https://api.github.com}"
 if [ -z "$github_token" ]; then
   write_status "blocked" "GitHub token is required to verify the deployment target."
@@ -377,14 +388,14 @@ run_as_user "$staging/.venv/bin/python" -m ruff check "$staging"
   run_as_user "$staging/.venv/bin/python" -m pytest -q
 )
 
-docker_proxy=$(sed -n 's/^GUGABOBO_DOCKER_PROXY=//p' "$REPO_DIR/.env" | head -n 1 | tr -d '\r')
+docker_proxy=$(read_env_value GUGABOBO_DOCKER_PROXY)
 if [ -z "$docker_proxy" ]; then
-  docker_proxy=$(sed -n 's/^GUGABOBO_TELEGRAM_PROXY=//p' "$REPO_DIR/.env" | head -n 1 | tr -d '\r')
+  docker_proxy=$(read_env_value GUGABOBO_TELEGRAM_PROXY)
 fi
 if ! printf '%s' "$docker_proxy" | grep -Eq '^https?://(127\.0\.0\.1|localhost):[0-9]+/?$'; then
   docker_proxy=""
 fi
-debian_mirror=$(sed -n 's/^GUGABOBO_DEBIAN_MIRROR=//p' "$REPO_DIR/.env" | head -n 1 | tr -d '\r')
+debian_mirror=$(read_env_value GUGABOBO_DEBIAN_MIRROR)
 if ! printf '%s' "$debian_mirror" | grep -Eq '^https?://[A-Za-z0-9._:/-]+$'; then
   debian_mirror=""
 fi
