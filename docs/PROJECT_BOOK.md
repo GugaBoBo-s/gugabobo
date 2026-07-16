@@ -6,6 +6,8 @@
 
 The system is not intended to be only a QQ bot, only a dashboard, or only a software engineering agent. Those are entry points or skills. The central product is a persistent agent body that can receive external signals, remember them, route them to specialized capabilities, and propose code changes without bypassing human review.
 
+**gugabobo is a persistent agent independent of any communication channel. Channels are interfaces through which gugabobo perceives, communicates, and acts; they do not define its identity or existence.**
+
 One-sentence definition:
 
 ```text
