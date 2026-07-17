@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from gugabobo.adapters.onebot import OneBotMessageEvent
+from gugabobo.adapters.telegram import TelegramMessageEvent
 from gugabobo.adapters.telegram_runtime import handle_telegram_update
 from gugabobo.api.dashboard import dashboard_html
 from gugabobo.config import get_settings
@@ -19,7 +20,6 @@ from gugabobo.core.lifecycle import (
     PullRequestLifecycleService,
     is_merge_command,
 )
-from gugabobo.core.run_control import recover_stale_execution_containers
 from gugabobo.infra.env_file import EnvFile
 from gugabobo.infra.images import urls_to_data_uris
 from gugabobo.infra.logs import get_logger, read_log_lines
@@ -189,10 +189,13 @@ def dashboard() -> HTMLResponse:
 
 
 @app.get("/dashboard-data")
-def dashboard_data() -> dict[str, object]:
+def dashboard_data(
+    conversation_id: str | None = None,
+    memory_subject: str | None = None,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
     settings = get_settings()
     agent = build_agent()
-    recover_stale_execution_containers(agent.store, settings)
     runtime_manager = RuntimeManager()
     runtime_data = runtime_manager.status()
     status_data = agent.status()
@@ -218,9 +221,13 @@ def dashboard_data() -> dict[str, object]:
             "auto_deploy_enabled": settings.auto_deploy_enabled,
         },
         "conversations": agent.store.list_conversations(limit=20),
-        "messages": agent.store.list_messages(limit=20),
+        "messages": (
+            agent.store.list_conversation_messages(conversation_id, limit=50)
+            if conversation_id
+            else agent.store.list_messages(limit=50)
+        ),
         "feedbacks": agent.store.list_feedbacks(limit=20),
-        "memories": agent.store.list_memory_items(limit=20),
+        "memories": agent.store.list_memory_items(subject=memory_subject, limit=50),
         "summaries": agent.store.list_conversation_summaries(limit=20),
         "access_rules": agent.store.list_access_rules(limit=50),
         "audit_logs": agent.store.list_audit_logs(limit=50),
@@ -262,18 +269,18 @@ def status() -> dict[str, object]:
 
 
 @app.get("/runtime/status")
-def runtime_status() -> dict[str, object]:
+def runtime_status(_: None = Depends(require_admin_token)) -> dict[str, object]:
     return RuntimeManager().status()
 
 
 @app.get("/diagnostics/qq")
-def qq_diagnostics() -> dict[str, object]:
+def qq_diagnostics(_: None = Depends(require_admin_token)) -> dict[str, object]:
     agent = build_agent()
     return RuntimeManager().qq_diagnostics(agent.store)
 
 
 @app.get("/diagnostics/telegram")
-def telegram_diagnostics() -> dict[str, object]:
+def telegram_diagnostics(_: None = Depends(require_admin_token)) -> dict[str, object]:
     agent = build_agent()
     return RuntimeManager().telegram_diagnostics(agent.store)
 
@@ -350,7 +357,10 @@ def dashboard_control_update_config(
     request: ConfigUpdateRequest,
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
-    updated = EnvFile(get_settings().config_file_path).update(request.values)
+    try:
+        updated = EnvFile(get_settings().config_file_path).update(request.values)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     get_settings.cache_clear()
     add_dashboard_audit(
         "config.update",
@@ -1018,16 +1028,27 @@ def dashboard_control_stop_napcat(
 def dashboard_control_onebot_test(
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
-    result = onebot_event(
+    event = OneBotMessageEvent.from_payload(
         {
             "post_type": "message",
             "message_type": "private",
-            "user_id": 10001,
+            "user_id": "dashboard-diagnostic",
             "raw_message": "ping",
             "message": "ping",
         }
     )
-    add_dashboard_audit("diagnostic.onebot_test", status=str(result.get("status", "ok")))
+    context = event.to_channel_context(
+        owner_ids=get_settings().owner_qq_id_set,
+        group_wake_words=get_settings().qq_group_wake_word_list,
+    )
+    result = {
+        "status": "ok",
+        "mode": "parse_only",
+        "reply_sent": False,
+        "conversation_id": context.conversation_id,
+        "reply_allowed": context.is_wake_triggered,
+    }
+    add_dashboard_audit("diagnostic.onebot_test", status="ok", detail="parse_only")
     return result
 
 
@@ -1035,21 +1056,31 @@ def dashboard_control_onebot_test(
 def dashboard_control_telegram_test(
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
-    result = handle_telegram_update(
+    event = TelegramMessageEvent.from_payload(
         {
-            "update_id": 1,
+            "update_id": "dashboard-diagnostic",
             "message": {
-                "message_id": 10,
-                "from": {"id": 10001, "username": "dashboard_test"},
-                "chat": {"id": 10001, "type": "private"},
+                "message_id": "dashboard-diagnostic",
+                "from": {"id": "dashboard-diagnostic", "username": "dashboard_test"},
+                "chat": {"id": "dashboard-diagnostic", "type": "private"},
                 "text": "ping",
             },
-        },
-        agent=build_agent(),
-        settings=get_settings(),
-        send_reply=False,
+        }
     )
-    add_dashboard_audit("diagnostic.telegram_test", status=str(result.get("status", "ok")))
+    settings = get_settings()
+    context = event.to_channel_context(
+        owner_ids=settings.owner_telegram_id_set,
+        group_wake_words=settings.telegram_group_wake_word_list,
+        bot_username=settings.telegram_bot_username,
+    )
+    result = {
+        "status": "ok",
+        "mode": "parse_only",
+        "reply_sent": False,
+        "conversation_id": context.conversation_id,
+        "reply_allowed": context.is_wake_triggered,
+    }
+    add_dashboard_audit("diagnostic.telegram_test", status="ok", detail="parse_only")
     return result
 
 

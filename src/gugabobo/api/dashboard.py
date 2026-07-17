@@ -616,6 +616,7 @@ def dashboard_html() -> str:
           const tokenStorageKey = "gugabobo.adminToken";
           let currentMemories = [];
           let currentSummaries = [];
+          let refreshInFlight = false;
           byId("adminToken").value = localStorage.getItem(tokenStorageKey) || "";
           function esc(value) {
             return String(value ?? "").replace(/[&<>"']/g, (c) => {
@@ -788,17 +789,37 @@ def dashboard_html() -> str:
             return { confirm_text: expectedText };
           }
           async function loadDashboard() {
+            if (refreshInFlight) {
+              return;
+            }
+            refreshInFlight = true;
             const state = byId("refreshState");
             state.textContent = "刷新中";
-            const response = await fetch("/dashboard-data", { cache: "no-store" });
-            const data = await response.json();
-            const memorySubject = byId("memoryFilter").value.trim();
-            const messageConversation = byId("messageConversationFilter").value.trim();
-            const memoriesResponse = await fetch(`/memories?limit=50${memorySubject ? `&subject=${encodeURIComponent(memorySubject)}` : ""}`, { cache: "no-store" });
-            const messagesResponse = await fetch(`/messages?limit=50${messageConversation ? `&conversation_id=${encodeURIComponent(messageConversation)}` : ""}`, { cache: "no-store" });
-            currentMemories = await memoriesResponse.json();
-            const currentMessages = await messagesResponse.json();
-            currentSummaries = data.summaries;
+            try {
+              const token = byId("adminToken").value.trim();
+              if (!token) {
+                throw new Error("请输入管理员令牌后加载控制面板");
+              }
+              const query = new URLSearchParams();
+              const memorySubject = byId("memoryFilter").value.trim();
+              const messageConversation = byId("messageConversationFilter").value.trim();
+              if (memorySubject) {
+                query.set("memory_subject", memorySubject);
+              }
+              if (messageConversation) {
+                query.set("conversation_id", messageConversation);
+              }
+              const response = await fetch(`/dashboard-data?${query.toString()}`, {
+                cache: "no-store",
+                headers: adminHeaders()
+              });
+              const data = await response.json();
+              if (!response.ok) {
+                throw new Error(data.detail || response.statusText);
+              }
+              currentMemories = data.memories;
+              const currentMessages = data.messages;
+              currentSummaries = data.summaries;
             const autoDeploy = data.runtime.auto_deploy || { status: "unknown" };
             byId("metrics").innerHTML = [
               metric("状态", data.status.status, "ok"),
@@ -856,7 +877,7 @@ def dashboard_html() -> str:
                 ? `#${esc(qq.last_qq_message.id)} ${esc(qq.last_qq_message.source)} ${esc(qq.last_qq_message.created_at)}<br>${esc(qq.last_qq_message.content)}`
                 : `<span class="muted">暂无</span>`),
               diagnosticItem("检查项", qq.checks.map((item) => `${pill(item.ok ? "OK" : "WARN", item.ok)} ${esc(item.name)} <span class="muted">${esc(item.detail)}</span>`).join("<br>")),
-              diagnosticItem("操作", `<button id="onebotTestButton" type="button">模拟 OneBot 私聊测试</button>`)
+              diagnosticItem("操作", `<button id="onebotTestButton" type="button">检查 OneBot 事件解析</button>`)
             ].join("");
             const tg = data.telegram_diagnostics;
             byId("telegramDiagnostics").innerHTML = [
@@ -869,7 +890,7 @@ def dashboard_html() -> str:
                 ? `#${esc(tg.last_telegram_message.id)} ${esc(tg.last_telegram_message.source)} ${esc(tg.last_telegram_message.created_at)}<br>${esc(tg.last_telegram_message.content)}`
                 : `<span class="muted">暂无</span>`),
               diagnosticItem("检查项", tg.checks.map((item) => `${pill(item.ok ? "OK" : "WARN", item.ok)} ${esc(item.name)} <span class="muted">${esc(item.detail)}</span>`).join("<br>")),
-              diagnosticItem("操作", `<button id="telegramTestButton" type="button">模拟 Telegram 私聊测试</button> <button id="telegramGetMeButton" type="button">检查 getMe</button>`)
+              diagnosticItem("操作", `<button id="telegramTestButton" type="button">检查 Telegram 事件解析</button> <button id="telegramGetMeButton" type="button">检查 getMe</button>`)
             ].join("");
             byId("conversations").innerHTML = data.conversations.map((item) => (
               `<tr data-conversation-id="${esc(item.conversation_id)}">` +
@@ -1024,8 +1045,11 @@ def dashboard_html() -> str:
               `${esc(item.status)} ${esc(item.detail)}`,
               `<span class="muted">${esc(item.created_at)}</span>`
             ])).join("");
-            byId("logs").textContent = data.logs.join("\\n");
-            state.textContent = `已刷新 ${new Date().toLocaleTimeString()}`;
+              byId("logs").textContent = data.logs.join("\\n");
+              state.textContent = `已刷新 ${new Date().toLocaleTimeString()}`;
+            } finally {
+              refreshInFlight = false;
+            }
           }
           byId("saveTokenButton").addEventListener("click", () => {
             localStorage.setItem(tokenStorageKey, byId("adminToken").value);
@@ -1100,7 +1124,7 @@ def dashboard_html() -> str:
           });
           byId("openNapcatWebuiButton").addEventListener("click", () => {
             const resultText = byId("controlResult").textContent;
-            fetch("/runtime/status", { cache: "no-store" })
+            fetch("/runtime/status", { cache: "no-store", headers: adminHeaders() })
               .then((response) => response.json())
               .then((data) => {
                 window.open(data.napcat.webui.url, "_blank");
@@ -1514,7 +1538,7 @@ def dashboard_html() -> str:
           loadDashboard().catch((error) => { byId("refreshState").textContent = error.message; });
           setInterval(() => loadDashboard().catch((error) => {
             byId("refreshState").textContent = error.message;
-          }), 3000);
+          }), 5000);
         </script>
       </body>
     </html>

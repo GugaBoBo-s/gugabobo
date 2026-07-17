@@ -7,6 +7,7 @@ from gugabobo.core.identity import IdentityService
 from gugabobo.core.lifecycle import LifecycleError, PullRequestLifecycleService
 from gugabobo.core.persona import Persona
 from gugabobo.core.router import Router
+from gugabobo.core.tools import ToolContext, ToolRegistry
 from gugabobo.config import Settings, get_settings
 from gugabobo.infra.logs import get_logger
 from gugabobo.infra.tokens import estimate_message_tokens
@@ -42,6 +43,11 @@ class CoreAgent:
         self.summarizer_skill = SummarizerSkill(self.chat_skill.llm_client)
         self.lifecycle_service = PullRequestLifecycleService(store)
         self.background_summarize = False
+        # Tool-calling registry. Off by default so tests and any caller that
+        # wants the plain one-shot chat path are unaffected; long-running entry
+        # points (Telegram/QQ polling via build_agent) opt in.
+        self.tool_registry = ToolRegistry()
+        self.enable_tools = False
 
     def handle_message(
         self,
@@ -132,11 +138,29 @@ class CoreAgent:
                 if outbound_reply is not None:
                     response = outbound_reply
                 else:
+                    tool_specs = None
+                    tool_dispatch = None
+                    # Images take the plain multimodal path; tool-calling is
+                    # text-only for now. Tools also need the LLM client to
+                    # support the message-level API (function calling).
+                    if self.enable_tools and not images:
+                        tool_specs = self.tool_registry.specs_for(access_role)
+                        tool_context = ToolContext(
+                            store=self.store,
+                            conversation_id=context.conversation_id,
+                            access_role=access_role,
+                        )
+
+                        def tool_dispatch(name: str, arguments: str) -> str:
+                            return self.tool_registry.dispatch(name, arguments, tool_context)
+
                     response = self.chat_skill.reply(
                         text,
                         history=llm_history,
                         system_context=system_context,
                         images=images,
+                        tool_specs=tool_specs,
+                        dispatch=tool_dispatch,
                     )
         self.store.add_message(
             source=context.source,
