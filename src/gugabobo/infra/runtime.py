@@ -19,6 +19,7 @@ def build_agent(background_summarize: bool = True) -> CoreAgent:
     store = MemoryStore(settings.db_path)
     agent = CoreAgent(store)
     agent.background_summarize = background_summarize
+    agent.enable_tools = True
     return agent
 
 

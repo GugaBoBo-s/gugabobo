@@ -12,6 +12,10 @@ from gugabobo.core.persona import Persona
 class LLMResult:
     content: str
     model: str
+    # Raw OpenAI-format assistant message (present when the model asked to call
+    # tools). None on a plain text answer. The tool loop appends this verbatim.
+    message: dict[str, object] | None = None
+    tool_calls: list[dict[str, object]] | None = None
 
 
 def _build_user_content(text: str, images: list[str]) -> object:
@@ -83,6 +87,62 @@ class OpenAICompatibleClient:
             data = response.json()
         return str(data["choices"][0]["message"]["content"]).strip()
 
+    def build_messages(
+        self,
+        text: str,
+        persona: Persona,
+        history: list[dict[str, str]],
+        system_context: list[str],
+        images: list[str],
+    ) -> list[dict[str, object]]:
+        messages: list[dict[str, object]] = [
+            {"role": "system", "content": persona.system_summary()}
+        ]
+        for content in system_context:
+            if content.strip():
+                messages.append({"role": "system", "content": content})
+        messages.extend(history)
+        messages.append({"role": "user", "content": _build_user_content(text, images)})
+        return messages
+
+    def complete_messages(
+        self,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]] | None = None,
+        temperature: float = 0.7,
+    ) -> LLMResult:
+        # Low-level chat-completions call over a full message list. Supports the
+        # OpenAI `tools` param so callers can run a tool-calling loop; when the
+        # model wants to call tools, finish_reason is "tool_calls" and the raw
+        # assistant message (with tool_calls) is returned for the loop to append.
+        if not self.configured:
+            raise RuntimeError(f"{self.provider_name} API key is not configured")
+        url = f"{self.base_url.rstrip('/')}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload: dict[str, object] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        if tools:
+            payload["tools"] = tools
+        with httpx.Client(timeout=self.settings.llm_timeout_seconds) as client:
+            response = client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+        message = data["choices"][0]["message"]
+        content = message.get("content")
+        tool_calls = message.get("tool_calls")
+        return LLMResult(
+            content=str(content).strip() if content else "",
+            model=str(data.get("model", "")),
+            message=dict(message),
+            tool_calls=list(tool_calls) if tool_calls else None,
+        )
+
     def _post_chat_completion(
         self,
         text: str,
@@ -96,12 +156,7 @@ class OpenAICompatibleClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        messages = [{"role": "system", "content": persona.system_summary()}]
-        for content in system_context:
-            if content.strip():
-                messages.append({"role": "system", "content": content})
-        messages.extend(history)
-        messages.append({"role": "user", "content": _build_user_content(text, images)})
+        messages = self.build_messages(text, persona, history, system_context, images)
         payload = {
             "model": self.model,
             "messages": messages,
