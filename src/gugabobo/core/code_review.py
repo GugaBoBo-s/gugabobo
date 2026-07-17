@@ -5,6 +5,13 @@ from collections.abc import Callable
 from typing import Any
 
 from gugabobo.config import Settings, get_settings
+from gugabobo.core.run_control import (
+    ExecutionCancelled,
+    ExecutionLease,
+    ExecutionStopped,
+    execution_worker_id,
+    recover_stale_execution_containers,
+)
 from gugabobo.infra.github_client import GitHubClient
 from gugabobo.infra.code_models import CodeModelClient, build_code_model_router
 from gugabobo.infra.logs import get_logger
@@ -32,6 +39,7 @@ class OrganizationCodeReviewService:
         self.reviewer_login = ""
 
     def tick(self) -> dict[str, object]:
+        recover_stale_execution_containers(self.store, self.settings)
         result: dict[str, object] = {
             "status": "ok",
             "enabled": self.settings.github_review_enabled,
@@ -102,54 +110,84 @@ class OrganizationCodeReviewService:
             number,
             pr_url,
             head_sha,
+            worker_id=execution_worker_id(),
+            lease_seconds=self.settings.execution_lease_seconds,
         )
         if run is None:
             return "skipped"
         run_id = int(run["id"])
+        execution = ExecutionLease.from_claim(
+            self.store,
+            "code_review",
+            run_id,
+            {
+                "lease_token": run["execution_token"],
+                "container_name": run["container_name"],
+            },
+            self.settings.execution_lease_seconds,
+            self.settings.execution_heartbeat_seconds,
+        )
         marker = self._marker(head_sha)
         try:
-            existing_review = self._find_existing_review(github, number, head_sha, marker)
-            if existing_review is not None:
-                body = str(existing_review.get("body", ""))
+            with execution.keepalive():
+                existing_review = self._find_existing_review(github, number, head_sha, marker)
+                execution.ensure_active()
+                if existing_review is not None:
+                    body = str(existing_review.get("body", ""))
+                    self.store.complete_code_review(
+                        run_id,
+                        int(existing_review.get("id", 0)),
+                        str(existing_review.get("html_url", "")),
+                        self._count_findings(body),
+                        body,
+                        execution.token,
+                    )
+                    return "skipped"
+                files = github.list_pull_request_files(
+                    number,
+                    limit=self.settings.github_review_max_files,
+                )
+                execution.ensure_active()
+                review_content, batch_count = self._review_content(
+                    github,
+                    pull_request,
+                    files,
+                    execution,
+                )
+                body = self._review_body(
+                    head_sha,
+                    review_content,
+                    len(files),
+                    batch_count,
+                )
+                execution.ensure_active()
+                review = github.create_pull_request_review(number, body, head_sha)
                 self.store.complete_code_review(
                     run_id,
-                    int(existing_review.get("id", 0)),
-                    str(existing_review.get("html_url", "")),
+                    review.review_id,
+                    review.url,
                     self._count_findings(body),
                     body,
+                    execution.token,
                 )
+                self.logger.info(
+                    "organization code review submitted repo=%s/%s pr=%s sha=%s review=%s",
+                    github.owner,
+                    github.repo,
+                    number,
+                    head_sha[:12],
+                    review.review_id,
+                )
+                return "reviewed"
+        except ExecutionStopped as error:
+            if isinstance(error, ExecutionCancelled):
+                self.store.cancel_code_review(run_id, execution.token)
                 return "skipped"
-            files = github.list_pull_request_files(
-                number,
-                limit=self.settings.github_review_max_files,
-            )
-            review_content, batch_count = self._review_content(github, pull_request, files)
-            body = self._review_body(
-                head_sha,
-                review_content,
-                len(files),
-                batch_count,
-            )
-            review = github.create_pull_request_review(number, body, head_sha)
-            self.store.complete_code_review(
-                run_id,
-                review.review_id,
-                review.url,
-                self._count_findings(body),
-                body,
-            )
-            self.logger.info(
-                "organization code review submitted repo=%s/%s pr=%s sha=%s review=%s",
-                github.owner,
-                github.repo,
-                number,
-                head_sha[:12],
-                review.review_id,
-            )
-            return "reviewed"
+            self.store.fail_code_review(run_id, self._error(error), execution.token)
+            return "errors"
         except Exception as error:
             error_text = self._error(error)
-            self.store.fail_code_review(run_id, error_text)
+            self.store.fail_code_review(run_id, error_text, execution.token)
             self.logger.error(
                 "organization code review failed repo=%s/%s pr=%s sha=%s error=%s",
                 github.owner,
@@ -224,18 +262,24 @@ class OrganizationCodeReviewService:
         github: GitHubClient,
         pull_request: dict,
         files: list[dict],
+        execution: ExecutionLease | None = None,
     ) -> tuple[str, int]:
         batches = self._file_batches(files)
-        reviews = [
-            self.llm.complete(
-                self._messages(github, pull_request, diff, index, len(batches)),
-                temperature=0.0,
+        reviews: list[str] = []
+        for index, diff in enumerate(batches, start=1):
+            if execution:
+                execution.ensure_active()
+            reviews.append(
+                self.llm.complete(
+                    self._messages(github, pull_request, diff, index, len(batches)),
+                    temperature=0.0,
+                )
             )
-            for index, diff in enumerate(batches, start=1)
-        ]
+            if execution:
+                execution.ensure_active()
         if len(reviews) == 1:
             return reviews[0], 1
-        return self._consolidate_reviews(reviews), len(batches)
+        return self._consolidate_reviews(reviews, execution), len(batches)
 
     def _file_batches(self, files: list[dict]) -> list[str]:
         max_chars = self.settings.github_review_max_patch_chars
@@ -268,7 +312,11 @@ class OrganizationCodeReviewService:
             batches.append(current)
         return batches
 
-    def _consolidate_reviews(self, reviews: list[str]) -> str:
+    def _consolidate_reviews(
+        self,
+        reviews: list[str],
+        execution: ExecutionLease | None = None,
+    ) -> str:
         current = [review.strip() for review in reviews if review.strip()]
         while len(current) > 1:
             groups: list[list[str]] = []
@@ -285,10 +333,16 @@ class OrganizationCodeReviewService:
                 groups.append(group)
             if len(groups) == len(current):
                 groups = [current[index : index + 2] for index in range(0, len(current), 2)]
-            current = [
-                self.llm.complete(self._consolidation_messages(group), temperature=0.0)
-                for group in groups
-            ]
+            consolidated: list[str] = []
+            for group in groups:
+                if execution:
+                    execution.ensure_active()
+                consolidated.append(
+                    self.llm.complete(self._consolidation_messages(group), temperature=0.0)
+                )
+                if execution:
+                    execution.ensure_active()
+            current = consolidated
         return current[0] if current else "No actionable findings were identified."
 
     def _consolidation_messages(self, reviews: list[str]) -> list[dict[str, str]]:

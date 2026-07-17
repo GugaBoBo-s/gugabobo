@@ -377,6 +377,14 @@ def dashboard_html() -> str:
                   <button id="runImprovementButton" class="danger" type="button">运行隔离修改</button>
                   <button id="shipImprovementButton" class="danger" type="button">检查并提交 PR</button>
                   <button id="openProposalPrButton" class="danger" type="button">仅创建提案 PR</button>
+                  <select id="executionType">
+                    <option value="improvement">improvement</option>
+                    <option value="github_issue">github_issue</option>
+                    <option value="code_review">code_review</option>
+                  </select>
+                  <input id="executionId" type="number" min="1" placeholder="运行记录 ID">
+                  <button id="cancelExecutionButton" class="danger" type="button">取消运行</button>
+                  <button id="retryExecutionButton" class="danger" type="button">允许重试</button>
                   <input id="pullRequestId" type="number" min="1" placeholder="PR 记录 ID">
                   <button id="syncPullRequestButton" type="button">同步 PR 状态</button>
                   <button id="approvePullRequestButton" class="danger" type="button">批准自动合并</button>
@@ -541,6 +549,15 @@ def dashboard_html() -> str:
                   <tr><th style="width: 54px;">ID</th><th>仓库 / Issue</th><th style="width: 100px;">状态</th><th style="width: 90px;">价值</th><th style="width: 80px;">置信度</th><th style="width: 150px;">模型</th><th>判断</th><th style="width: 70px;">改进</th><th style="width: 70px;">PR</th><th>错误</th><th style="width: 150px;">时间</th></tr>
                 </thead>
                 <tbody id="githubIssueRuns"></tbody>
+              </table>
+            </section>
+            <section>
+              <h2>运行控制</h2>
+              <table>
+                <thead>
+                  <tr><th>类型 / ID</th><th style="width: 120px;">状态</th><th style="width: 70px;">尝试</th><th>Worker</th><th style="width: 160px;">心跳</th><th style="width: 160px;">租约到期</th><th>容器</th><th>错误</th><th style="width: 150px;">操作</th></tr>
+                </thead>
+                <tbody id="executionRuns"></tbody>
               </table>
             </section>
             <section>
@@ -955,6 +972,17 @@ def dashboard_html() -> str:
               esc(item.last_error),
               `<span class="muted">${esc(item.completed_at || item.updated_at)}</span>`
             ])).join("");
+            byId("executionRuns").innerHTML = data.execution_runs.map((item) => row([
+              `${esc(item.run_type)} #${esc(item.run_id)}`,
+              esc(item.status),
+              esc(item.attempt_count),
+              `<span class="muted">${esc(item.worker_id || "-")}</span>`,
+              `<span class="muted">${esc(item.heartbeat_at)}</span>`,
+              `<span class="muted">${esc(item.lease_expires_at)}</span>`,
+              `<span class="muted">${esc(item.container_name || "-")}</span>`,
+              esc(item.last_error),
+              `<button type="button" class="select-execution" data-run-type="${esc(item.run_type)}" data-run-id="${esc(item.run_id)}">选择</button>`
+            ])).join("");
             byId("mergeAuthorizations").innerHTML = data.merge_authorizations.map((item) => row([
               esc(item.pull_request_id),
               esc(item.decision),
@@ -1299,6 +1327,40 @@ def dashboard_html() -> str:
               byId("pullRequestId").value = data.pull_request_id;
             }).catch((error) => showControlResult(error.message));
           });
+          byId("cancelExecutionButton").addEventListener("click", () => {
+            const runType = byId("executionType").value;
+            const runId = byId("executionId").value;
+            if (!runId) {
+              showControlResult("missing execution id");
+              return;
+            }
+            const confirmation = requireConfirmText("CANCEL", `取消 ${runType} #${runId}`);
+            if (!confirmation) {
+              return;
+            }
+            controlFetch(`/executions/${runType}/${runId}/cancel`, {
+              method: "POST",
+              headers: adminHeaders(),
+              body: JSON.stringify(confirmation)
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("retryExecutionButton").addEventListener("click", () => {
+            const runType = byId("executionType").value;
+            const runId = byId("executionId").value;
+            if (!runId) {
+              showControlResult("missing execution id");
+              return;
+            }
+            const confirmation = requireConfirmText("RETRY", `重试 ${runType} #${runId}`);
+            if (!confirmation) {
+              return;
+            }
+            controlFetch(`/executions/${runType}/${runId}/retry`, {
+              method: "POST",
+              headers: adminHeaders(),
+              body: JSON.stringify(confirmation)
+            }).catch((error) => showControlResult(error.message));
+          });
           byId("syncPullRequestButton").addEventListener("click", () => {
             const pullRequestId = byId("pullRequestId").value;
             if (!pullRequestId) {
@@ -1409,6 +1471,13 @@ def dashboard_html() -> str:
               return;
             }
             byId("pullRequestId").value = rowElement.firstElementChild.textContent;
+          });
+          byId("executionRuns").addEventListener("click", (event) => {
+            if (!event.target.classList.contains("select-execution")) {
+              return;
+            }
+            byId("executionType").value = event.target.dataset.runType;
+            byId("executionId").value = event.target.dataset.runId;
           });
           byId("summaries").addEventListener("click", (event) => {
             if (!event.target.classList.contains("edit-summary")) {

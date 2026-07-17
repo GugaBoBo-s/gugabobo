@@ -8,7 +8,17 @@ from uuid import uuid4
 
 from gugabobo.config import get_settings
 from gugabobo.core.notifications import OwnerNotifier
+from gugabobo.core.run_control import (
+    ExecutionCancelled,
+    ExecutionLease,
+    ExecutionLeaseLost,
+    ExecutionMonitorGroup,
+    ExecutionStopped,
+    execution_worker_id,
+    recover_stale_execution_containers,
+)
 from gugabobo.infra.code_runner import CodeRunner, build_code_runner
+from gugabobo.infra.container_runtime import ContainerRuntime
 from gugabobo.infra.github_client import GitHubClient, PullRequestResult
 from gugabobo.infra.redaction import redact_sensitive
 from gugabobo.infra.sandbox import SandboxManager
@@ -248,56 +258,91 @@ class ImprovementService:
         source_repo: Path | None = None,
         actor_source: str = "cli",
         actor_user_id: str = "local",
+        parent_execution: ExecutionLease | None = None,
     ) -> RunOutcome:
         improvement = self.store.get_improvement_task(improvement_id)
         if not improvement:
             raise ImprovementError(f"improvement task #{improvement_id} not found")
         if improvement["approval_status"] != "approved":
             raise ImprovementError("improvement task must be approved before running")
-        runner = runner or build_code_runner()
-        sandbox = sandbox or SandboxManager()
-        if not runner.configured:
-            raise ImprovementError("isolated code runner is not available")
         task = self.store.get_task(int(improvement["task_id"]))
         branch_name = self._branch_name(improvement_id, improvement)
-        self.store.update_improvement_task(improvement_id, runner_status="running")
-        try:
-            path = sandbox.prepare(
+        execution, monitor = self._begin_execution(improvement_id, parent_execution)
+        settings = get_settings()
+        runner = runner or build_code_runner(settings, monitor)
+        sandbox = sandbox or SandboxManager(
+            settings,
+            ContainerRuntime(settings, monitor),
+        )
+        if not runner.configured:
+            self.store.finish_improvement_run(
                 improvement_id,
-                source_repo or Path.cwd(),
+                execution.token,
+                "failed",
+                "failed",
+                "isolated code runner is not available",
+            )
+            raise ImprovementError("isolated code runner is not available")
+        try:
+            with execution.keepalive():
+                monitor.ensure_active()
+                path = sandbox.prepare(
+                    improvement_id,
+                    source_repo or Path.cwd(),
+                    branch_name,
+                )
+                monitor.ensure_active()
+                result = runner.run(self._build_prompt(improvement, task), cwd=path)
+                monitor.ensure_active()
+                if result.cancelled:
+                    raise ExecutionCancelled(f"improvement #{improvement_id} was cancelled")
+                if not result.ok:
+                    raise ImprovementError(result.error or "code runner failed")
+                diff = sandbox.collect_diff(path)
+                monitor.ensure_active()
+                if not diff.strip():
+                    self.store.finish_improvement_run(
+                        improvement_id,
+                        execution.token,
+                        "no_changes",
+                    )
+                    self._audit_run(actor_source, actor_user_id, improvement_id, "no_changes", "")
+                    return RunOutcome(status="no_changes", branch_name=branch_name)
+                self.store.update_improvement_task(improvement_id, branch_name=branch_name)
+                self.store.finish_improvement_run(
+                    improvement_id,
+                    execution.token,
+                    "changes_ready",
+                )
+                self._audit_run(
+                    actor_source,
+                    actor_user_id,
+                    improvement_id,
+                    "changes_ready",
+                    f"diff {len(diff)} chars",
+                )
+                return RunOutcome(status="changes_ready", branch_name=branch_name, diff=diff)
+        except ExecutionStopped as error:
+            return self._stopped_outcome(
+                improvement_id,
+                execution,
+                sandbox,
                 branch_name,
+                error,
+                actor_source,
+                actor_user_id,
             )
         except Exception as error:
-            self.store.update_improvement_task(improvement_id, runner_status="failed")
-            raise ImprovementError(f"sandbox preparation failed: {error}") from error
-        prompt = self._build_prompt(improvement, task)
-        try:
-            result = runner.run(prompt, cwd=path)
-            if not result.ok:
-                raise ImprovementError(result.error or "code runner failed")
-            diff = sandbox.collect_diff(path)
-        except Exception as error:
-            self.store.update_improvement_task(improvement_id, runner_status="failed")
             detail = self._safe_error(error)
+            self.store.finish_improvement_run(
+                improvement_id,
+                execution.token,
+                "failed",
+                "failed",
+                detail,
+            )
             self._audit_run(actor_source, actor_user_id, improvement_id, "failed", detail)
             return RunOutcome(status="failed", branch_name=branch_name, detail=detail[:500])
-        if not diff.strip():
-            self.store.update_improvement_task(improvement_id, runner_status="no_changes")
-            self._audit_run(actor_source, actor_user_id, improvement_id, "no_changes", "")
-            return RunOutcome(status="no_changes", branch_name=branch_name)
-        self.store.update_improvement_task(
-            improvement_id,
-            runner_status="changes_ready",
-            branch_name=branch_name,
-        )
-        self._audit_run(
-            actor_source,
-            actor_user_id,
-            improvement_id,
-            "changes_ready",
-            f"diff {len(diff)} chars",
-        )
-        return RunOutcome(status="changes_ready", branch_name=branch_name, diff=diff)
 
     def run_and_open_pull_request(
         self,
@@ -308,6 +353,7 @@ class ImprovementService:
         clone_remote: bool = False,
         actor_source: str = "cli",
         actor_user_id: str = "local",
+        parent_execution: ExecutionLease | None = None,
     ) -> RunOutcome:
         improvement = self.store.get_improvement_task(improvement_id)
         if not improvement:
@@ -349,118 +395,142 @@ class ImprovementService:
                 pr_number=recovered.number,
                 pr_url=recovered.url,
             )
-        runner = runner or build_code_runner()
-        sandbox = sandbox or SandboxManager()
-        if not runner.configured:
-            raise ImprovementError("isolated code runner is not available")
-        self.store.update_improvement_task(
-            improvement_id,
-            runner_status="running",
-            branch_name=branch_name,
+        execution, monitor = self._begin_execution(improvement_id, parent_execution)
+        settings = get_settings()
+        runner = runner or build_code_runner(settings, monitor)
+        sandbox = sandbox or SandboxManager(
+            settings,
+            ContainerRuntime(settings, monitor),
         )
-        try:
-            if clone_remote:
-                path = sandbox.prepare_remote(
-                    improvement_id,
-                    self.github.push_url,
-                    branch_name,
-                    self.github.token,
-                )
-            else:
-                path = sandbox.prepare(improvement_id, source_repo or Path.cwd(), branch_name)
-        except Exception as error:
-            self.store.update_improvement_task(improvement_id, runner_status="failed")
-            raise ImprovementError(f"sandbox preparation failed: {error}") from error
-        try:
-            result = runner.run(self._build_prompt(improvement, task), cwd=path)
-            if not result.ok:
-                raise ImprovementError(result.error or "code runner failed")
-            diff = sandbox.collect_diff(path)
-        except Exception as error:
-            self.store.update_improvement_task(improvement_id, runner_status="failed")
-            detail = self._safe_error(error)
-            self._audit_run(actor_source, actor_user_id, improvement_id, "failed", detail)
-            return RunOutcome(status="failed", branch_name=branch_name, detail=detail[:500])
-        if not diff.strip():
-            self.store.update_improvement_task(improvement_id, runner_status="no_changes")
-            self._audit_run(actor_source, actor_user_id, improvement_id, "no_changes", "")
-            return RunOutcome(status="no_changes", branch_name=branch_name)
-        try:
-            checks = sandbox.run_checks(path)
-        except Exception as error:
-            self.store.update_improvement_task(improvement_id, runner_status="failed")
-            detail = self._safe_error(error)
-            self._audit_run(actor_source, actor_user_id, improvement_id, "failed", detail)
-            return RunOutcome(status="failed", branch_name=branch_name, diff=diff, detail=detail)
-        if not checks.passed:
-            self.store.update_improvement_task(
+        if not runner.configured:
+            self.store.finish_improvement_run(
                 improvement_id,
-                runner_status="checks_failed",
-                branch_name=branch_name,
+                execution.token,
+                "failed",
+                "failed",
+                "isolated code runner is not available",
             )
-            self._audit_run(
-                actor_source,
-                actor_user_id,
-                improvement_id,
-                "checks_failed",
-                checks.output[-500:],
-            )
-            return RunOutcome(
-                status="checks_failed",
-                branch_name=branch_name,
-                diff=diff,
-                detail=checks.output[-2000:],
-            )
+            raise ImprovementError("isolated code runner is not available")
+        self.store.update_improvement_task(improvement_id, branch_name=branch_name)
         try:
-            sandbox.commit_all(path, f"feat(improvement): implement #{improvement_id}")
-            sandbox.push_branch(path, self.github.push_url, branch_name, self.github.token)
-            pull_request = self.github.create_pull_request(
-                title=title,
-                head=branch_name,
-                base=base_branch,
-                body=proposal,
-            )
-        except Exception as error:
-            remote = self.github.find_pull_request_by_head(branch_name)
-            if remote:
-                recovered = self._persist_pull_request(
-                    improvement_id,
-                    self._pull_request_result(remote, branch_name),
-                    title,
-                    actor_source,
-                    actor_user_id,
-                )
+            with execution.keepalive():
+                monitor.ensure_active()
+                if clone_remote:
+                    path = sandbox.prepare_remote(
+                        improvement_id,
+                        self.github.push_url,
+                        branch_name,
+                        self.github.token,
+                    )
+                else:
+                    path = sandbox.prepare(
+                        improvement_id,
+                        source_repo or Path.cwd(),
+                        branch_name,
+                    )
+                monitor.ensure_active()
+                result = runner.run(self._build_prompt(improvement, task), cwd=path)
+                monitor.ensure_active()
+                if result.cancelled:
+                    raise ExecutionCancelled(f"improvement #{improvement_id} was cancelled")
+                if not result.ok:
+                    raise ImprovementError(result.error or "code runner failed")
+                diff = sandbox.collect_diff(path)
+                monitor.ensure_active()
+                if not diff.strip():
+                    self.store.finish_improvement_run(
+                        improvement_id,
+                        execution.token,
+                        "no_changes",
+                    )
+                    self._audit_run(actor_source, actor_user_id, improvement_id, "no_changes", "")
+                    return RunOutcome(status="no_changes", branch_name=branch_name)
+                checks = sandbox.run_checks(path)
+                monitor.ensure_active()
+                if checks.cancelled:
+                    raise ExecutionCancelled(f"improvement #{improvement_id} was cancelled")
+                if not checks.passed:
+                    self.store.finish_improvement_run(
+                        improvement_id,
+                        execution.token,
+                        "checks_failed",
+                        "failed",
+                        checks.output[-1000:],
+                    )
+                    self._audit_run(
+                        actor_source,
+                        actor_user_id,
+                        improvement_id,
+                        "checks_failed",
+                        checks.output[-500:],
+                    )
+                    return RunOutcome(
+                        status="checks_failed",
+                        branch_name=branch_name,
+                        diff=diff,
+                        detail=checks.output[-2000:],
+                    )
+                sandbox.commit_all(path, f"feat(improvement): implement #{improvement_id}")
+                monitor.ensure_active()
+                sandbox.push_branch(path, self.github.push_url, branch_name, self.github.token)
+                monitor.ensure_active()
+                try:
+                    pull_request = self.github.create_pull_request(
+                        title=title,
+                        head=branch_name,
+                        base=base_branch,
+                        body=proposal,
+                    )
+                except Exception:
+                    remote = self.github.find_pull_request_by_head(branch_name)
+                    if not remote:
+                        raise
+                    opened = self._persist_pull_request(
+                        improvement_id,
+                        self._pull_request_result(remote, branch_name),
+                        title,
+                        actor_source,
+                        actor_user_id,
+                        execution.token,
+                    )
+                else:
+                    opened = self._persist_pull_request(
+                        improvement_id,
+                        pull_request,
+                        title,
+                        actor_source,
+                        actor_user_id,
+                        execution.token,
+                    )
                 sandbox.cleanup(improvement_id)
                 return RunOutcome(
-                    status=f"pr_{recovered.status}",
-                    branch_name=recovered.branch_name,
+                    status=f"pr_{opened.status}",
+                    branch_name=opened.branch_name,
                     diff=diff,
-                    pr_number=recovered.number,
-                    pr_url=recovered.url,
+                    pr_number=opened.number,
+                    pr_url=opened.url,
                 )
-            self.store.update_improvement_task(
+        except ExecutionStopped as error:
+            return self._stopped_outcome(
                 improvement_id,
-                runner_status="failed",
-                branch_name=branch_name,
+                execution,
+                sandbox,
+                branch_name,
+                error,
+                actor_source,
+                actor_user_id,
             )
+        except Exception as error:
             detail = self._safe_error(error)
+            self.store.finish_improvement_run(
+                improvement_id,
+                execution.token,
+                "failed",
+                "failed",
+                detail,
+            )
             self._audit_run(actor_source, actor_user_id, improvement_id, "failed", detail)
-            return RunOutcome(status="failed", branch_name=branch_name, diff=diff, detail=detail)
-        opened = self._persist_pull_request(
-            improvement_id,
-            pull_request,
-            title,
-            actor_source,
-            actor_user_id,
-        )
-        sandbox.cleanup(improvement_id)
-        return RunOutcome(
-            status=f"pr_{opened.status}",
-            branch_name=opened.branch_name,
-            diff=diff,
-            pr_number=opened.number,
-            pr_url=opened.url,
-        )
+            return RunOutcome(status="failed", branch_name=branch_name, detail=detail)
 
     def sync_pull_request(
         self,
@@ -509,6 +579,68 @@ class ImprovementService:
             checks_status=checks_status,
             merged_at=str(merged_at or ""),
         )
+
+    def _begin_execution(
+        self,
+        improvement_id: int,
+        parent_execution: ExecutionLease | None,
+    ) -> tuple[ExecutionLease, ExecutionMonitorGroup]:
+        settings = get_settings()
+        recover_stale_execution_containers(self.store, settings)
+        claim = self.store.claim_improvement_run(
+            improvement_id,
+            execution_worker_id(),
+            settings.execution_lease_seconds,
+        )
+        if claim is None:
+            state = self.store.get_execution_run("improvement", improvement_id) or {}
+            status = str(state.get("status", "unavailable"))
+            raise ImprovementError(
+                f"improvement task #{improvement_id} cannot start while execution is {status}"
+            )
+        execution = ExecutionLease.from_claim(
+            self.store,
+            "improvement",
+            improvement_id,
+            claim,
+            settings.execution_lease_seconds,
+            settings.execution_heartbeat_seconds,
+        )
+        leases = (execution, parent_execution) if parent_execution else (execution,)
+        return execution, ExecutionMonitorGroup(leases)
+
+    def _stopped_outcome(
+        self,
+        improvement_id: int,
+        execution: ExecutionLease,
+        sandbox: SandboxManager,
+        branch_name: str,
+        error: ExecutionStopped,
+        actor_source: str,
+        actor_user_id: str,
+    ) -> RunOutcome:
+        detail = self._safe_error(error)
+        if isinstance(error, ExecutionCancelled):
+            status = "cancelled"
+            self.store.finish_improvement_run(
+                improvement_id,
+                execution.token,
+                status,
+                status,
+                detail,
+            )
+            sandbox.cleanup(improvement_id)
+        else:
+            status = "failed"
+            self.store.finish_improvement_run(
+                improvement_id,
+                execution.token,
+                status,
+                status,
+                detail,
+            )
+        self._audit_run(actor_source, actor_user_id, improvement_id, status, detail)
+        return RunOutcome(status=status, branch_name=branch_name, detail=detail[:500])
 
     def _recover_pull_request(
         self,
@@ -565,6 +697,7 @@ class ImprovementService:
         title: str,
         actor_source: str,
         actor_user_id: str,
+        execution_token: str = "",
     ) -> PullRequestOpened:
         existing = self.store.get_pull_request_for_improvement(improvement_id)
         pull_request_id = self.store.add_pull_request(
@@ -577,11 +710,7 @@ class ImprovementService:
             status=pull_request.status,
         )
         runner_status = f"pr_{pull_request.status}"
-        self.store.update_improvement_task(
-            improvement_id,
-            runner_status=runner_status,
-            branch_name=pull_request.branch_name,
-        )
+        self.store.update_improvement_task(improvement_id, branch_name=pull_request.branch_name)
         self.store.update_pull_request(
             pull_request_id,
             status=pull_request.status,
@@ -605,6 +734,20 @@ class ImprovementService:
                 title,
                 self.github.owner,
                 self.github.repo,
+            )
+        if execution_token:
+            if not self.store.finish_improvement_run(
+                improvement_id,
+                execution_token,
+                runner_status,
+            ):
+                raise ExecutionLeaseLost(
+                    f"improvement #{improvement_id} lease was lost before persistence"
+                )
+        else:
+            self.store.update_improvement_task(
+                improvement_id,
+                runner_status=runner_status,
             )
         return PullRequestOpened(
             pull_request_id=pull_request_id,

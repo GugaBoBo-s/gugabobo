@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -202,6 +203,28 @@ CREATE TABLE IF NOT EXISTS github_issue_runs (
 
 CREATE INDEX IF NOT EXISTS idx_github_issue_runs_status_updated
 ON github_issue_runs(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS execution_runs (
+    run_type TEXT NOT NULL,
+    run_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    lease_token TEXT NOT NULL DEFAULT '',
+    worker_id TEXT NOT NULL DEFAULT '',
+    container_name TEXT NOT NULL DEFAULT '',
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    heartbeat_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    lease_expires_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    cancel_requested_at TEXT NOT NULL DEFAULT '',
+    completed_at TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(run_type, run_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_execution_runs_status_lease
+ON execution_runs(status, lease_expires_at);
 
 CREATE TABLE IF NOT EXISTS merge_authorizations (
     pull_request_id INTEGER PRIMARY KEY,
@@ -1105,6 +1128,262 @@ class MemoryStore:
             )
             return cursor.rowcount > 0
 
+    def _recover_stale_executions(
+        self,
+        conn: sqlite3.Connection,
+    ) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            "SELECT run_type, run_id, status, container_name FROM execution_runs WHERE "
+            "status IN ('running', 'cancel_requested') AND "
+            "lease_expires_at <= CURRENT_TIMESTAMP"
+        ).fetchall()
+        for row in rows:
+            status = "cancelled" if row["status"] == "cancel_requested" else "stale"
+            conn.execute(
+                "UPDATE execution_runs SET status = ?, lease_token = '', worker_id = '', "
+                "completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE "
+                "run_type = ? AND run_id = ?",
+                (status, row["run_type"], row["run_id"]),
+            )
+            self._set_domain_execution_status(
+                conn,
+                str(row["run_type"]),
+                int(row["run_id"]),
+                status,
+            )
+        return [dict(row) for row in rows]
+
+    def recover_stale_executions(self) -> int:
+        return len(self.recover_stale_execution_records())
+
+    def recover_stale_execution_records(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            return self._recover_stale_executions(conn)
+
+    def _set_domain_execution_status(
+        self,
+        conn: sqlite3.Connection,
+        run_type: str,
+        run_id: int,
+        status: str,
+    ) -> None:
+        targets = {
+            "code_review": ("code_review_runs", "status"),
+            "github_issue": ("github_issue_runs", "status"),
+            "improvement": ("improvement_tasks", "runner_status"),
+        }
+        target = targets.get(run_type)
+        if target is None:
+            return
+        table, column = target
+        conn.execute(
+            f"UPDATE {table} SET {column} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (status, run_id),
+        )
+
+    def _claim_execution(
+        self,
+        conn: sqlite3.Connection,
+        run_type: str,
+        run_id: int,
+        worker_id: str,
+        lease_seconds: int,
+        allow_completed: bool = False,
+    ) -> dict[str, Any] | None:
+        self._recover_stale_executions(conn)
+        row = conn.execute(
+            "SELECT * FROM execution_runs WHERE run_type = ? AND run_id = ?",
+            (run_type, run_id),
+        ).fetchone()
+        token = secrets.token_hex(16)
+        container_name = f"gugabobo-{run_type.replace('_', '-')}-{run_id}-{token[:8]}"
+        lease_modifier = f"+{lease_seconds} seconds"
+        if row is None:
+            conn.execute(
+                "INSERT INTO execution_runs "
+                "(run_type, run_id, lease_token, worker_id, container_name, lease_expires_at) "
+                "VALUES (?, ?, ?, ?, ?, datetime('now', ?))",
+                (run_type, run_id, token, worker_id, container_name, lease_modifier),
+            )
+        else:
+            status = str(row["status"])
+            claimable = {"failed", "retry_requested", "stale"}
+            if allow_completed:
+                claimable.add("completed")
+            if status not in claimable:
+                return None
+            conn.execute(
+                "UPDATE execution_runs SET status = 'running', lease_token = ?, worker_id = ?, "
+                "container_name = ?, attempt_count = attempt_count + 1, "
+                "started_at = CURRENT_TIMESTAMP, heartbeat_at = CURRENT_TIMESTAMP, "
+                "lease_expires_at = datetime('now', ?), cancel_requested_at = '', "
+                "completed_at = '', last_error = '', updated_at = CURRENT_TIMESTAMP "
+                "WHERE run_type = ? AND run_id = ?",
+                (token, worker_id, container_name, lease_modifier, run_type, run_id),
+            )
+        claimed = conn.execute(
+            "SELECT * FROM execution_runs WHERE run_type = ? AND run_id = ?",
+            (run_type, run_id),
+        ).fetchone()
+        return dict(claimed) if claimed else None
+
+    def claim_improvement_run(
+        self,
+        improvement_id: int,
+        worker_id: str,
+        lease_seconds: int,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            improvement = conn.execute(
+                "SELECT id FROM improvement_tasks WHERE id = ?",
+                (improvement_id,),
+            ).fetchone()
+            if improvement is None:
+                return None
+            claimed = self._claim_execution(
+                conn,
+                "improvement",
+                improvement_id,
+                worker_id,
+                lease_seconds,
+                allow_completed=True,
+            )
+            if claimed is None:
+                return None
+            conn.execute(
+                "UPDATE improvement_tasks SET runner_status = 'running', "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (improvement_id,),
+            )
+            return claimed
+
+    def heartbeat_execution(
+        self,
+        run_type: str,
+        run_id: int,
+        lease_token: str,
+        lease_seconds: int,
+    ) -> bool:
+        lease_modifier = f"+{lease_seconds} seconds"
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE execution_runs SET heartbeat_at = CURRENT_TIMESTAMP, "
+                "lease_expires_at = datetime('now', ?), updated_at = CURRENT_TIMESTAMP "
+                "WHERE run_type = ? AND run_id = ? AND lease_token = ? AND status = 'running' "
+                "AND lease_expires_at > CURRENT_TIMESTAMP",
+                (lease_modifier, run_type, run_id, lease_token),
+            )
+            return cursor.rowcount > 0
+
+    def get_execution_run(self, run_type: str, run_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM execution_runs WHERE run_type = ? AND run_id = ?",
+                (run_type, run_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_execution_runs(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT run_type, run_id, status, worker_id, container_name, attempt_count, "
+                "started_at, heartbeat_at, lease_expires_at, cancel_requested_at, completed_at, "
+                "last_error, created_at, updated_at FROM execution_runs "
+                "ORDER BY updated_at DESC, run_type, run_id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def request_execution_cancel(self, run_type: str, run_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._recover_stale_executions(conn)
+            cursor = conn.execute(
+                "UPDATE execution_runs SET status = 'cancel_requested', "
+                "cancel_requested_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP "
+                "WHERE run_type = ? AND run_id = ? AND status = 'running'",
+                (run_type, run_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+            self._set_domain_execution_status(conn, run_type, run_id, "cancel_requested")
+            row = conn.execute(
+                "SELECT * FROM execution_runs WHERE run_type = ? AND run_id = ?",
+                (run_type, run_id),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def request_execution_retry(self, run_type: str, run_id: int) -> bool:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._recover_stale_executions(conn)
+            cursor = conn.execute(
+                "UPDATE execution_runs SET status = 'retry_requested', lease_token = '', "
+                "worker_id = '', container_name = '', cancel_requested_at = '', "
+                "completed_at = '', last_error = '', updated_at = CURRENT_TIMESTAMP "
+                "WHERE run_type = ? AND run_id = ? AND status IN ('failed', 'cancelled', 'stale')",
+                (run_type, run_id),
+            )
+            if cursor.rowcount == 0:
+                return False
+            self._set_domain_execution_status(conn, run_type, run_id, "retry_requested")
+            return True
+
+    def _finish_execution(
+        self,
+        conn: sqlite3.Connection,
+        run_type: str,
+        run_id: int,
+        lease_token: str,
+        status: str,
+        error: str = "",
+    ) -> str | None:
+        row = conn.execute(
+            "SELECT status FROM execution_runs WHERE run_type = ? AND run_id = ? "
+            "AND lease_token = ? AND lease_expires_at > CURRENT_TIMESTAMP",
+            (run_type, run_id, lease_token),
+        ).fetchone()
+        if row is None or row["status"] not in {"running", "cancel_requested"}:
+            return None
+        final_status = "cancelled" if row["status"] == "cancel_requested" else status
+        conn.execute(
+            "UPDATE execution_runs SET status = ?, lease_token = '', worker_id = '', "
+            "last_error = ?, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP "
+            "WHERE run_type = ? AND run_id = ?",
+            (final_status, error[:1000], run_type, run_id),
+        )
+        return final_status
+
+    def finish_improvement_run(
+        self,
+        improvement_id: int,
+        lease_token: str,
+        runner_status: str,
+        execution_status: str = "completed",
+        error: str = "",
+    ) -> bool:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            final_status = self._finish_execution(
+                conn,
+                "improvement",
+                improvement_id,
+                lease_token,
+                execution_status,
+                error,
+            )
+            if final_status is None:
+                return False
+            domain_status = "cancelled" if final_status == "cancelled" else runner_status
+            cursor = conn.execute(
+                "UPDATE improvement_tasks SET runner_status = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ?",
+                (domain_status, improvement_id),
+            )
+            return cursor.rowcount > 0
+
     def add_improvement_task(
         self,
         task_id: int,
@@ -1377,11 +1656,14 @@ class MemoryStore:
         pr_number: int,
         pr_url: str,
         head_sha: str,
+        worker_id: str = "local",
+        lease_seconds: int = 120,
     ) -> dict[str, Any] | None:
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            self._recover_stale_executions(conn)
             row = conn.execute(
-                "SELECT id, status FROM code_review_runs WHERE github_owner = ? "
+                "SELECT * FROM code_review_runs WHERE github_owner = ? "
                 "AND github_repo = ? AND pr_number = ? AND head_sha = ?",
                 (github_owner, github_repo, pr_number, head_sha),
             ).fetchone()
@@ -1393,23 +1675,46 @@ class MemoryStore:
                     (github_owner, github_repo, pr_number, pr_url, head_sha),
                 )
                 review_id = int(cursor.lastrowid)
+                is_new = True
             else:
-                cursor = conn.execute(
+                review_id = int(row["id"])
+                execution = conn.execute(
+                    "SELECT status FROM execution_runs WHERE run_type = 'code_review' "
+                    "AND run_id = ?",
+                    (review_id,),
+                ).fetchone()
+                resumable = str(row["status"]) in {"failed", "retry_requested", "stale"}
+                if str(row["status"]) == "processing" and execution is None:
+                    resumable = True
+                if not resumable:
+                    return None
+                is_new = False
+            claimed_execution = self._claim_execution(
+                conn,
+                "code_review",
+                review_id,
+                worker_id,
+                lease_seconds,
+            )
+            if claimed_execution is None:
+                return None
+            if not is_new:
+                conn.execute(
                     "UPDATE code_review_runs SET status = 'processing', "
                     "attempt_count = attempt_count + 1, pr_url = ?, last_error = '', "
-                    "updated_at = CURRENT_TIMESTAMP WHERE id = ? AND "
-                    "(status = 'failed' OR (status = 'processing' AND "
-                    "updated_at < datetime('now', '-30 minutes')))",
-                    (pr_url, int(row["id"])),
+                    "completed_at = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (pr_url, review_id),
                 )
-                if cursor.rowcount == 0:
-                    return None
-                review_id = int(row["id"])
             claimed = conn.execute(
                 "SELECT * FROM code_review_runs WHERE id = ?",
                 (review_id,),
             ).fetchone()
-        return dict(claimed) if claimed else None
+        if claimed is None:
+            return None
+        result = dict(claimed)
+        result["execution_token"] = claimed_execution["lease_token"]
+        result["container_name"] = claimed_execution["container_name"]
+        return result
 
     def complete_code_review(
         self,
@@ -1418,23 +1723,84 @@ class MemoryStore:
         review_url: str,
         findings_count: int,
         summary: str,
+        execution_token: str = "",
     ) -> bool:
         with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            final_status = "completed"
+            if execution_token:
+                finished = self._finish_execution(
+                    conn,
+                    "code_review",
+                    code_review_id,
+                    execution_token,
+                    "completed",
+                )
+                if finished is None:
+                    return False
+                final_status = finished
             cursor = conn.execute(
-                "UPDATE code_review_runs SET status = 'completed', review_id = ?, "
+                "UPDATE code_review_runs SET status = ?, review_id = ?, "
                 "review_url = ?, findings_count = ?, summary = ?, last_error = '', "
                 "updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP "
                 "WHERE id = ?",
-                (review_id, review_url, findings_count, summary[:4000], code_review_id),
+                (
+                    final_status,
+                    review_id,
+                    review_url,
+                    findings_count,
+                    summary[:4000],
+                    code_review_id,
+                ),
             )
             return cursor.rowcount > 0
 
-    def fail_code_review(self, code_review_id: int, error: str) -> bool:
+    def fail_code_review(
+        self,
+        code_review_id: int,
+        error: str,
+        execution_token: str = "",
+    ) -> bool:
         with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            final_status = "failed"
+            if execution_token:
+                finished = self._finish_execution(
+                    conn,
+                    "code_review",
+                    code_review_id,
+                    execution_token,
+                    "failed",
+                    error,
+                )
+                if finished is None:
+                    return False
+                final_status = finished
             cursor = conn.execute(
-                "UPDATE code_review_runs SET status = 'failed', last_error = ?, "
+                "UPDATE code_review_runs SET status = ?, last_error = ?, "
                 "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (error[:1000], code_review_id),
+                (final_status, error[:1000], code_review_id),
+            )
+            return cursor.rowcount > 0
+
+    def cancel_code_review(self, code_review_id: int, execution_token: str) -> bool:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            finished = self._finish_execution(
+                conn,
+                "code_review",
+                code_review_id,
+                execution_token,
+                "cancelled",
+                "cancelled by owner",
+            )
+            if finished is None:
+                return False
+            cursor = conn.execute(
+                "UPDATE code_review_runs SET status = 'cancelled', "
+                "last_error = 'cancelled by owner', completed_at = CURRENT_TIMESTAMP, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (code_review_id,),
             )
             return cursor.rowcount > 0
 
@@ -1464,9 +1830,12 @@ class MemoryStore:
         title: str,
         body: str,
         resume_worthwhile: bool = False,
+        worker_id: str = "local",
+        lease_seconds: int = 120,
     ) -> dict[str, Any] | None:
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            self._recover_stale_executions(conn)
             row = conn.execute(
                 "SELECT * FROM github_issue_runs WHERE github_owner = ? "
                 "AND github_repo = ? AND issue_number = ? AND issue_updated_at = ?",
@@ -1488,27 +1857,54 @@ class MemoryStore:
                     ),
                 )
                 run_id = int(cursor.lastrowid)
+                is_new = True
+                allow_completed = False
             else:
                 resumable_statuses = ["failed"]
                 if resume_worthwhile:
                     resumable_statuses.append("worthwhile")
-                placeholders = ", ".join("?" for _ in resumable_statuses)
-                cursor = conn.execute(
+                resumable_statuses.extend(["retry_requested", "stale"])
+                run_id = int(row["id"])
+                execution = conn.execute(
+                    "SELECT status FROM execution_runs WHERE run_type = 'github_issue' "
+                    "AND run_id = ?",
+                    (run_id,),
+                ).fetchone()
+                resumable = str(row["status"]) in resumable_statuses
+                if str(row["status"]) == "processing" and execution is None:
+                    resumable = True
+                if not resumable:
+                    return None
+                is_new = False
+                allow_completed = str(row["status"]) == "worthwhile"
+            claimed_execution = self._claim_execution(
+                conn,
+                "github_issue",
+                run_id,
+                worker_id,
+                lease_seconds,
+                allow_completed=allow_completed,
+            )
+            if claimed_execution is None:
+                return None
+            if not is_new:
+                conn.execute(
                     "UPDATE github_issue_runs SET status = 'processing', "
                     "attempt_count = attempt_count + 1, issue_url = ?, title = ?, body = ?, "
-                    "last_error = '', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND "
-                    f"(status IN ({placeholders}) OR (status = 'processing' AND "
-                    "updated_at < datetime('now', '-30 minutes')))",
-                    (issue_url, title, body, int(row["id"]), *resumable_statuses),
+                    "last_error = '', completed_at = '', updated_at = CURRENT_TIMESTAMP "
+                    "WHERE id = ?",
+                    (issue_url, title, body, run_id),
                 )
-                if cursor.rowcount == 0:
-                    return None
-                run_id = int(row["id"])
             claimed = conn.execute(
                 "SELECT * FROM github_issue_runs WHERE id = ?",
                 (run_id,),
             ).fetchone()
-        return dict(claimed) if claimed else None
+        if claimed is None:
+            return None
+        result = dict(claimed)
+        result["execution_token"] = claimed_execution["lease_token"]
+        result["container_name"] = claimed_execution["container_name"]
+        return result
 
     def complete_github_issue_evaluation(
         self,
@@ -1520,29 +1916,65 @@ class MemoryStore:
         implementation_summary: str,
         provider: str,
         model: str,
+        execution_token: str = "",
     ) -> bool:
         with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            final_status = status
+            if execution_token and status != "processing":
+                finished = self._finish_execution(
+                    conn,
+                    "github_issue",
+                    run_id,
+                    execution_token,
+                    "completed",
+                )
+                if finished is None:
+                    return False
+                if finished == "cancelled":
+                    final_status = "cancelled"
+            elif execution_token:
+                execution = conn.execute(
+                    "SELECT 1 FROM execution_runs WHERE run_type = 'github_issue' AND run_id = ? "
+                    "AND lease_token = ? AND status = 'running'",
+                    (run_id, execution_token),
+                ).fetchone()
+                if execution is None:
+                    return False
             cursor = conn.execute(
                 "UPDATE github_issue_runs SET status = ?, worthwhile = ?, confidence = ?, "
                 "rationale = ?, implementation_summary = ?, provider = ?, model = ?, "
                 "last_error = '', updated_at = CURRENT_TIMESTAMP, completed_at = "
                 "CASE WHEN ? = 'processing' THEN '' ELSE CURRENT_TIMESTAMP END WHERE id = ?",
                 (
-                    status,
+                    final_status,
                     int(worthwhile),
                     confidence,
                     rationale[:4000],
                     implementation_summary[:4000],
                     provider,
                     model,
-                    status,
+                    final_status,
                     run_id,
                 ),
             )
             return cursor.rowcount > 0
 
-    def link_github_issue_improvement(self, run_id: int, improvement_task_id: int) -> bool:
+    def link_github_issue_improvement(
+        self,
+        run_id: int,
+        improvement_task_id: int,
+        execution_token: str = "",
+    ) -> bool:
         with self.connect() as conn:
+            if execution_token:
+                execution = conn.execute(
+                    "SELECT 1 FROM execution_runs WHERE run_type = 'github_issue' AND run_id = ? "
+                    "AND lease_token = ? AND status = 'running'",
+                    (run_id, execution_token),
+                ).fetchone()
+                if execution is None:
+                    return False
             cursor = conn.execute(
                 "UPDATE github_issue_runs SET improvement_task_id = ?, status = 'processing', "
                 "completed_at = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -1556,22 +1988,78 @@ class MemoryStore:
         status: str,
         pr_number: int = 0,
         pr_url: str = "",
+        execution_token: str = "",
     ) -> bool:
         with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            final_status = status
+            if execution_token:
+                finished = self._finish_execution(
+                    conn,
+                    "github_issue",
+                    run_id,
+                    execution_token,
+                    "completed",
+                )
+                if finished is None:
+                    return False
+                if finished == "cancelled":
+                    final_status = "cancelled"
             cursor = conn.execute(
                 "UPDATE github_issue_runs SET status = ?, pr_number = ?, pr_url = ?, "
                 "last_error = '', updated_at = CURRENT_TIMESTAMP, "
                 "completed_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (status, pr_number, pr_url, run_id),
+                (final_status, pr_number, pr_url, run_id),
             )
             return cursor.rowcount > 0
 
-    def fail_github_issue_run(self, run_id: int, error: str) -> bool:
+    def fail_github_issue_run(
+        self,
+        run_id: int,
+        error: str,
+        execution_token: str = "",
+    ) -> bool:
         with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            final_status = "failed"
+            if execution_token:
+                finished = self._finish_execution(
+                    conn,
+                    "github_issue",
+                    run_id,
+                    execution_token,
+                    "failed",
+                    error,
+                )
+                if finished is None:
+                    return False
+                final_status = finished
             cursor = conn.execute(
-                "UPDATE github_issue_runs SET status = 'failed', last_error = ?, "
-                "completed_at = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (error[:1000], run_id),
+                "UPDATE github_issue_runs SET status = ?, last_error = ?, "
+                "completed_at = CASE WHEN ? = 'cancelled' THEN CURRENT_TIMESTAMP ELSE '' END, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (final_status, error[:1000], final_status, run_id),
+            )
+            return cursor.rowcount > 0
+
+    def cancel_github_issue_run(self, run_id: int, execution_token: str) -> bool:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            finished = self._finish_execution(
+                conn,
+                "github_issue",
+                run_id,
+                execution_token,
+                "cancelled",
+                "cancelled by owner",
+            )
+            if finished is None:
+                return False
+            cursor = conn.execute(
+                "UPDATE github_issue_runs SET status = 'cancelled', "
+                "last_error = 'cancelled by owner', completed_at = CURRENT_TIMESTAMP, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (run_id,),
             )
             return cursor.rowcount > 0
 
@@ -2075,6 +2563,7 @@ class MemoryStore:
             "pull_requests",
             "code_review_runs",
             "github_issue_runs",
+            "execution_runs",
             "merge_authorizations",
             "improvement_reflections",
             "deployment_records",

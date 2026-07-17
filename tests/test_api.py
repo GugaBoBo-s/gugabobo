@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from gugabobo.api.server import app
 from gugabobo.config import get_settings
+from gugabobo.memory.store import MemoryStore
 
 
 def configure_test_env(tmp_path, monkeypatch):
@@ -97,7 +98,62 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     assert "improvement_reflections" in data_response.json()
     assert "deployment_records" in data_response.json()
     assert "owner_notifications" in data_response.json()
+    assert "execution_runs" in data_response.json()
     assert data_response.json()["runtime"]["api"]["running"] is True
+    get_settings.cache_clear()
+
+
+def test_dashboard_can_cancel_and_retry_execution(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "gugabobo.api.server.ContainerRuntime.stop",
+        lambda self, container_name: True,
+    )
+    settings = get_settings()
+    store = MemoryStore(settings.db_path)
+    task_id = store.add_task("Test cancellation")
+    improvement_id = store.add_improvement_task(
+        task_id,
+        approval_status="approved",
+    )
+    claim = store.claim_improvement_run(improvement_id, "test-worker", 120)
+    assert claim is not None
+    client = TestClient(app)
+
+    unauthorized = client.post(
+        f"/executions/improvement/{improvement_id}/cancel",
+        json={"confirm_text": "CANCEL"},
+    )
+    cancelled = client.post(
+        f"/executions/improvement/{improvement_id}/cancel",
+        headers=admin_headers(),
+        json={"confirm_text": "CANCEL"},
+    )
+
+    assert unauthorized.status_code == 401
+    assert cancelled.status_code == 200
+    assert cancelled.json()["container_stopped"] is True
+    assert store.get_execution_run("improvement", improvement_id)["status"] == (
+        "cancel_requested"
+    )
+    store.finish_improvement_run(
+        improvement_id,
+        str(claim["lease_token"]),
+        "cancelled",
+        "cancelled",
+    )
+
+    retried = client.post(
+        f"/executions/improvement/{improvement_id}/retry",
+        headers=admin_headers(),
+        json={"confirm_text": "RETRY"},
+    )
+
+    assert retried.status_code == 200
+    assert store.get_execution_run("improvement", improvement_id)["status"] == (
+        "retry_requested"
+    )
+    assert store.get_improvement_task(improvement_id)["runner_status"] == "retry_requested"
     get_settings.cache_clear()
 
 
