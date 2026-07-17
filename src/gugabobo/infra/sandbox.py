@@ -21,6 +21,7 @@ class SandboxError(RuntimeError):
 class CheckResult:
     passed: bool
     output: str
+    cancelled: bool = False
 
 
 def _force_rmtree(path: Path) -> None:
@@ -112,6 +113,12 @@ class SandboxManager:
                 timeout=self.settings.sandbox_check_timeout_seconds,
             )
             outputs.append(f"$ {' '.join(command)}\n{result.stdout}{result.stderr}")
+            if result.cancelled:
+                return CheckResult(
+                    passed=False,
+                    output="\n".join(outputs),
+                    cancelled=True,
+                )
             if result.returncode != 0:
                 return CheckResult(passed=False, output="\n".join(outputs))
         return CheckResult(passed=True, output="\n".join(outputs))

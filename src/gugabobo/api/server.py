@@ -19,10 +19,12 @@ from gugabobo.core.lifecycle import (
     PullRequestLifecycleService,
     is_merge_command,
 )
+from gugabobo.core.run_control import recover_stale_execution_containers
 from gugabobo.infra.env_file import EnvFile
 from gugabobo.infra.images import urls_to_data_uris
 from gugabobo.infra.logs import get_logger, read_log_lines
 from gugabobo.infra.napcat_client import NapCatClient
+from gugabobo.infra.container_runtime import ContainerRuntime
 from gugabobo.infra.runtime import RuntimeManager, build_agent
 
 
@@ -190,6 +192,7 @@ def dashboard() -> HTMLResponse:
 def dashboard_data() -> dict[str, object]:
     settings = get_settings()
     agent = build_agent()
+    recover_stale_execution_containers(agent.store, settings)
     runtime_manager = RuntimeManager()
     runtime_data = runtime_manager.status()
     status_data = agent.status()
@@ -226,6 +229,7 @@ def dashboard_data() -> dict[str, object]:
         "pull_requests": agent.store.list_pull_requests(limit=50),
         "code_reviews": agent.store.list_code_reviews(limit=50),
         "github_issue_runs": agent.store.list_github_issue_runs(limit=50),
+        "execution_runs": agent.store.list_execution_runs(limit=100),
         "merge_authorizations": agent.store.list_merge_authorizations(limit=50),
         "improvement_reflections": agent.store.list_improvement_reflections(limit=50),
         "deployment_records": agent.store.list_deployment_records(limit=50),
@@ -480,6 +484,59 @@ def scan_github_issues(
         ),
     )
     return result
+
+
+@app.post("/executions/{run_type}/{run_id}/cancel")
+def cancel_execution(
+    run_type: str,
+    run_id: int,
+    request: DangerousActionRequest | None = None,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    require_danger_confirmation(request, "CANCEL")
+    if run_type not in {"code_review", "github_issue", "improvement"}:
+        raise HTTPException(status_code=404, detail="Execution type not found")
+    store = build_agent().store
+    record = store.request_execution_cancel(run_type, run_id)
+    if record is None:
+        raise HTTPException(status_code=409, detail="Execution is not running")
+    container_name = str(record.get("container_name", ""))
+    container_stopped = ContainerRuntime().stop(container_name) if container_name else False
+    add_dashboard_audit(
+        "execution.cancel",
+        f"{run_type}:{run_id}",
+        risk_level="high",
+        detail=f"container_stopped={container_stopped}",
+    )
+    return {
+        "run_type": run_type,
+        "run_id": run_id,
+        "status": "cancel_requested",
+        "container_stopped": container_stopped,
+    }
+
+
+@app.post("/executions/{run_type}/{run_id}/retry")
+def retry_execution(
+    run_type: str,
+    run_id: int,
+    request: DangerousActionRequest | None = None,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
+    require_danger_confirmation(request, "RETRY")
+    if run_type not in {"code_review", "github_issue", "improvement"}:
+        raise HTTPException(status_code=404, detail="Execution type not found")
+    if not build_agent().store.request_execution_retry(run_type, run_id):
+        raise HTTPException(
+            status_code=409,
+            detail="Only failed, cancelled, or stale executions can be retried",
+        )
+    add_dashboard_audit(
+        "execution.retry",
+        f"{run_type}:{run_id}",
+        risk_level="high",
+    )
+    return {"run_type": run_type, "run_id": run_id, "status": "retry_requested"}
 
 
 @app.get("/prs/{pr_id}")

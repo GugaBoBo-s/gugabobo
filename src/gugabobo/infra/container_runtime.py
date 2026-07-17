@@ -4,8 +4,10 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from gugabobo.config import Settings, get_settings
 from gugabobo.infra.redaction import redact_sensitive
@@ -19,11 +21,24 @@ class ContainerResult:
     returncode: int
     stdout: str
     stderr: str
+    cancelled: bool = False
+
+
+class ContainerMonitor(Protocol):
+    @property
+    def container_name(self) -> str: ...
+
+    def pulse(self) -> bool: ...
 
 
 class ContainerRuntime:
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        monitor: ContainerMonitor | None = None,
+    ) -> None:
         self.settings = settings or get_settings()
+        self.monitor = monitor
 
     @property
     def configured(self) -> bool:
@@ -103,6 +118,8 @@ class ContainerRuntime:
             )
         else:
             docker_command.extend(["--env", "HOME=/tmp"])
+        if self.monitor is not None:
+            docker_command.extend(["--name", self.monitor.container_name])
         process_environment = self._host_env()
         for name, value in sorted((environment or {}).items()):
             if not _ENVIRONMENT_NAME.fullmatch(name):
@@ -110,6 +127,13 @@ class ContainerRuntime:
             docker_command.extend(["--env", name])
             process_environment[name] = value
         docker_command.extend([self.settings.runner_container_image, *command])
+        if self.monitor is not None:
+            return self._run_monitored(
+                docker_command,
+                process_environment,
+                timeout,
+                input_text,
+            )
         try:
             result = subprocess.run(
                 docker_command,
@@ -127,6 +151,91 @@ class ContainerRuntime:
             returncode=result.returncode,
             stdout=redact_sensitive(result.stdout, secrets),
             stderr=redact_sensitive(result.stderr, secrets),
+        )
+
+    def _run_monitored(
+        self,
+        command: list[str],
+        environment: dict[str, str],
+        timeout: int,
+        input_text: str | None,
+    ) -> ContainerResult:
+        if self.monitor is None or not self.monitor.pulse():
+            return ContainerResult(125, "", "container run cancelled", cancelled=True)
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE if input_text is not None else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+        deadline = time.monotonic() + timeout
+        pending_input = input_text
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.stop(self.monitor.container_name)
+                stdout, stderr = self._finish_process(process)
+                return self._result(124, stdout, stderr or "container run timed out")
+            try:
+                stdout, stderr = process.communicate(
+                    input=pending_input,
+                    timeout=min(1.0, remaining),
+                )
+                return self._result(process.returncode, stdout, stderr)
+            except subprocess.TimeoutExpired:
+                pending_input = None
+                if self.monitor.pulse():
+                    continue
+                self.stop(self.monitor.container_name)
+                stdout, stderr = self._finish_process(process)
+                message = stderr or "container run cancelled"
+                result = self._result(125, stdout, message)
+                return ContainerResult(
+                    result.returncode,
+                    result.stdout,
+                    result.stderr,
+                    cancelled=True,
+                )
+
+    def stop(self, container_name: str) -> bool:
+        if not re.fullmatch(r"gugabobo-[a-z0-9-]+", container_name):
+            return False
+        if not self.configured:
+            return False
+        try:
+            result = subprocess.run(
+                [
+                    self.settings.runner_container_runtime,
+                    "stop",
+                    "--time",
+                    "1",
+                    container_name,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+                env=self._host_env(),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return result.returncode == 0
+
+    def _finish_process(self, process: subprocess.Popen[str]) -> tuple[str, str]:
+        try:
+            return process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            return process.communicate()
+
+    def _result(self, returncode: int, stdout: str, stderr: str) -> ContainerResult:
+        secrets = self._known_secrets()
+        return ContainerResult(
+            returncode=returncode,
+            stdout=redact_sensitive(stdout, secrets),
+            stderr=redact_sensitive(stderr, secrets),
         )
 
     def _mount(self, source: Path, target: str) -> str:

@@ -13,6 +13,8 @@ from gugabobo.core.github_issues import GitHubIssueAutomationService
 from gugabobo.core.improvement import ImprovementError, ImprovementService
 from gugabobo.core.lifecycle import LifecycleError, PullRequestLifecycleService
 from gugabobo.core.notifications import OwnerNotifier
+from gugabobo.core.run_control import recover_stale_execution_containers
+from gugabobo.infra.container_runtime import ContainerRuntime
 from gugabobo.infra.logs import get_logger
 from gugabobo.infra.runtime import build_agent
 from gugabobo.infra.telegram_client import TelegramClient
@@ -31,6 +33,7 @@ pr_app = typer.Typer(help="Pull request commands")
 deployment_app = typer.Typer(help="Deployment commands")
 review_app = typer.Typer(help="Organization code review commands")
 issue_app = typer.Typer(help="GitHub issue automation commands")
+execution_app = typer.Typer(help="Long-running execution controls")
 app.add_typer(feedback_app, name="feedback")
 app.add_typer(messages_app, name="messages")
 app.add_typer(config_app, name="config")
@@ -44,6 +47,7 @@ app.add_typer(pr_app, name="pr")
 app.add_typer(deployment_app, name="deployment")
 app.add_typer(review_app, name="review")
 app.add_typer(issue_app, name="issue")
+app.add_typer(execution_app, name="execution")
 
 
 def echo_mapping(data: dict[str, object]) -> None:
@@ -503,6 +507,65 @@ def issue_list(limit: int = 50) -> None:
             f"worthwhile={bool(item['worthwhile'])} confidence={item['confidence']:.2f} "
             f"PR={item['pr_number'] or '-'}"
         )
+
+
+@execution_app.command("list")
+def execution_list(limit: int = 100) -> None:
+    """List durable execution leases and terminal states."""
+    agent = build_agent()
+    recover_stale_execution_containers(agent.store)
+    for item in agent.store.list_execution_runs(limit=limit):
+        typer.echo(
+            f"{item['run_type']} #{item['run_id']} [{item['status']}] "
+            f"attempt={item['attempt_count']} worker={item['worker_id'] or '-'} "
+            f"lease={item['lease_expires_at']}"
+        )
+
+
+@execution_app.command("cancel")
+def execution_cancel(run_type: str, run_id: int) -> None:
+    """Request cancellation and stop the associated container when present."""
+    if run_type not in {"code_review", "github_issue", "improvement"}:
+        raise typer.BadParameter("run_type must be code_review, github_issue, or improvement")
+    agent = build_agent()
+    record = agent.store.request_execution_cancel(run_type, run_id)
+    if record is None:
+        raise typer.BadParameter("execution is not running")
+    container_stopped = ContainerRuntime().stop(str(record["container_name"]))
+    agent.store.add_audit_log(
+        actor_source="cli",
+        actor_user_id="local",
+        action="execution.cancel",
+        target=f"{run_type}:{run_id}",
+        risk_level="high",
+        detail=f"container_stopped={container_stopped}",
+    )
+    echo_mapping(
+        {
+            "run_type": run_type,
+            "run_id": run_id,
+            "status": "cancel_requested",
+            "container_stopped": container_stopped,
+        }
+    )
+
+
+@execution_app.command("retry")
+def execution_retry(run_type: str, run_id: int) -> None:
+    """Allow a failed, cancelled, or stale execution to run again."""
+    if run_type not in {"code_review", "github_issue", "improvement"}:
+        raise typer.BadParameter("run_type must be code_review, github_issue, or improvement")
+    agent = build_agent()
+    if not agent.store.request_execution_retry(run_type, run_id):
+        raise typer.BadParameter("execution must be failed, cancelled, or stale before retry")
+    agent.store.add_audit_log(
+        actor_source="cli",
+        actor_user_id="local",
+        action="execution.retry",
+        target=f"{run_type}:{run_id}",
+        risk_level="high",
+    )
+    echo_mapping({"run_type": run_type, "run_id": run_id, "status": "retry_requested"})
 
 
 @config_app.command("show")

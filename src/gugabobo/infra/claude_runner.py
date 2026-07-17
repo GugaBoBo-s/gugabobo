@@ -40,6 +40,7 @@ class RunResult:
     timed_out: bool = False
     provider: str = ""
     model: str = ""
+    cancelled: bool = False
 
 
 class ClaudeCodeRunner:
@@ -128,4 +129,5 @@ class ClaudeCodeRunner:
             timed_out=result.returncode == 124,
             provider=self.provider_name,
             model=self.model,
+            cancelled=result.cancelled,
         )

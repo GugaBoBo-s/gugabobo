@@ -5,6 +5,33 @@ from gugabobo.infra import container_runtime as runtime_module
 from gugabobo.infra.container_runtime import ContainerRuntime
 
 
+class FakeMonitor:
+    container_name = "gugabobo-improvement-7-abcd1234"
+
+    def __init__(self) -> None:
+        self.pulses = 0
+
+    def pulse(self) -> bool:
+        self.pulses += 1
+        return self.pulses == 1
+
+
+class FakeProcess:
+    returncode = 137
+
+    def __init__(self) -> None:
+        self.communications = 0
+
+    def communicate(self, input=None, timeout=None):
+        self.communications += 1
+        if self.communications == 1:
+            raise subprocess.TimeoutExpired("docker", timeout)
+        return "partial output", ""
+
+    def kill(self) -> None:
+        self.returncode = -9
+
+
 def test_container_run_applies_isolation_and_strips_business_secrets(tmp_path, monkeypatch):
     github_token = "ghp_" + "a" * 26
     claude_token = "sk-relay-" + "b" * 24
@@ -97,4 +124,37 @@ def test_container_output_is_redacted(tmp_path, monkeypatch):
     assert token not in result.stdout
     assert token not in result.stderr
     assert result.stdout == "<redacted>"
+    get_settings.cache_clear()
+
+
+def test_monitored_container_is_named_and_stopped_after_cancellation(tmp_path, monkeypatch):
+    get_settings.cache_clear()
+    monitor = FakeMonitor()
+    captured = {}
+    stop_commands = []
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        return FakeProcess()
+
+    def fake_run(command, **kwargs):
+        stop_commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="stopped", stderr="")
+
+    monkeypatch.setattr(runtime_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(runtime_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(runtime_module.shutil, "which", lambda command: command)
+
+    result = ContainerRuntime(monitor=monitor).run(
+        workspace=tmp_path,
+        command=["python", "-V"],
+        network="none",
+        timeout=30,
+    )
+
+    assert result.cancelled is True
+    assert result.returncode == 125
+    assert "--name" in captured["command"]
+    assert monitor.container_name in captured["command"]
+    assert any(command[:2] == ["docker", "stop"] for command in stop_commands)
     get_settings.cache_clear()

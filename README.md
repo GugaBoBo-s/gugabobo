@@ -525,6 +525,33 @@ gugabobo issue list
 The Dashboard exposes the issue settings, manual scan, model decision, confidence, rationale,
 linked improvement task, PR, and failures.
 
+### Durable execution recovery and cancellation
+
+Code reviews, issue evaluations, and isolated improvement runs are backed by durable
+`execution_runs` records. Each active worker owns a short-lived lease token, sends periodic
+heartbeats, and may write its final result only while that exact lease remains valid. A process
+restart or missed heartbeat marks the execution as `stale`; the next scan can safely reclaim it.
+The recovery path also stops the named orphaned Docker container before a replacement worker starts.
+
+The Dashboard has a **运行控制** table where an administrator can select an execution, request
+`CANCEL`, or permit `RETRY`. Cancellation is persisted first and immediately attempts `docker stop`.
+The worker observes the cancellation, terminates the container, records `cancelled`, and leaves an
+audit record. Only `failed`, `cancelled`, and `stale` records can be retried. Review and issue
+retries are picked up by their next scan; an improvement retry is then explicitly run or shipped.
+
+```env
+GUGABOBO_EXECUTION_LEASE_SECONDS=120
+GUGABOBO_EXECUTION_HEARTBEAT_SECONDS=15
+```
+
+The same controls are available from the local CLI:
+
+```bash
+gugabobo execution list
+gugabobo execution cancel improvement 12
+gugabobo execution retry improvement 12
+```
+
 Flow:
 
 ```bash

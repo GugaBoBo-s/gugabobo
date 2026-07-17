@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     claude_timeout_seconds: int = Field(default=900, ge=1)
     claude_max_budget_usd: float = Field(default=5.0, gt=0, le=100)
     sandbox_check_timeout_seconds: int = Field(default=300, ge=1)
+    execution_lease_seconds: int = Field(default=120, ge=30, le=3600)
+    execution_heartbeat_seconds: int = Field(default=15, ge=1, le=300)
     llm_provider: str = "moonshot"
     moonshot_api_key: str = Field(default="", repr=False)
     moonshot_base_url: str = "https://api.moonshot.ai/v1"

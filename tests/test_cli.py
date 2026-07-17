@@ -3,6 +3,7 @@ from typer.testing import CliRunner
 from gugabobo.adapters.cli import app
 from gugabobo.config import get_settings
 from gugabobo.infra.logs import get_logger
+from gugabobo.infra.runtime import build_agent
 
 
 runner = CliRunner()
@@ -103,6 +104,38 @@ def test_improve_create_rejects_missing_feedback(tmp_path, monkeypatch):
     result = runner.invoke(app, ["improve", "create", "999"])
 
     assert result.exit_code != 0
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
+def test_execution_commands_cancel_and_retry_run(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "gugabobo.adapters.cli.ContainerRuntime.stop",
+        lambda self, container_name: True,
+    )
+    store = build_agent().store
+    task_id = store.add_task("Run control")
+    improvement_id = store.add_improvement_task(task_id, approval_status="approved")
+    claim = store.claim_improvement_run(improvement_id, "cli-worker", 120)
+    assert claim is not None
+
+    listed = runner.invoke(app, ["execution", "list"])
+    cancelled = runner.invoke(app, ["execution", "cancel", "improvement", str(improvement_id)])
+    store.finish_improvement_run(
+        improvement_id,
+        str(claim["lease_token"]),
+        "cancelled",
+        "cancelled",
+    )
+    retried = runner.invoke(app, ["execution", "retry", "improvement", str(improvement_id)])
+
+    assert listed.exit_code == 0
+    assert "improvement" in listed.output
+    assert cancelled.exit_code == 0
+    assert "cancel_requested" in cancelled.output
+    assert retried.exit_code == 0
+    assert "retry_requested" in retried.output
     get_settings.cache_clear()
     get_logger.cache_clear()
 

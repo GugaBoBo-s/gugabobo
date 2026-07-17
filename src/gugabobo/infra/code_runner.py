@@ -5,7 +5,7 @@ from typing import Protocol
 
 from gugabobo.config import Settings, get_settings
 from gugabobo.infra.claude_runner import ClaudeCodeRunner, RunResult
-from gugabobo.infra.container_runtime import ContainerRuntime
+from gugabobo.infra.container_runtime import ContainerMonitor, ContainerRuntime
 from gugabobo.infra.credential_relay import CredentialRelay
 
 
@@ -81,6 +81,7 @@ class CodexCodeRunner:
             timed_out=result.returncode == 124,
             provider="openai",
             model=self.settings.code_openai_model,
+            cancelled=result.cancelled,
         )
 
 
@@ -104,9 +105,12 @@ class CodeRunnerChain:
         return RunResult(ok=False, output="", error="code runner chain produced no result")
 
 
-def build_code_runner(settings: Settings | None = None) -> CodeRunnerChain:
+def build_code_runner(
+    settings: Settings | None = None,
+    monitor: ContainerMonitor | None = None,
+) -> CodeRunnerChain:
     resolved = settings or get_settings()
-    runtime = ContainerRuntime(resolved)
+    runtime = ContainerRuntime(resolved, monitor)
     deepseek_base = resolved.deepseek_base_url.rstrip("/")
     if not deepseek_base.endswith("/anthropic"):
         deepseek_base = f"{deepseek_base}/anthropic"

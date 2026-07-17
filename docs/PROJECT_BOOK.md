@@ -1217,6 +1217,8 @@ Safety invariants:
 - Failed runs remain retryable; completed runs are deduplicated in SQLite and by a GitHub body marker.
 - New commits create a new head SHA and therefore a new review run.
 - Diff size and file count are bounded before sending content to the code model chain.
+- Every active review has a durable lease token and heartbeat. Expired leases become `stale`, and
+  an old worker cannot overwrite a newer worker's result.
 - Private repository content may reach Claude, GPT after a Claude timeout, or DeepSeek after a
   second timeout. Every provider in the chain must be approved for that source code.
 
@@ -1267,6 +1269,8 @@ Safety invariants:
 - Auto-fix defaults to the primary configured repository; organization-wide writes require an explicit allowlist or `*`.
 - Generated work stays in a unique branch and pull request; explicit owner authorization remains mandatory for merge.
 - Non-timeout provider errors stop execution and remain visible in SQLite, logs, CLI, API, and Dashboard.
+- Issue evaluation and any nested code-editing run use durable leases, so owner cancellation and
+  process recovery cannot leave an unbounded active worker behind.
 
 ### 14.3 Staged Production Auto Deployment
 
@@ -2178,9 +2182,9 @@ P5 self-improvement hardening and post-merge reflection
 Recommended tasks:
 
 ```text
-1. Add stale-run recovery and cancellation for long-running improvements.
-2. Add repository-level policy tests for generated diffs.
-3. Add structured cost and token usage records for coding runs.
+1. Add repository-level policy tests for generated diffs.
+2. Add structured cost and token usage records for coding runs.
+3. Add repository-specific review policies and review cost controls.
 ```
 
 P0 through P5 are operational. The current P6 foundation includes manual approval-gated
@@ -2201,6 +2205,10 @@ and links are persisted and visible in Dashboard.
 It can additionally evaluate organization issues and autonomously submit allowlisted fixes as pull
 requests. Code review, issue evaluation, and code editing use the timeout-only Claude to GPT to
 DeepSeek chain; ordinary conversation model selection remains independent.
+Every long-running code execution has a durable SQLite lease, heartbeat, cancellation request,
+attempt history, and named Docker container. Dashboard and CLI controls can cancel or retry runs;
+stale recovery blocks old workers from writing after a replacement lease is claimed and stops any
+orphaned container before resuming work.
 External issue data is treated as untrusted. Coding containers receive only a
 short-lived relay credential, never the upstream provider key; Claude has no Bash
 or MCP tools, and the Codex fallback uses workspace and environment sandboxing.

@@ -8,6 +8,13 @@ from typing import Protocol
 from gugabobo.config import Settings, get_settings
 from gugabobo.core.improvement import ImprovementService
 from gugabobo.core.notifications import OwnerNotifier
+from gugabobo.core.run_control import (
+    ExecutionCancelled,
+    ExecutionLease,
+    ExecutionStopped,
+    execution_worker_id,
+    recover_stale_execution_containers,
+)
 from gugabobo.infra.code_models import CodeModelResult, build_code_model_router
 from gugabobo.infra.github_client import GitHubClient
 from gugabobo.infra.logs import get_logger
@@ -60,6 +67,7 @@ class GitHubIssueAutomationService:
         self.logger = get_logger()
 
     def tick(self) -> dict[str, object]:
+        recover_stale_execution_containers(self.store, self.settings)
         result: dict[str, object] = {
             "status": "ok",
             "enabled": self.settings.github_issue_enabled,
@@ -148,102 +156,149 @@ class GitHubIssueAutomationService:
             title,
             body,
             resume_worthwhile=self._auto_fix_allowed(github.owner, github.repo),
+            worker_id=execution_worker_id(),
+            lease_seconds=self.settings.execution_lease_seconds,
         )
         if run is None:
             return "skipped"
         run_id = int(run["id"])
+        execution = ExecutionLease.from_claim(
+            self.store,
+            "github_issue",
+            run_id,
+            {
+                "lease_token": run["execution_token"],
+                "container_name": run["container_name"],
+            },
+            self.settings.execution_lease_seconds,
+            self.settings.execution_heartbeat_seconds,
+        )
         repo_name = f"{github.owner}/{github.repo}"
         scope = f"github_issue:{repo_name}#{number}"
-        existing_improvement = self.store.find_improvement_task(repo_name, scope)
-        improvement_id = int(run.get("improvement_task_id", 0))
-        if improvement_id <= 0 and existing_improvement:
-            improvement_id = int(existing_improvement["id"])
-            self.store.link_github_issue_improvement(run_id, improvement_id)
         try:
-            if improvement_id <= 0 and github.has_open_linked_pull_request(number):
+            with execution.keepalive():
+                existing_improvement = self.store.find_improvement_task(repo_name, scope)
+                improvement_id = int(run.get("improvement_task_id", 0))
+                if improvement_id <= 0 and existing_improvement:
+                    improvement_id = int(existing_improvement["id"])
+                    execution.ensure_active()
+                    self.store.link_github_issue_improvement(
+                        run_id,
+                        improvement_id,
+                        execution.token,
+                    )
+                execution.ensure_active()
+                if improvement_id <= 0 and github.has_open_linked_pull_request(number):
+                    self.store.complete_github_issue_evaluation(
+                        run_id,
+                        "linked_pull_request",
+                        False,
+                        1.0,
+                        "An open pull request is already linked to this issue.",
+                        "Track the existing pull request instead of creating a duplicate.",
+                        "github",
+                        "timeline",
+                        execution.token,
+                    )
+                    return "evaluated"
+                evaluation = self._stored_or_new_evaluation(run, github, issue)
+                execution.ensure_active()
+                worthwhile = (
+                    evaluation.worthwhile
+                    and evaluation.confidence >= self.settings.github_issue_min_confidence
+                )
+                if not worthwhile:
+                    status = (
+                        "below_confidence" if evaluation.worthwhile else "not_worthwhile"
+                    )
+                    self.store.complete_github_issue_evaluation(
+                        run_id,
+                        status,
+                        evaluation.worthwhile,
+                        evaluation.confidence,
+                        evaluation.rationale,
+                        evaluation.implementation_summary,
+                        evaluation.provider,
+                        evaluation.model,
+                        execution.token,
+                    )
+                    return "evaluated"
+                if not self._auto_fix_allowed(github.owner, github.repo):
+                    self.store.complete_github_issue_evaluation(
+                        run_id,
+                        "worthwhile",
+                        True,
+                        evaluation.confidence,
+                        evaluation.rationale,
+                        evaluation.implementation_summary,
+                        evaluation.provider,
+                        evaluation.model,
+                        execution.token,
+                    )
+                    return "worthwhile"
                 self.store.complete_github_issue_evaluation(
                     run_id,
-                    "linked_pull_request",
-                    False,
-                    1.0,
-                    "An open pull request is already linked to this issue.",
-                    "Track the existing pull request instead of creating a duplicate.",
-                    "github",
-                    "timeline",
-                )
-                return "evaluated"
-            evaluation = self._stored_or_new_evaluation(run, github, issue)
-            worthwhile = (
-                evaluation.worthwhile
-                and evaluation.confidence >= self.settings.github_issue_min_confidence
-            )
-            if not worthwhile:
-                status = (
-                    "below_confidence" if evaluation.worthwhile else "not_worthwhile"
-                )
-                self.store.complete_github_issue_evaluation(
-                    run_id,
-                    status,
-                    evaluation.worthwhile,
-                    evaluation.confidence,
-                    evaluation.rationale,
-                    evaluation.implementation_summary,
-                    evaluation.provider,
-                    evaluation.model,
-                )
-                return "evaluated"
-            if not self._auto_fix_allowed(github.owner, github.repo):
-                self.store.complete_github_issue_evaluation(
-                    run_id,
-                    "worthwhile",
+                    "processing",
                     True,
                     evaluation.confidence,
                     evaluation.rationale,
                     evaluation.implementation_summary,
                     evaluation.provider,
                     evaluation.model,
+                    execution.token,
                 )
-                return "worthwhile"
-            self.store.complete_github_issue_evaluation(
-                run_id,
-                "processing",
-                True,
-                evaluation.confidence,
-                evaluation.rationale,
-                evaluation.implementation_summary,
-                evaluation.provider,
-                evaluation.model,
-            )
-            service = self.improvement_factory(github)
-            if improvement_id <= 0:
-                created = service.create_from_github_issue(
+                service = self.improvement_factory(github)
+                if improvement_id <= 0:
+                    execution.ensure_active()
+                    created = service.create_from_github_issue(
+                        github.owner,
+                        github.repo,
+                        number,
+                        title,
+                        body,
+                        url,
+                    )
+                    improvement_id = created.improvement_id
+                    self.store.link_github_issue_improvement(
+                        run_id,
+                        improvement_id,
+                        execution.token,
+                    )
+                outcome = service.run_and_open_pull_request(
+                    improvement_id,
+                    clone_remote=True,
+                    actor_source="github_issue",
+                    actor_user_id="gugabobo",
+                    parent_execution=execution,
+                )
+                execution.ensure_active()
+                if outcome.status == "cancelled":
+                    raise ExecutionCancelled(outcome.detail or "issue improvement was cancelled")
+                if outcome.status == "failed":
+                    raise RuntimeError(outcome.detail or "issue improvement failed")
+                self.store.complete_github_issue_run(
+                    run_id,
+                    outcome.status,
+                    outcome.pr_number or 0,
+                    outcome.pr_url,
+                    execution.token,
+                )
+                return "pull_requests" if outcome.status == "pr_open" else "worthwhile"
+        except ExecutionStopped as error:
+            if isinstance(error, ExecutionCancelled):
+                self.store.cancel_github_issue_run(run_id, execution.token)
+                self.logger.info(
+                    "GitHub issue automation cancelled repo=%s/%s issue=%s",
                     github.owner,
                     github.repo,
                     number,
-                    title,
-                    body,
-                    url,
                 )
-                improvement_id = created.improvement_id
-                self.store.link_github_issue_improvement(run_id, improvement_id)
-            outcome = service.run_and_open_pull_request(
-                improvement_id,
-                clone_remote=True,
-                actor_source="github_issue",
-                actor_user_id="gugabobo",
-            )
-            if outcome.status == "failed":
-                raise RuntimeError(outcome.detail or "issue improvement failed")
-            self.store.complete_github_issue_run(
-                run_id,
-                outcome.status,
-                outcome.pr_number or 0,
-                outcome.pr_url,
-            )
-            return "pull_requests" if outcome.status == "pr_open" else "worthwhile"
+                return "skipped"
+            self.store.fail_github_issue_run(run_id, self._error(error), execution.token)
+            return "errors"
         except Exception as error:
             error_text = self._error(error)
-            self.store.fail_github_issue_run(run_id, error_text)
+            self.store.fail_github_issue_run(run_id, error_text, execution.token)
             self.logger.error(
                 "GitHub issue automation failed repo=%s/%s issue=%s error=%s",
                 github.owner,

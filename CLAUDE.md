@@ -37,11 +37,10 @@ The current system includes:
 
 Current P6 work should prioritize:
 
-- stale-run recovery and cancellation
 - policy checks for generated diffs
 - structured token and cost records for coding runs
 - repository-specific review policies and review cost controls
-- issue policy tuning, repository-specific checks, and run recovery
+- issue policy tuning and repository-specific checks
 
 Never merge a pull request without explicit approval from an authenticated owner.
 A single approval from QQ, Telegram, Dashboard, or CLI is persisted for the exact
