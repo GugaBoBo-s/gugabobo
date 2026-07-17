@@ -12,6 +12,7 @@ def configure_test_env(tmp_path, monkeypatch):
     monkeypatch.setenv("GUGABOBO_LOG_DIR", str(tmp_path / "logs"))
     monkeypatch.setenv("GUGABOBO_NAPCAT_REPLY_ENABLED", "false")
     monkeypatch.setenv("GUGABOBO_NAPCAT_PASSIVE_REPLY_ENABLED", "false")
+    monkeypatch.setenv("GUGABOBO_ADMIN_TOKEN", "test-admin")
     monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
     monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
     get_settings.cache_clear()
@@ -194,7 +195,7 @@ def test_onebot_blocked_user_is_ignored(tmp_path, monkeypatch):
     client.post(
         "/dashboard-control/access-rules",
         json={"platform": "qq", "user_id": "10001", "role": "blocked"},
-        headers={"X-Gugabobo-Admin-Token": "change-me"},
+        headers={"X-Gugabobo-Admin-Token": "test-admin"},
     )
 
     response = client.post(
@@ -221,7 +222,7 @@ def test_onebot_group_feedback_records_without_reply(tmp_path, monkeypatch):
     client.post(
         "/dashboard-control/access-rules",
         json={"platform": "qq", "user_id": "10001", "role": "trusted"},
-        headers={"X-Gugabobo-Admin-Token": "change-me"},
+        headers={"X-Gugabobo-Admin-Token": "test-admin"},
     )
 
     response = client.post(
@@ -277,7 +278,7 @@ def test_onebot_trusted_role_can_write_memory(tmp_path, monkeypatch):
     client.post(
         "/dashboard-control/access-rules",
         json={"platform": "qq", "user_id": "10001", "role": "trusted"},
-        headers={"X-Gugabobo-Admin-Token": "change-me"},
+        headers={"X-Gugabobo-Admin-Token": "test-admin"},
     )
 
     response = client.post(

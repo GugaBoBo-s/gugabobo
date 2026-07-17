@@ -275,11 +275,23 @@ def dashboard_html() -> str:
                   <input id="configRunnerRuntime" placeholder="Container runtime">
                   <input id="configRunnerImage" placeholder="Runner image">
                   <input id="configClaudeBaseUrl" placeholder="Claude gateway base URL">
+                  <input id="configCodeClaudeModel" placeholder="Code primary: Claude model">
+                  <input id="configCodeOpenaiModel" placeholder="Code fallback 1: GPT model">
+                  <input id="configCodeDeepseekModel" placeholder="Code fallback 2: DeepSeek model">
+                  <input id="configCodeDeepseekRunnerModel" placeholder="DeepSeek runner model">
+                  <input id="configCodeModelTimeout" type="number" min="1" placeholder="Code model timeout seconds">
                   <label><input id="configGithubReviewEnabled" type="checkbox"> 自动审查组织 PR</label>
                   <input id="configGithubOrganization" placeholder="GitHub organization">
                   <input id="configGithubReviewInterval" type="number" min="30" placeholder="审查扫描周期（秒）">
                   <input id="configGithubReviewMaxFiles" type="number" min="1" max="3000" placeholder="单个 PR 最大文件数">
                   <input id="configGithubReviewMaxPatchChars" type="number" min="1000" max="1000000" placeholder="单个 PR diff 字符预算">
+                  <label><input id="configGithubIssueEnabled" type="checkbox"> 自动发现并处理 Issue</label>
+                  <label><input id="configGithubIssueAutoFixEnabled" type="checkbox"> 自动修改并提交 PR</label>
+                  <label><input id="configAutoDeployEnabled" type="checkbox"> main 合并后自动部署</label>
+                  <input id="configGithubIssueInterval" type="number" min="30" placeholder="Issue 扫描周期（秒）">
+                  <input id="configGithubIssueMaxPerScan" type="number" min="1" max="500" placeholder="每轮最多评估 Issue 数">
+                  <input id="configGithubIssueMinConfidence" type="number" min="0" max="1" step="0.05" placeholder="自动修改最低置信度">
+                  <input id="configGithubIssueRepositories" placeholder="允许自动修改的 owner/repo，逗号分隔；* 表示全部">
                   <div id="configSecrets" class="muted"></div>
                   <button id="loadConfigButton" type="button">加载配置</button>
                   <button id="saveConfigButton" type="button">保存配置</button>
@@ -296,6 +308,10 @@ def dashboard_html() -> str:
                 <div class="control-box">
                   <h3>组织 Code Review</h3>
                   <button id="scanCodeReviewsButton" type="button">立即扫描开放 PR</button>
+                </div>
+                <div class="control-box">
+                  <h3>GitHub Issue 自动化</h3>
+                  <button id="scanGithubIssuesButton" type="button">立即发现并评估 Issue</button>
                 </div>
                 <div class="control-box">
                   <h3>发送测试消息</h3>
@@ -519,6 +535,15 @@ def dashboard_html() -> str:
               </table>
             </section>
             <section>
+              <h2>GitHub Issue 自动化</h2>
+              <table>
+                <thead>
+                  <tr><th style="width: 54px;">ID</th><th>仓库 / Issue</th><th style="width: 100px;">状态</th><th style="width: 90px;">价值</th><th style="width: 80px;">置信度</th><th style="width: 150px;">模型</th><th>判断</th><th style="width: 70px;">改进</th><th style="width: 70px;">PR</th><th>错误</th><th style="width: 150px;">时间</th></tr>
+                </thead>
+                <tbody id="githubIssueRuns"></tbody>
+              </table>
+            </section>
+            <section>
               <h2>合并授权</h2>
               <table>
                 <thead>
@@ -646,11 +671,23 @@ def dashboard_html() -> str:
             byId("configRunnerRuntime").value = values.GUGABOBO_RUNNER_CONTAINER_RUNTIME || "docker";
             byId("configRunnerImage").value = values.GUGABOBO_RUNNER_CONTAINER_IMAGE || "gugabobo-runner:local";
             byId("configClaudeBaseUrl").value = values.GUGABOBO_CLAUDE_BASE_URL || "";
+            byId("configCodeClaudeModel").value = values.GUGABOBO_CODE_CLAUDE_MODEL || "";
+            byId("configCodeOpenaiModel").value = values.GUGABOBO_CODE_OPENAI_MODEL || "";
+            byId("configCodeDeepseekModel").value = values.GUGABOBO_CODE_DEEPSEEK_MODEL || "";
+            byId("configCodeDeepseekRunnerModel").value = values.GUGABOBO_CODE_DEEPSEEK_RUNNER_MODEL || "";
+            byId("configCodeModelTimeout").value = values.GUGABOBO_CODE_MODEL_TIMEOUT_SECONDS || 120;
             byId("configGithubReviewEnabled").checked = Boolean(values.GUGABOBO_GITHUB_REVIEW_ENABLED);
             byId("configGithubOrganization").value = values.GUGABOBO_GITHUB_ORGANIZATION || "GugaBoBo-s";
             byId("configGithubReviewInterval").value = values.GUGABOBO_GITHUB_REVIEW_INTERVAL_SECONDS || 300;
             byId("configGithubReviewMaxFiles").value = values.GUGABOBO_GITHUB_REVIEW_MAX_FILES || 100;
             byId("configGithubReviewMaxPatchChars").value = values.GUGABOBO_GITHUB_REVIEW_MAX_PATCH_CHARS || 120000;
+            byId("configGithubIssueEnabled").checked = Boolean(values.GUGABOBO_GITHUB_ISSUE_ENABLED);
+            byId("configGithubIssueAutoFixEnabled").checked = Boolean(values.GUGABOBO_GITHUB_ISSUE_AUTO_FIX_ENABLED);
+            byId("configGithubIssueInterval").value = values.GUGABOBO_GITHUB_ISSUE_INTERVAL_SECONDS || 600;
+            byId("configGithubIssueMaxPerScan").value = values.GUGABOBO_GITHUB_ISSUE_MAX_PER_SCAN || 20;
+            byId("configGithubIssueMinConfidence").value = values.GUGABOBO_GITHUB_ISSUE_MIN_CONFIDENCE ?? 0.75;
+            byId("configGithubIssueRepositories").value = values.GUGABOBO_GITHUB_ISSUE_AUTO_FIX_REPOSITORIES || "";
+            byId("configAutoDeployEnabled").checked = Boolean(values.GUGABOBO_AUTO_DEPLOY_ENABLED);
             byId("configSecrets").innerHTML = Object.entries(config.secrets)
               .map(([key, configured]) => `${esc(key.replace("GUGABOBO_", ""))}: ${pill(configured ? "configured" : "missing", configured)}`)
               .join("<br>");
@@ -684,11 +721,23 @@ def dashboard_html() -> str:
               GUGABOBO_RUNNER_CONTAINER_RUNTIME: byId("configRunnerRuntime").value,
               GUGABOBO_RUNNER_CONTAINER_IMAGE: byId("configRunnerImage").value,
               GUGABOBO_CLAUDE_BASE_URL: byId("configClaudeBaseUrl").value,
+              GUGABOBO_CODE_CLAUDE_MODEL: byId("configCodeClaudeModel").value,
+              GUGABOBO_CODE_OPENAI_MODEL: byId("configCodeOpenaiModel").value,
+              GUGABOBO_CODE_DEEPSEEK_MODEL: byId("configCodeDeepseekModel").value,
+              GUGABOBO_CODE_DEEPSEEK_RUNNER_MODEL: byId("configCodeDeepseekRunnerModel").value,
+              GUGABOBO_CODE_MODEL_TIMEOUT_SECONDS: Number(byId("configCodeModelTimeout").value || 120),
               GUGABOBO_GITHUB_REVIEW_ENABLED: byId("configGithubReviewEnabled").checked,
               GUGABOBO_GITHUB_ORGANIZATION: byId("configGithubOrganization").value,
               GUGABOBO_GITHUB_REVIEW_INTERVAL_SECONDS: Number(byId("configGithubReviewInterval").value || 300),
               GUGABOBO_GITHUB_REVIEW_MAX_FILES: Number(byId("configGithubReviewMaxFiles").value || 100),
-              GUGABOBO_GITHUB_REVIEW_MAX_PATCH_CHARS: Number(byId("configGithubReviewMaxPatchChars").value || 120000)
+              GUGABOBO_GITHUB_REVIEW_MAX_PATCH_CHARS: Number(byId("configGithubReviewMaxPatchChars").value || 120000),
+              GUGABOBO_GITHUB_ISSUE_ENABLED: byId("configGithubIssueEnabled").checked,
+              GUGABOBO_GITHUB_ISSUE_AUTO_FIX_ENABLED: byId("configGithubIssueAutoFixEnabled").checked,
+              GUGABOBO_GITHUB_ISSUE_INTERVAL_SECONDS: Number(byId("configGithubIssueInterval").value || 600),
+              GUGABOBO_GITHUB_ISSUE_MAX_PER_SCAN: Number(byId("configGithubIssueMaxPerScan").value || 20),
+              GUGABOBO_GITHUB_ISSUE_MIN_CONFIDENCE: Number(byId("configGithubIssueMinConfidence").value || 0.75),
+              GUGABOBO_GITHUB_ISSUE_AUTO_FIX_REPOSITORIES: byId("configGithubIssueRepositories").value,
+              GUGABOBO_AUTO_DEPLOY_ENABLED: byId("configAutoDeployEnabled").checked
             };
           }
           async function loadEditableConfig() {
@@ -733,11 +782,13 @@ def dashboard_html() -> str:
             currentMemories = await memoriesResponse.json();
             const currentMessages = await messagesResponse.json();
             currentSummaries = data.summaries;
+            const autoDeploy = data.runtime.auto_deploy || { status: "unknown" };
             byId("metrics").innerHTML = [
               metric("状态", data.status.status, "ok"),
               metric("API", data.runtime.api.running ? `运行 ${data.runtime.api.pid}` : "停止", data.runtime.api.running ? "ok" : "warn"),
               metric("Telegram", data.runtime.telegram_polling.running ? `运行 ${data.runtime.telegram_polling.pid}` : "停止", data.runtime.telegram_polling.running ? "ok" : "warn"),
               metric("生命周期", data.runtime.lifecycle_agent.running ? `运行 ${data.runtime.lifecycle_agent.pid}` : "停止", data.runtime.lifecycle_agent.running ? "ok" : "warn"),
+              metric("自动部署", autoDeploy.status, ["deployed", "current"].includes(autoDeploy.status) ? "ok" : "warn"),
               metric("消息", data.status.messages),
               metric("反馈", data.status.feedbacks),
               metric("记忆", data.status.memory_items),
@@ -746,6 +797,7 @@ def dashboard_html() -> str:
               metric("审计", data.status.audit_logs),
               metric("LLM", data.config.llm_provider),
               metric("Code Review", data.config.github_review_enabled ? data.config.github_organization : "关闭", data.config.github_review_enabled ? "ok" : "warn"),
+              metric("Issue 自动化", data.config.github_issue_enabled ? "开启" : "关闭", data.config.github_issue_enabled ? "ok" : "warn"),
               metric("回复", data.config.napcat_passive_reply_enabled ? "被动" : (data.config.napcat_reply_enabled ? "主动" : "关闭"), data.config.napcat_passive_reply_enabled || data.config.napcat_reply_enabled ? "ok" : "warn"),
               metric("历史预算", data.config.llm_history_token_budget),
               metric("摘要阈值", data.config.llm_summary_trigger_tokens)
@@ -756,6 +808,8 @@ def dashboard_html() -> str:
               `<div>Telegram token ${pill(data.runtime.telegram_polling.configured ? "configured" : "missing", data.runtime.telegram_polling.configured)}</div>`,
               `<div>Telegram send ${pill(data.runtime.telegram_polling.reply_enabled ? "enabled" : "disabled", data.runtime.telegram_polling.reply_enabled)}</div>`,
               `<div>Lifecycle agent ${pill(data.runtime.lifecycle_agent.running ? `running pid=${data.runtime.lifecycle_agent.pid}` : "stopped", data.runtime.lifecycle_agent.running)}</div>`,
+              `<div>Auto deploy ${pill(autoDeploy.status, ["deployed", "current"].includes(autoDeploy.status))}</div>`,
+              `<div class="muted">${esc(autoDeploy.detail || "")}</div>`,
               `<div>NapCat ${pill(data.runtime.napcat.reply_enabled ? "active reply" : (data.runtime.napcat.passive_reply_enabled ? "passive reply" : "reply off"), data.runtime.napcat.reply_enabled || data.runtime.napcat.passive_reply_enabled)}</div>`,
               `<div>NapCat process ${pill(data.runtime.napcat.running ? `running ${data.runtime.napcat.pids.join(",")}` : "stopped", data.runtime.napcat.running)}</div>`,
               `<div>NapCat WebUI ${pill(data.runtime.napcat.webui.configured ? "configured" : "missing", data.runtime.napcat.webui.configured)}</div>`,
@@ -763,8 +817,13 @@ def dashboard_html() -> str:
               `<div>Runner image ${pill(data.runtime.self_improvement.image_available ? data.runtime.self_improvement.image : "missing", data.runtime.self_improvement.image_available)}</div>`,
               `<div>Claude gateway ${pill(data.runtime.self_improvement.claude_gateway_configured ? "configured" : "missing", data.runtime.self_improvement.claude_gateway_configured)}</div>`,
               `<div class="muted">${esc(data.runtime.self_improvement.claude_base_url || "default Anthropic endpoint")}</div>`,
+              `<div>Code models ${data.runtime.self_improvement.code_models.order.map((name) => {
+                const item = data.runtime.self_improvement.code_models[name];
+                return pill(`${name}:${item.model}`, item.configured);
+              }).join(" ")}</div>`,
               `<div>GitHub ${pill(data.runtime.self_improvement.github_configured ? "configured" : "missing", data.runtime.self_improvement.github_configured)}</div>`,
               `<div>Code review ${pill(data.config.github_review_enabled ? `enabled ${data.config.github_organization}` : "disabled", data.config.github_review_enabled)}</div>`,
+              `<div>Issue automation ${pill(data.config.github_issue_enabled ? "enabled" : "disabled", data.config.github_issue_enabled)}</div>`,
               `<div class="muted">${esc(data.runtime.napcat.api_url)}</div>`
             ].join("");
             const qq = data.qq_diagnostics;
@@ -883,6 +942,19 @@ def dashboard_html() -> str:
               esc(item.last_error),
               `<span class="muted">${esc(item.completed_at || item.updated_at)}</span>`
             ])).join("");
+            byId("githubIssueRuns").innerHTML = data.github_issue_runs.map((item) => row([
+              esc(item.id),
+              `${esc(item.github_owner)}/${esc(item.github_repo)} #${esc(item.issue_number)}<br>${githubLink(item.issue_url)}`,
+              esc(item.status),
+              esc(Boolean(item.worthwhile)),
+              esc(Number(item.confidence || 0).toFixed(2)),
+              `${esc(item.provider)}/${esc(item.model)}`,
+              `${esc(item.rationale)}<br><span class="muted">${esc(item.implementation_summary)}</span>`,
+              esc(item.improvement_task_id || "-"),
+              item.pr_url ? githubLink(item.pr_url) : esc(item.pr_number || "-"),
+              esc(item.last_error),
+              `<span class="muted">${esc(item.completed_at || item.updated_at)}</span>`
+            ])).join("");
             byId("mergeAuthorizations").innerHTML = data.merge_authorizations.map((item) => row([
               esc(item.pull_request_id),
               esc(item.decision),
@@ -944,6 +1016,12 @@ def dashboard_html() -> str:
           });
           byId("scanCodeReviewsButton").addEventListener("click", () => {
             controlFetch("/code-reviews/scan", {
+              method: "POST",
+              headers: adminHeaders()
+            }).catch((error) => showControlResult(error.message));
+          });
+          byId("scanGithubIssuesButton").addEventListener("click", () => {
+            controlFetch("/github-issues/scan", {
               method: "POST",
               headers: adminHeaders()
             }).catch((error) => showControlResult(error.message));

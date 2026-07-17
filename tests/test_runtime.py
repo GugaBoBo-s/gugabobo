@@ -63,5 +63,25 @@ def test_status_reports_claude_gateway_without_exposing_token(monkeypatch):
 
     assert status["claude_gateway_configured"] is True
     assert status["claude_base_url"] == "https://gateway.example.com"
+    assert status["code_models"]["order"] == ["claude", "openai", "deepseek"]
+    assert status["code_models"]["claude"]["configured"] is True
     assert "runner-secret" not in str(status)
+    get_settings.cache_clear()
+
+
+def test_status_reads_auto_deploy_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("GUGABOBO_DATA_DIR", str(tmp_path))
+    get_settings.cache_clear()
+    (tmp_path / "deploy-status.json").write_text(
+        '{"status":"deployed","current_revision":"abc","detail":"healthy"}',
+        encoding="utf-8",
+    )
+    manager = RuntimeManager()
+    monkeypatch.setattr(ContainerRuntime, "configured", property(lambda _self: False))
+
+    status = manager.status()["auto_deploy"]
+
+    assert status["status"] == "deployed"
+    assert status["current_revision"] == "abc"
+    assert status["detail"] == "healthy"
     get_settings.cache_clear()

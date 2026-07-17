@@ -21,6 +21,13 @@ class DeploymentOutcome:
     pending: int
 
 
+@dataclass(frozen=True)
+class DeploymentReportOutcome:
+    revision: str
+    status: str
+    updated: int
+
+
 class DeploymentService:
     def __init__(
         self,
@@ -69,6 +76,48 @@ class DeploymentService:
             deployed=deployed,
             pending=len(records) - deployed,
         )
+
+    def report(
+        self,
+        revision: str,
+        status: str,
+        detail: str,
+        current_revision: str = "",
+        actor_source: str = "deployment",
+        actor_user_id: str = "server",
+    ) -> DeploymentReportOutcome:
+        if status not in {"deployed", "failed"}:
+            raise DeploymentError("deployment status must be deployed or failed")
+        records = self.store.list_deployment_records(
+            limit=500,
+            environment=self.settings.env,
+        )
+        matching = [
+            record
+            for record in records
+            if record["target_revision"] == revision
+            and record["status"] in {"pending", status}
+        ]
+        reported_current = current_revision or (
+            revision if status == "deployed" else "unknown"
+        )
+        for record in matching:
+            self.store.mark_deployment_record(
+                int(record["id"]),
+                status,
+                deployed_revision=current_revision or (revision if status == "deployed" else ""),
+                detail=detail,
+            )
+            self.store.add_audit_log(
+                actor_source=actor_source,
+                actor_user_id=actor_user_id,
+                action=f"deployment.{status}",
+                target=f"deployment:{record['id']}",
+                status="success" if status == "deployed" else "failed",
+                risk_level="high",
+                detail=f"target={revision} current={reported_current}",
+            )
+        return DeploymentReportOutcome(revision, status, len(matching))
 
     def _git(self, repo: Path, *args: str) -> str:
         try:

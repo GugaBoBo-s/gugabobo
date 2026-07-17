@@ -1,0 +1,12 @@
+[Unit]
+Description=check gugabobo main branch for deployment
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=true
+Unit=gugabobo-deploy.service
+
+[Install]
+WantedBy=timers.target

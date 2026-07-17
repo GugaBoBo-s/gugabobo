@@ -54,6 +54,7 @@ class RuntimeManager:
                 "pid": lifecycle_pid,
                 "github_configured": bool(self.settings.github_token),
             },
+            "auto_deploy": self._auto_deploy_status(),
             "napcat": {
                 "api_url": self.settings.napcat_api_url,
                 "reply_enabled": self.settings.napcat_reply_enabled,
@@ -71,8 +72,41 @@ class RuntimeManager:
                 "claude_gateway_configured": bool(
                     self.settings.claude_base_url and self.settings.claude_auth_token
                 ),
+                "code_models": {
+                    "order": ["claude", "openai", "deepseek"],
+                    "claude": {
+                        "configured": bool(self.settings.claude_auth_token),
+                        "model": self.settings.code_claude_model,
+                    },
+                    "openai": {
+                        "configured": bool(self.settings.openai_api_key),
+                        "model": self.settings.code_openai_model,
+                    },
+                    "deepseek": {
+                        "configured": bool(self.settings.deepseek_api_key),
+                        "model": self.settings.code_deepseek_model,
+                        "runner_model": self.settings.code_deepseek_runner_model,
+                    },
+                },
             },
         }
+
+    def _auto_deploy_status(self) -> dict[str, object]:
+        path = self.settings.data_dir / "deploy-status.json"
+        default = {
+            "status": "unknown",
+            "current_revision": "",
+            "target_revision": "",
+            "detail": "No deployment status has been recorded.",
+            "updated_at": "",
+        }
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return default
+        if not isinstance(data, dict):
+            return default
+        return {key: data.get(key, value) for key, value in default.items()}
 
     def qq_diagnostics(self, store: MemoryStore) -> dict[str, object]:
         webui = self._tcp_status("127.0.0.1", 6099)

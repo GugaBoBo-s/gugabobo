@@ -1,7 +1,13 @@
+FROM node:22-bookworm-slim AS node-runtime
+
 FROM python:3.11-bookworm
 
 ARG CLAUDE_CODE_VERSION=2.1.202
+ARG CODEX_VERSION=0.134.0
 ARG DEBIAN_MIRROR=
+
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 
 RUN if [ -n "${DEBIAN_MIRROR}" ]; then \
       sed -i "s|http://deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
@@ -11,9 +17,12 @@ RUN if [ -n "${DEBIAN_MIRROR}" ]; then \
         "$mirror_host" "$mirror_host" > /etc/apt/apt.conf.d/99mirror-direct; \
     fi \
     && apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update \
-    && apt-get install -y --no-install-recommends git nodejs npm \
+    && apt-get install -y --no-install-recommends git \
+    && ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && npm install --fetch-retries=5 --fetch-retry-maxtimeout=120000 \
       -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+      "@openai/codex@${CODEX_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/gugabobo

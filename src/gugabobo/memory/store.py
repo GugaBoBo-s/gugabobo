@@ -173,10 +173,41 @@ CREATE TABLE IF NOT EXISTS code_review_runs (
 CREATE INDEX IF NOT EXISTS idx_code_review_runs_status_updated
 ON code_review_runs(status, updated_at);
 
+CREATE TABLE IF NOT EXISTS github_issue_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    github_owner TEXT NOT NULL,
+    github_repo TEXT NOT NULL,
+    issue_number INTEGER NOT NULL,
+    issue_url TEXT NOT NULL DEFAULT '',
+    issue_updated_at TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'processing',
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    worthwhile INTEGER NOT NULL DEFAULT 0,
+    confidence REAL NOT NULL DEFAULT 0,
+    rationale TEXT NOT NULL DEFAULT '',
+    implementation_summary TEXT NOT NULL DEFAULT '',
+    provider TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    improvement_task_id INTEGER NOT NULL DEFAULT 0,
+    pr_number INTEGER NOT NULL DEFAULT 0,
+    pr_url TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(github_owner, github_repo, issue_number, issue_updated_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_github_issue_runs_status_updated
+ON github_issue_runs(status, updated_at);
+
 CREATE TABLE IF NOT EXISTS merge_authorizations (
     pull_request_id INTEGER PRIMARY KEY,
     decision TEXT NOT NULL,
     status TEXT NOT NULL,
+    authorized_head_sha TEXT NOT NULL DEFAULT '',
     actor_platform TEXT NOT NULL,
     actor_source TEXT NOT NULL,
     actor_user_id TEXT NOT NULL,
@@ -253,6 +284,12 @@ CREATE TABLE IF NOT EXISTS inbound_events (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(platform, event_id)
 );
+
+CREATE TABLE IF NOT EXISTS automation_cursors (
+    name TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -272,6 +309,7 @@ class MemoryStore:
             conn.executescript(SCHEMA)
             self._migrate_access_rules(conn)
             self._migrate_audit_logs(conn)
+            self._migrate_github_lifecycle(conn)
             columns = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(messages)").fetchall()
@@ -324,6 +362,55 @@ class MemoryStore:
         }
         if "risk_level" not in columns:
             conn.execute("ALTER TABLE audit_logs ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'normal'")
+
+    def _migrate_github_lifecycle(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(merge_authorizations)").fetchall()
+        }
+        if "authorized_head_sha" not in columns:
+            conn.execute(
+                "ALTER TABLE merge_authorizations ADD COLUMN "
+                "authorized_head_sha TEXT NOT NULL DEFAULT ''"
+            )
+        notifications = conn.execute(
+            "SELECT id, dedupe_key, platform, recipient_id FROM owner_notifications "
+            "WHERE dedupe_key LIKE 'pr:%'"
+        ).fetchall()
+        for notification in notifications:
+            parts = str(notification["dedupe_key"]).split(":")
+            if len(parts) < 3 or not parts[1].isdigit():
+                continue
+            repositories = conn.execute(
+                "SELECT github_owner, github_repo FROM pull_requests WHERE number = ? "
+                "GROUP BY github_owner, github_repo",
+                (int(parts[1]),),
+            ).fetchall()
+            if len(repositories) != 1:
+                continue
+            owner = str(repositories[0]["github_owner"]).casefold()
+            repo = str(repositories[0]["github_repo"]).casefold()
+            new_key = f"pr:{owner}/{repo}:{parts[1]}:{':'.join(parts[2:])}"
+            duplicate = conn.execute(
+                "SELECT id FROM owner_notifications WHERE dedupe_key = ? AND platform = ? "
+                "AND recipient_id = ? AND id != ?",
+                (
+                    new_key,
+                    notification["platform"],
+                    notification["recipient_id"],
+                    notification["id"],
+                ),
+            ).fetchone()
+            if duplicate:
+                conn.execute(
+                    "DELETE FROM owner_notifications WHERE id = ?",
+                    (notification["id"],),
+                )
+            else:
+                conn.execute(
+                    "UPDATE owner_notifications SET dedupe_key = ? WHERE id = ?",
+                    (new_key, notification["id"]),
+                )
 
     def ensure_channel_account(
         self,
@@ -1067,6 +1154,16 @@ class MemoryStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def find_improvement_task(self, repo: str, scope: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id, task_id, feedback_id, repo, branch_name, scope, risk_level, "
+                "approval_status, runner_status, created_at, updated_at "
+                "FROM improvement_tasks WHERE repo = ? AND scope = ? ORDER BY id DESC LIMIT 1",
+                (repo, scope),
+            ).fetchone()
+        return dict(row) if row else None
+
     def update_improvement_task(
         self,
         improvement_id: int,
@@ -1108,6 +1205,16 @@ class MemoryStore:
         checks_status: str = "unknown",
     ) -> int:
         with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT id FROM pull_requests WHERE improvement_task_id = ? "
+                "OR (lower(github_owner) = lower(?) AND lower(github_repo) = lower(?) "
+                "AND number = ?) "
+                "ORDER BY id DESC LIMIT 1",
+                (improvement_task_id, github_owner, github_repo, number),
+            ).fetchone()
+            if existing:
+                return int(existing["id"])
             cursor = conn.execute(
                 "INSERT INTO pull_requests "
                 "(improvement_task_id, github_owner, github_repo, number, url, "
@@ -1167,10 +1274,10 @@ class MemoryStore:
         clauses = ["number = ?"]
         values: list[Any] = [number]
         if github_owner:
-            clauses.append("github_owner = ?")
+            clauses.append("lower(github_owner) = lower(?)")
             values.append(github_owner)
         if github_repo:
-            clauses.append("github_repo = ?")
+            clauses.append("lower(github_repo) = lower(?)")
             values.append(github_repo)
         with self.connect() as conn:
             row = conn.execute(
@@ -1211,7 +1318,8 @@ class MemoryStore:
                 "pull_requests.merged_at, pull_requests.created_at, "
                 "pull_requests.updated_at FROM owner_notifications AS notifications "
                 "JOIN pull_requests ON notifications.dedupe_key = "
-                "'pr:' || pull_requests.number || ':opened' "
+                "'pr:' || lower(pull_requests.github_owner) || '/' || "
+                "lower(pull_requests.github_repo) || ':' || pull_requests.number || ':opened' "
                 f"WHERE {' AND '.join(conditions)} "
                 "ORDER BY notifications.id DESC, pull_requests.id DESC LIMIT 1",
                 values,
@@ -1224,6 +1332,8 @@ class MemoryStore:
         status: str | None = None,
         checks_status: str | None = None,
         merged_at: str | None = None,
+        url: str | None = None,
+        branch_name: str | None = None,
     ) -> bool:
         fields: list[str] = []
         values: list[Any] = []
@@ -1236,6 +1346,12 @@ class MemoryStore:
         if merged_at is not None:
             fields.append("merged_at = ?")
             values.append(merged_at)
+        if url is not None:
+            fields.append("url = ?")
+            values.append(url)
+        if branch_name is not None:
+            fields.append("branch_name = ?")
+            values.append(branch_name)
         if not fields:
             return False
         fields.append("updated_at = CURRENT_TIMESTAMP")
@@ -1331,6 +1447,152 @@ class MemoryStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def begin_github_issue(
+        self,
+        github_owner: str,
+        github_repo: str,
+        issue_number: int,
+        issue_url: str,
+        issue_updated_at: str,
+        title: str,
+        body: str,
+        resume_worthwhile: bool = False,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM github_issue_runs WHERE github_owner = ? "
+                "AND github_repo = ? AND issue_number = ? AND issue_updated_at = ?",
+                (github_owner, github_repo, issue_number, issue_updated_at),
+            ).fetchone()
+            if row is None:
+                cursor = conn.execute(
+                    "INSERT INTO github_issue_runs "
+                    "(github_owner, github_repo, issue_number, issue_url, issue_updated_at, "
+                    "title, body) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        github_owner,
+                        github_repo,
+                        issue_number,
+                        issue_url,
+                        issue_updated_at,
+                        title,
+                        body,
+                    ),
+                )
+                run_id = int(cursor.lastrowid)
+            else:
+                resumable_statuses = ["failed"]
+                if resume_worthwhile:
+                    resumable_statuses.append("worthwhile")
+                placeholders = ", ".join("?" for _ in resumable_statuses)
+                cursor = conn.execute(
+                    "UPDATE github_issue_runs SET status = 'processing', "
+                    "attempt_count = attempt_count + 1, issue_url = ?, title = ?, body = ?, "
+                    "last_error = '', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND "
+                    f"(status IN ({placeholders}) OR (status = 'processing' AND "
+                    "updated_at < datetime('now', '-30 minutes')))",
+                    (issue_url, title, body, int(row["id"]), *resumable_statuses),
+                )
+                if cursor.rowcount == 0:
+                    return None
+                run_id = int(row["id"])
+            claimed = conn.execute(
+                "SELECT * FROM github_issue_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+        return dict(claimed) if claimed else None
+
+    def complete_github_issue_evaluation(
+        self,
+        run_id: int,
+        status: str,
+        worthwhile: bool,
+        confidence: float,
+        rationale: str,
+        implementation_summary: str,
+        provider: str,
+        model: str,
+    ) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE github_issue_runs SET status = ?, worthwhile = ?, confidence = ?, "
+                "rationale = ?, implementation_summary = ?, provider = ?, model = ?, "
+                "last_error = '', updated_at = CURRENT_TIMESTAMP, completed_at = "
+                "CASE WHEN ? = 'processing' THEN '' ELSE CURRENT_TIMESTAMP END WHERE id = ?",
+                (
+                    status,
+                    int(worthwhile),
+                    confidence,
+                    rationale[:4000],
+                    implementation_summary[:4000],
+                    provider,
+                    model,
+                    status,
+                    run_id,
+                ),
+            )
+            return cursor.rowcount > 0
+
+    def link_github_issue_improvement(self, run_id: int, improvement_task_id: int) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE github_issue_runs SET improvement_task_id = ?, status = 'processing', "
+                "completed_at = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (improvement_task_id, run_id),
+            )
+            return cursor.rowcount > 0
+
+    def complete_github_issue_run(
+        self,
+        run_id: int,
+        status: str,
+        pr_number: int = 0,
+        pr_url: str = "",
+    ) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE github_issue_runs SET status = ?, pr_number = ?, pr_url = ?, "
+                "last_error = '', updated_at = CURRENT_TIMESTAMP, "
+                "completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (status, pr_number, pr_url, run_id),
+            )
+            return cursor.rowcount > 0
+
+    def fail_github_issue_run(self, run_id: int, error: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE github_issue_runs SET status = 'failed', last_error = ?, "
+                "completed_at = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (error[:1000], run_id),
+            )
+            return cursor.rowcount > 0
+
+    def list_github_issue_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM github_issue_runs ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_automation_cursor(self, name: str) -> str:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM automation_cursors WHERE name = ?",
+                (name,),
+            ).fetchone()
+        return str(row["value"]) if row else ""
+
+    def set_automation_cursor(self, name: str, value: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO automation_cursors (name, value) VALUES (?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET value = excluded.value, "
+                "updated_at = CURRENT_TIMESTAMP",
+                (name, value),
+            )
+
     def upsert_merge_authorization(
         self,
         pull_request_id: int,
@@ -1341,14 +1603,16 @@ class MemoryStore:
         actor_user_id: str,
         command: str = "",
         detail: str = "",
+        authorized_head_sha: str = "",
     ) -> None:
         with self.connect() as conn:
             conn.execute(
                 "INSERT INTO merge_authorizations "
-                "(pull_request_id, decision, status, actor_platform, actor_source, "
-                "actor_user_id, command, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "(pull_request_id, decision, status, authorized_head_sha, actor_platform, "
+                "actor_source, actor_user_id, command, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(pull_request_id) DO UPDATE SET decision = excluded.decision, "
-                "status = excluded.status, actor_platform = excluded.actor_platform, "
+                "status = excluded.status, authorized_head_sha = excluded.authorized_head_sha, "
+                "actor_platform = excluded.actor_platform, "
                 "actor_source = excluded.actor_source, actor_user_id = excluded.actor_user_id, "
                 "command = excluded.command, detail = excluded.detail, "
                 "updated_at = CURRENT_TIMESTAMP",
@@ -1356,6 +1620,7 @@ class MemoryStore:
                     pull_request_id,
                     decision,
                     status,
+                    authorized_head_sha,
                     actor_platform,
                     actor_source,
                     actor_user_id,
@@ -1364,11 +1629,36 @@ class MemoryStore:
                 ),
             )
 
+    def claim_merge_authorization(
+        self,
+        pull_request_id: int,
+        authorized_head_sha: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                "UPDATE merge_authorizations SET status = 'merging', detail = '', "
+                "updated_at = CURRENT_TIMESTAMP WHERE pull_request_id = ? "
+                "AND decision = 'approved' AND authorized_head_sha = ? AND "
+                "(status IN ('approved', 'merge_pending') OR "
+                "(status = 'merging' AND updated_at < datetime('now', '-2 minutes')))",
+                (pull_request_id, authorized_head_sha),
+            )
+            if cursor.rowcount == 0:
+                return None
+            row = conn.execute(
+                "SELECT pull_request_id, decision, status, authorized_head_sha, "
+                "actor_platform, actor_source, actor_user_id, command, detail, "
+                "created_at, updated_at FROM merge_authorizations WHERE pull_request_id = ?",
+                (pull_request_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def get_merge_authorization(self, pull_request_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT pull_request_id, decision, status, actor_platform, actor_source, "
-                "actor_user_id, command, detail, created_at, updated_at "
+                "SELECT pull_request_id, decision, status, authorized_head_sha, actor_platform, "
+                "actor_source, actor_user_id, command, detail, created_at, updated_at "
                 "FROM merge_authorizations WHERE pull_request_id = ?",
                 (pull_request_id,),
             ).fetchone()
@@ -1377,8 +1667,8 @@ class MemoryStore:
     def list_merge_authorizations(self, limit: int = 50) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT pull_request_id, decision, status, actor_platform, actor_source, "
-                "actor_user_id, command, detail, created_at, updated_at "
+                "SELECT pull_request_id, decision, status, authorized_head_sha, actor_platform, "
+                "actor_source, actor_user_id, command, detail, created_at, updated_at "
                 "FROM merge_authorizations ORDER BY updated_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -1504,13 +1794,19 @@ class MemoryStore:
             ).fetchone()
         return int(row["id"])
 
-    def claim_owner_notification(self, notification_id: int) -> dict[str, Any] | None:
+    def claim_owner_notification(
+        self,
+        notification_id: int,
+        lease_seconds: int = 300,
+    ) -> dict[str, Any] | None:
+        stale_before = f"-{max(1, lease_seconds)} seconds"
         with self.connect() as conn:
             cursor = conn.execute(
                 "UPDATE owner_notifications SET status = 'sending', attempts = attempts + 1, "
                 "updated_at = CURRENT_TIMESTAMP WHERE id = ? "
-                "AND status IN ('pending', 'failed')",
-                (notification_id,),
+                "AND (status IN ('pending', 'failed') OR "
+                "(status = 'sending' AND updated_at < datetime('now', ?)))",
+                (notification_id, stale_before),
             )
             if cursor.rowcount == 0:
                 return None
@@ -1541,16 +1837,23 @@ class MemoryStore:
         self,
         limit: int = 50,
         retryable_only: bool = False,
+        lease_seconds: int = 300,
     ) -> list[dict[str, Any]]:
         query = (
             "SELECT id, dedupe_key, event_type, platform, recipient_id, content, status, "
             "attempts, last_error, sent_at, created_at, updated_at FROM owner_notifications"
         )
+        values: list[Any] = []
         if retryable_only:
-            query += " WHERE status IN ('pending', 'failed')"
+            query += (
+                " WHERE status IN ('pending', 'failed') OR "
+                "(status = 'sending' AND updated_at < datetime('now', ?))"
+            )
+            values.append(f"-{max(1, lease_seconds)} seconds")
         query += " ORDER BY id ASC LIMIT ?"
+        values.append(limit)
         with self.connect() as conn:
-            rows = conn.execute(query, (limit,)).fetchall()
+            rows = conn.execute(query, values).fetchall()
         return [dict(row) for row in rows]
 
     def add_outbound_draft(
@@ -1764,12 +2067,14 @@ class MemoryStore:
             "improvement_tasks",
             "pull_requests",
             "code_review_runs",
+            "github_issue_runs",
             "merge_authorizations",
             "improvement_reflections",
             "deployment_records",
             "owner_notifications",
             "outbound_drafts",
             "inbound_events",
+            "automation_cursors",
         ]
         with self.connect() as conn:
             return [

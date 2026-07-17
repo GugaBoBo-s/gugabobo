@@ -20,12 +20,36 @@ class OwnerNotifier:
         self.napcat_client = napcat_client or NapCatClient()
         self.telegram_client = telegram_client or TelegramClient()
 
-    def notify_pr_opened(self, number: int, url: str, title: str) -> list[int]:
+    def notify_pr_opened(
+        self,
+        number: int,
+        url: str,
+        title: str,
+        github_owner: str = "",
+        github_repo: str = "",
+    ) -> list[int]:
+        return self.ensure_pr_opened(number, url, title, github_owner, github_repo)
+
+    def ensure_pr_opened(
+        self,
+        number: int,
+        url: str,
+        title: str,
+        github_owner: str = "",
+        github_repo: str = "",
+    ) -> list[int]:
+        owner, repo = self._repository(github_owner, github_repo)
+        reference = f"{owner}/{repo} PR #{number}"
         content = (
-            f"咕嘎BoBo 已提交 PR #{number}：{title}\n{url}\n\n"
-            "回复“同意合并”立即合并，或回复“拒绝合并”关闭。"
+            f"咕嘎BoBo 已提交 {reference}：{title}\n{url}\n\n"
+            f"回复“同意合并”处理最近通知，或回复"
+            f"“同意合并 {owner}/{repo}#{number}”/“拒绝合并 {owner}/{repo}#{number}”。"
         )
-        return self.queue_and_deliver(f"pr:{number}:opened", "pr_opened", content)
+        return self.queue_and_deliver(
+            self._pr_key(owner, repo, number, "opened"),
+            "pr_opened",
+            content,
+        )
 
     def notify_pr_outcome(
         self,
@@ -33,14 +57,64 @@ class OwnerNotifier:
         outcome: str,
         detail: str,
         skip_recipient: tuple[str, str] | None = None,
+        github_owner: str = "",
+        github_repo: str = "",
     ) -> list[int]:
+        owner, repo = self._repository(github_owner, github_repo)
         label = "已合并" if outcome == "merged" else "已拒绝"
-        content = f"咕嘎BoBo PR #{number} {label}。\n{detail}".strip()
+        content = f"咕嘎BoBo {owner}/{repo} PR #{number} {label}。\n{detail}".strip()
         return self.queue_and_deliver(
-            f"pr:{number}:{outcome}",
+            self._pr_key(owner, repo, number, outcome),
             f"pr_{outcome}",
             content,
             skip_recipient=skip_recipient,
+        )
+
+    def notify_pr_head_changed(
+        self,
+        number: int,
+        url: str,
+        previous_head_sha: str,
+        current_head_sha: str,
+        github_owner: str = "",
+        github_repo: str = "",
+    ) -> list[int]:
+        owner, repo = self._repository(github_owner, github_repo)
+        previous = previous_head_sha[:12] or "unknown"
+        current = current_head_sha[:12] or "unknown"
+        content = (
+            f"咕嘎BoBo {owner}/{repo} PR #{number} 在授权后新增了提交。\n"
+            f"原提交：{previous}\n当前提交：{current}\n{url}\n\n"
+            f"请重新检查后回复“同意合并 {owner}/{repo}#{number}”。"
+        )
+        return self.queue_and_deliver(
+            self._pr_key(
+                owner,
+                repo,
+                number,
+                f"head-changed:{previous_head_sha}:{current_head_sha}",
+            ),
+            "pr_head_changed",
+            content,
+        )
+
+    def notify_deployment(
+        self,
+        status: str,
+        revision: str,
+        detail: str,
+    ) -> list[int]:
+        short_revision = revision[:12] or "unknown"
+        if status == "deployed":
+            content = f"咕嘎BoBo 已自动部署 {short_revision} 到服务器。\n{detail}".strip()
+        else:
+            content = (
+                f"咕嘎BoBo 自动部署 {short_revision} 失败，生产服务已回滚。\n{detail}"
+            ).strip()
+        return self.queue_and_deliver(
+            f"deployment:{revision}:{status}",
+            f"deployment_{status}",
+            content,
         )
 
     def queue_and_deliver(
@@ -107,3 +181,9 @@ class OwnerNotifier:
                 self.settings.github_token,
             ),
         )[:1000]
+
+    def _repository(self, owner: str, repo: str) -> tuple[str, str]:
+        return owner or self.settings.github_owner, repo or self.settings.github_repo
+
+    def _pr_key(self, owner: str, repo: str, number: int, event: str) -> str:
+        return f"pr:{owner.casefold()}/{repo.casefold()}:{number}:{event}"

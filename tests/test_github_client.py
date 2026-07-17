@@ -124,6 +124,45 @@ def test_check_run_permission_denied_is_unknown(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_required_check_name_ignores_unrelated_success(monkeypatch):
+    configure_token(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "check_runs": [
+                    {"name": "lint", "status": "completed", "conclusion": "success"},
+                    {"name": "test", "status": "completed", "conclusion": "failure"},
+                ]
+            },
+        )
+
+    install_mock(monkeypatch, handler)
+
+    assert GitHubClient().get_checks_status("abc", "test") == "failure"
+    get_settings.cache_clear()
+
+
+def test_required_check_must_conclude_with_strict_success(monkeypatch):
+    configure_token(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "check_runs": [
+                    {"name": "test", "status": "completed", "conclusion": "skipped"},
+                ]
+            },
+        )
+
+    install_mock(monkeypatch, handler)
+
+    assert GitHubClient().get_checks_status("abc", "test") == "failure"
+    get_settings.cache_clear()
+
+
 def test_push_url_does_not_embed_token(monkeypatch):
     configure_token(monkeypatch, token="ghp_secret_value")
 
@@ -147,13 +186,39 @@ def test_merge_and_close_pull_request(monkeypatch):
     seen = install_mock(monkeypatch, handler)
     client = GitHubClient()
 
-    merged = client.merge_pull_request(15, "Merge PR #15")
+    merged = client.merge_pull_request(15, "Merge PR #15", sha="head-sha")
     closed = client.close_pull_request(15)
 
     assert merged.merged is True
     assert merged.sha == "abc"
+    assert json.loads(seen[0].content)["sha"] == "head-sha"
     assert closed["state"] == "closed"
     assert [request.method for request in seen] == ["PUT", "PATCH"]
+    get_settings.cache_clear()
+
+
+def test_authenticated_login_and_pull_request_recovery(monkeypatch):
+    configure_token(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/user":
+            return httpx.Response(200, json={"login": "gugabobo-agent"})
+        if request.url.path == "/repos/GugaBoBo-s/gugabobo":
+            return httpx.Response(200, json={"owner": {"login": "GugaBoBo-S"}})
+        if request.url.path.endswith("/pulls"):
+            assert request.url.params["head"] == "GugaBoBo-S:gugabobo/improvement-7"
+            assert request.url.params["state"] == "all"
+            return httpx.Response(200, json=[{"number": 17, "html_url": "https://example/pr/17"}])
+        if request.url.path.endswith("/git/ref/heads/missing"):
+            return httpx.Response(404, json={"message": "Not Found"})
+        return httpx.Response(404, json={})
+
+    install_mock(monkeypatch, handler)
+    client = GitHubClient()
+
+    assert client.get_authenticated_login() == "gugabobo-agent"
+    assert client.find_pull_request_by_head("gugabobo/improvement-7")["number"] == 17
+    assert client.try_get_branch_sha("missing") == ""
     get_settings.cache_clear()
 
 
@@ -209,4 +274,74 @@ def test_create_pull_request_review_uses_comment_event(monkeypatch):
     assert result.review_id == 9
     assert seen[0].url.path.endswith("/pulls/7/reviews")
     assert payload == {"body": "review body", "commit_id": "head-sha", "event": "COMMENT"}
+    get_settings.cache_clear()
+
+
+def test_list_issues_excludes_pull_requests(monkeypatch):
+    configure_token(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/issues")
+        return httpx.Response(
+            200,
+            json=[
+                {"number": 1, "title": "Issue"},
+                {"number": 2, "title": "PR", "pull_request": {"url": "example"}},
+            ],
+        )
+
+    install_mock(monkeypatch, handler)
+
+    assert GitHubClient().list_issues() == [{"number": 1, "title": "Issue"}]
+    get_settings.cache_clear()
+
+
+def test_detects_open_pull_request_linked_from_issue_timeline(monkeypatch):
+    configure_token(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/issues/7/timeline")
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "event": "cross-referenced",
+                    "source": {
+                        "issue": {
+                            "number": 11,
+                            "state": "open",
+                            "pull_request": {"url": "example"},
+                        }
+                    },
+                }
+            ],
+        )
+
+    install_mock(monkeypatch, handler)
+
+    assert GitHubClient().has_open_linked_pull_request(7) is True
+    get_settings.cache_clear()
+
+
+def test_issue_limit_is_applied_after_filtering_pull_requests(monkeypatch):
+    configure_token(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        if page == 1:
+            return httpx.Response(
+                200,
+                json=[
+                    {"number": number, "pull_request": {"url": "example"}}
+                    for number in range(100)
+                ],
+            )
+        return httpx.Response(200, json=[{"number": 101, "title": "Real issue"}])
+
+    seen = install_mock(monkeypatch, handler)
+
+    assert GitHubClient().list_issues(limit=1) == [
+        {"number": 101, "title": "Real issue"}
+    ]
+    assert len(seen) == 2
     get_settings.cache_clear()

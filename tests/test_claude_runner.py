@@ -16,8 +16,13 @@ class FakeContainerRuntime:
 
 def test_configured_requires_isolated_runtime():
     get_settings.cache_clear()
-    assert ClaudeCodeRunner(container_runtime=FakeContainerRuntime()).configured is True
-    assert ClaudeCodeRunner(container_runtime=FakeContainerRuntime(ready=False)).configured is False
+    assert ClaudeCodeRunner(
+        container_runtime=FakeContainerRuntime(), auth_token="token"
+    ).configured is True
+    assert ClaudeCodeRunner(container_runtime=FakeContainerRuntime()).configured is False
+    assert ClaudeCodeRunner(
+        container_runtime=FakeContainerRuntime(ready=False), auth_token="token"
+    ).configured is False
     get_settings.cache_clear()
 
 
@@ -42,12 +47,16 @@ def test_run_builds_isolated_headless_command(tmp_path, monkeypatch):
     assert "bypassPermissions" not in call["command"]
     assert "Bash,Read,Write" not in call["command"]
     assert "--no-session-persistence" in call["command"]
-    assert call["environment"] == {
-        "ANTHROPIC_AUTH_TOKEN": "runner-secret",
-        "ANTHROPIC_BASE_URL": "https://gateway.example.com",
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-        "DISABLE_AUTOUPDATER": "1",
-    }
+    assert "--bare" in call["command"]
+    assert "--safe-mode" in call["command"]
+    assert "--strict-mcp-config" in call["command"]
+    assert call["host_gateway"] is True
+    assert "home_dir" not in call
+    assert call["environment"]["ANTHROPIC_AUTH_TOKEN"] != "runner-secret"
+    assert call["environment"]["ANTHROPIC_API_KEY"] != "runner-secret"
+    assert call["environment"]["ANTHROPIC_BASE_URL"].startswith(
+        "http://host.docker.internal:"
+    )
     get_settings.cache_clear()
 
 
@@ -57,7 +66,9 @@ def test_run_reports_container_failure(tmp_path):
         result=ContainerResult(returncode=1, stdout="", stderr="boom")
     )
 
-    result = ClaudeCodeRunner(container_runtime=runtime).run("do it", cwd=tmp_path)
+    result = ClaudeCodeRunner(container_runtime=runtime, auth_token="token").run(
+        "do it", cwd=tmp_path
+    )
 
     assert result.ok is False
     assert result.error == "boom"

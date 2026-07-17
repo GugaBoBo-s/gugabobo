@@ -87,8 +87,8 @@ sudo bash /opt/gugabobo/repo/deploy/setup.sh
 ```
 
 The setup script installs Python and Docker, installs the package, builds the
-isolated runner image, runs Ruff and pytest, and installs the systemd units. It
-does not overwrite an existing `.env`.
+isolated runner image, runs Ruff and pytest, installs the systemd units, and
+enables the production deployment timer. It does not overwrite an existing `.env`.
 
 ## Configuration
 
@@ -113,11 +113,11 @@ For servers with a slow path to Debian's default repository, set a trusted base
 mirror such as `GUGABOBO_DEBIAN_MIRROR=https://mirrors.cloud.tencent.com`.
 The value replaces only `http://deb.debian.org` inside the runner build.
 
-## Isolated Claude Code authentication
+## Isolated code-model authentication
 
-Claude Code runs only in `gugabobo-runner:local`. Its dedicated home directory
-is mounted into the container; the service user's normal home and the host
-environment are not mounted or forwarded.
+Claude Code and the timeout-only fallback runners run only in
+`gugabobo-runner:local`. The service user's home, persistent credential homes,
+host environment, and Docker socket are not mounted or forwarded.
 
 For an Anthropic-compatible gateway, configure the following values in the
 mode-600 `.env` file:
@@ -127,37 +127,18 @@ GUGABOBO_CLAUDE_BASE_URL=https://gateway.example.com
 GUGABOBO_CLAUDE_AUTH_TOKEN=replace-with-gateway-token
 ```
 
-The runner maps these values to `ANTHROPIC_BASE_URL` and
-`ANTHROPIC_AUTH_TOKEN` only inside the short-lived Claude Code container. The
-token is not included in the Docker command line or Dashboard response. No
-interactive login is required in this mode.
-
-When no gateway token is configured, authenticate the dedicated runner home:
-
-```bash
-sudo -u ubuntu docker run --rm -it \
-  --read-only \
-  --tmpfs /tmp:rw,noexec,nosuid,size=256m \
-  --mount type=bind,source=/opt/gugabobo/data/claude-home,target=/home/runner \
-  --env HOME=/home/runner \
-  gugabobo-runner:local claude auth login
-```
-
-Verify the dedicated login:
-
-```bash
-sudo -u ubuntu docker run --rm \
-  --read-only \
-  --tmpfs /tmp:rw,noexec,nosuid,size=256m \
-  --mount type=bind,source=/opt/gugabobo/data/claude-home,target=/home/runner \
-  --env HOME=/home/runner \
-  gugabobo-runner:local claude auth status
-```
+The host creates a short-lived authenticated relay for each coding run. The real
+provider token remains in host process memory; the container receives only a
+random relay token that expires when the run exits. Interactive runner-home
+authentication is intentionally unsupported because generated tools must not be
+able to read persistent credentials.
 
 Generated edits run with a read-only container root, dropped capabilities,
-resource limits, no Docker socket, and only the sandbox clone plus dedicated
-runner home mounted. Ruff and pytest run in a second container with networking
-disabled. There is no host-execution fallback.
+resource limits, no Docker socket, and only the sandbox clone mounted. Claude
+has no Bash or MCP tools. The Codex fallback uses `workspace-write` sandboxing
+and does not pass provider credentials to generated shell commands. Ruff and
+pytest run in a second container with networking disabled. There is no
+host-execution fallback.
 
 ## Start and verify
 
@@ -211,6 +192,47 @@ curl --fail http://127.0.0.1:8765/health
 The setup command uses `git pull --ff-only`, rebuilds the runner image, and
 reruns the complete test suite before the service is restarted.
 
+## Automatic deployment
+
+`gugabobo-deploy.timer` checks `origin/main` every minute. Set the following
+value through `.env` or Dashboard configuration:
+
+```bash
+GUGABOBO_AUTO_DEPLOY_ENABLED=true
+```
+
+For every new fast-forward revision, the root-only deployment service:
+
+1. Requires the target commit to be associated with a merged `main` pull request
+   and a successful GitHub Actions `test` check, plus a pending deployment record
+   created by the gugabobo lifecycle agent.
+2. Exports the target commit into `/opt/gugabobo/deploy-staging`.
+3. Creates an isolated virtual environment and runs Ruff and pytest.
+4. Builds a revision-tagged runner image.
+5. Fast-forwards the production checkout only after all validation passes.
+6. Reinstalls the production package, activates the image, restarts services,
+   and verifies `http://127.0.0.1:8765/health`.
+7. Records and notifies success, or restores the previous commit and image on
+   failure.
+
+A failed revision is written to `/opt/gugabobo/data/deploy-failed-target` and is
+not retried automatically. A newer `main` revision is eligible immediately. To
+retry the same revision after fixing an external problem:
+
+```bash
+sudo rm /opt/gugabobo/data/deploy-failed-target
+sudo systemctl start gugabobo-deploy.service
+```
+
+Inspect deployment state and logs:
+
+```bash
+systemctl status gugabobo-deploy.timer --no-pager
+systemctl status gugabobo-deploy.service --no-pager
+journalctl -u gugabobo-deploy.service -n 200 --no-pager
+cat /opt/gugabobo/data/deploy-status.json
+```
+
 ## Security invariants
 
 - Keep the API on `127.0.0.1` and use an SSH tunnel.
@@ -220,8 +242,10 @@ reruns the complete test suite before the service is restarted.
 - Require owner approval and explicit confirmation before running or shipping an
   improvement.
 - Never merge without explicit authenticated owner authorization.
-- Owner authorization may come from QQ, Telegram, Dashboard, or CLI and triggers
-  an immediate merge request. Keep required checks enforced through GitHub branch
-  protection; rejected authorized merges are retried by the lifecycle agent.
-- Keep merge authorization separate from deployment; setup records the deployed
-  server revision after tests pass.
+- Owner authorization may come from QQ, Telegram, Dashboard, or CLI. Persist it
+  until the authorized head SHA has a successful GitHub Actions `test` check,
+  then attempt the merge immediately. GitHub branch protection remains an
+  additional authority; rejected authorized merges are retried by the lifecycle agent.
+- Never deploy a pull request branch directly. Automatic deployment follows only
+  fast-forward revisions on canonical `main`, validates candidates before
+  activation, and rolls back failed health checks.

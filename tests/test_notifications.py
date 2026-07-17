@@ -39,10 +39,42 @@ def test_owner_notification_sends_both_channels_and_deduplicates(tmp_path) -> No
 
     assert len(napcat.messages) == 1
     assert len(telegram.messages) == 1
-    assert "回复“同意合并”立即合并" in napcat.messages[0][1]
+    assert "GugaBoBo-s/gugabobo PR #15" in napcat.messages[0][1]
     records = store.list_owner_notifications()
     assert len(records) == 2
     assert {record["status"] for record in records} == {"sent"}
+
+
+def test_same_pull_request_number_in_different_repositories_does_not_collide(tmp_path) -> None:
+    store = MemoryStore(tmp_path / "repository-keys.db")
+    settings = Settings(
+        data_dir=tmp_path,
+        db_path=tmp_path / "repository-keys.db",
+        owner_qq_ids="10001",
+        owner_telegram_ids="",
+    )
+    napcat = FakeNapCat()
+    notifier = OwnerNotifier(store, settings, napcat, FakeTelegram())
+
+    notifier.notify_pr_opened(
+        1,
+        "https://example/gugabobo/1",
+        "First",
+        "GugaBoBo-s",
+        "gugabobo",
+    )
+    notifier.notify_pr_opened(
+        1,
+        "https://example/test07/1",
+        "Second",
+        "GugaBoBo-s",
+        "test07",
+    )
+
+    records = store.list_owner_notifications()
+    assert len(napcat.messages) == 2
+    assert len(records) == 2
+    assert len({record["dedupe_key"] for record in records}) == 2
 
 
 def test_outcome_notification_skips_reply_channel(tmp_path) -> None:
@@ -93,3 +125,64 @@ def test_failed_notification_is_retried(tmp_path) -> None:
     record = store.list_owner_notifications()[0]
     assert record["status"] == "sent"
     assert record["attempts"] == 2
+
+
+def test_stale_sending_notification_is_recovered_after_lease(tmp_path) -> None:
+    store = MemoryStore(tmp_path / "stale.db")
+    settings = Settings(
+        data_dir=tmp_path,
+        db_path=tmp_path / "stale.db",
+        owner_qq_ids="10001",
+        owner_telegram_ids="",
+    )
+    napcat = FakeNapCat()
+    notifier = OwnerNotifier(store, settings, napcat, FakeTelegram())
+    notification_id = store.queue_owner_notification(
+        "pr:15:merged:qq:10001",
+        "pr_merged",
+        "qq",
+        "10001",
+        "done",
+    )
+
+    claimed = store.claim_owner_notification(notification_id)
+    fresh_result = notifier.retry_pending()
+
+    assert claimed is not None
+    assert fresh_result == {"attempted": 0, "sent": 0}
+    assert napcat.messages == []
+
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE owner_notifications SET updated_at = datetime('now', '-6 minutes') "
+            "WHERE id = ?",
+            (notification_id,),
+        )
+
+    stale_result = notifier.retry_pending()
+    record = store.list_owner_notifications()[0]
+
+    assert stale_result == {"attempted": 1, "sent": 1}
+    assert napcat.messages == [("10001", "done")]
+    assert record["status"] == "sent"
+    assert record["attempts"] == 2
+
+
+def test_deployment_notification_sends_result_once_per_revision(tmp_path) -> None:
+    store = MemoryStore(tmp_path / "deployment-notification.db")
+    settings = Settings(
+        data_dir=tmp_path,
+        db_path=tmp_path / "deployment-notification.db",
+        owner_qq_ids="10001",
+        owner_telegram_ids="20001",
+    )
+    napcat = FakeNapCat()
+    telegram = FakeTelegram()
+    notifier = OwnerNotifier(store, settings, napcat, telegram)
+
+    notifier.notify_deployment("deployed", "abcdef1234567890", "health check passed")
+    notifier.notify_deployment("deployed", "abcdef1234567890", "health check passed")
+
+    assert len(napcat.messages) == 1
+    assert len(telegram.messages) == 1
+    assert "已自动部署 abcdef123456" in napcat.messages[0][1]

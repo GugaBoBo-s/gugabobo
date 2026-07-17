@@ -59,6 +59,35 @@ class SandboxManager:
         self._git(["checkout", "-q", "-b", branch], cwd=target)
         return target
 
+    def prepare_remote(
+        self,
+        improvement_id: int,
+        remote_url: str,
+        branch: str,
+        token: str,
+    ) -> Path:
+        if not token:
+            raise SandboxError("GitHub token is not configured")
+        target = self.path_for(improvement_id)
+        if target.exists():
+            _force_rmtree(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="gugabobo-askpass-") as temp_dir:
+            askpass = self._write_askpass(Path(temp_dir))
+            env = self._git_auth_environment(askpass, token)
+            result = subprocess.run(
+                ["git", "clone", "--quiet", remote_url, str(target)],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+        if result.returncode != 0:
+            message = redact_sensitive(result.stderr, (token, remote_url))
+            raise SandboxError(f"git clone failed: {message.strip()}")
+        self._git(["checkout", "-q", "-b", branch], cwd=target)
+        return target
+
     def collect_diff(self, path: Path) -> str:
         self._git(["add", "-A"], cwd=path)
         result = self._git(["diff", "--cached"], cwd=path)
@@ -108,11 +137,7 @@ class SandboxManager:
             raise SandboxError("GitHub token is not configured")
         with tempfile.TemporaryDirectory(prefix="gugabobo-askpass-") as temp_dir:
             askpass = self._write_askpass(Path(temp_dir))
-            env = os.environ.copy()
-            env["GIT_ASKPASS"] = str(askpass)
-            env["GIT_ASKPASS_USERNAME"] = "x-access-token"
-            env["GIT_ASKPASS_PASSWORD"] = token
-            env["GIT_TERMINAL_PROMPT"] = "0"
+            env = self._git_auth_environment(askpass, token)
             result = subprocess.run(
                 ["git", "push", remote_url, f"HEAD:refs/heads/{branch}"],
                 cwd=str(path),
@@ -124,6 +149,14 @@ class SandboxManager:
         if result.returncode != 0:
             message = redact_sensitive(result.stderr, (token, remote_url))
             raise SandboxError(f"git push failed: {message.strip()}")
+
+    def _git_auth_environment(self, askpass: Path, token: str) -> dict[str, str]:
+        env = os.environ.copy()
+        env["GIT_ASKPASS"] = str(askpass)
+        env["GIT_ASKPASS_USERNAME"] = "x-access-token"
+        env["GIT_ASKPASS_PASSWORD"] = token
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        return env
 
     def cleanup(self, improvement_id: int) -> None:
         target = self.path_for(improvement_id)

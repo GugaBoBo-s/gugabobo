@@ -105,9 +105,13 @@ sudo -u "$RUN_USER" "$REPO_DIR/.venv/bin/python" -m ruff check "$REPO_DIR"
 cp "$REPO_DIR/deploy/gugabobo-api.service" /etc/systemd/system/gugabobo-api.service
 cp "$REPO_DIR/deploy/gugabobo-telegram.service" /etc/systemd/system/gugabobo-telegram.service
 cp "$REPO_DIR/deploy/gugabobo-agent.service" /etc/systemd/system/gugabobo-agent.service
+install -m 0755 "$REPO_DIR/deploy/auto-deploy.sh" /usr/local/sbin/gugabobo-auto-deploy
+cp "$REPO_DIR/deploy/gugabobo-deploy.service" /etc/systemd/system/gugabobo-deploy.service
+cp "$REPO_DIR/deploy/gugabobo-deploy.timer" /etc/systemd/system/gugabobo-deploy.timer
 systemctl daemon-reload
 systemctl enable gugabobo-api.service
 systemctl enable gugabobo-agent.service
+systemctl enable --now gugabobo-deploy.timer
 
 (
   cd "$REPO_DIR"

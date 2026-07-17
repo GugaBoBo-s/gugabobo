@@ -497,6 +497,27 @@ erDiagram
         string completed_at
     }
 
+    GITHUB_ISSUE_RUNS {
+        integer id PK
+        string github_owner
+        string github_repo
+        integer issue_number
+        string issue_updated_at
+        string status
+        boolean worthwhile
+        float confidence
+        string provider
+        string model
+        integer improvement_task_id
+        integer pr_number
+    }
+
+    AUTOMATION_CURSORS {
+        string name PK
+        string value
+        string updated_at
+    }
+
     CONVERSATION ||--o{ MESSAGES : "conversation_id"
     CONVERSATION ||--o| CONVERSATION_SUMMARIES : "conversation_id"
     CONVERSATION ||--o{ MEMORY_ITEMS : "subject"
@@ -512,6 +533,7 @@ Notes:
 - `memory_items.subject` can point to a canonical conversation id or the global subject `global`.
 - `feedbacks` currently records source and user id only. It is intentionally not tied to a single message yet.
 - `code_review_runs` is independent from the self-improvement `pull_requests` table because it covers PRs in every accessible organization repository.
+- `github_issue_runs` records one decision per issue version and links accepted work to its improvement task and pull request.
 
 #### persons
 
@@ -798,6 +820,12 @@ erDiagram
         string reply
         string result_json
         string last_error
+    }
+
+    AUTOMATION_CURSORS {
+        string name PK
+        string value
+        string updated_at
     }
 
     TOOL_CALLS {
@@ -1188,8 +1216,105 @@ Safety invariants:
 - A review is not an owner merge authorization and cannot trigger the merge lifecycle.
 - Failed runs remain retryable; completed runs are deduplicated in SQLite and by a GitHub body marker.
 - New commits create a new head SHA and therefore a new review run.
-- Diff size and file count are bounded before sending content to the LLM.
-- Private repository content leaves GitHub and is sent to the explicitly configured LLM provider.
+- Diff size and file count are bounded before sending content to the code model chain.
+- Private repository content may reach Claude, GPT after a Claude timeout, or DeepSeek after a
+  second timeout. Every provider in the chain must be approved for that source code.
+
+### 14.2 Organization-Wide Issue Automation
+
+The lifecycle agent discovers open GitHub issues, excludes pull requests returned by the shared
+issues endpoint, and claims each `(owner, repository, issue number, updated_at)` once. A code-specific
+model chain evaluates whether the issue is real, bounded, testable, safe, and valuable. Accepted
+issues above the confidence threshold may create approved improvement tasks and pull requests without
+another owner action, but only for repositories on the explicit auto-fix allowlist.
+
+```mermaid
+sequenceDiagram
+    participant D as Lifecycle daemon
+    participant G as GitHub API
+    participant S as SQLite
+    participant C as Claude
+    participant O as GPT
+    participant X as DeepSeek
+    participant R as Isolated code runner
+
+    D->>G: List organization repositories and open issues
+    D->>S: Claim owner + repo + issue + updated_at
+    alt New or retryable
+        D->>C: Evaluate untrusted issue data
+        alt Claude timeout
+            D->>O: Retry evaluation
+            alt GPT timeout
+                D->>X: Retry evaluation
+            end
+        end
+        D->>S: Persist value, confidence, rationale, provider, and model
+        alt Worthwhile, confident, and allowlisted
+            D->>R: Clone, edit, and test target repository
+            R->>G: Push branch and open PR with Closes #N
+            D->>S: Link issue run, improvement task, and PR
+        end
+    else Already handled
+        S-->>D: Skip
+    end
+```
+
+Safety invariants:
+
+- Issue content is untrusted prompt input.
+- Code functions start with the latest configured Claude Opus model and fall back only on timeout,
+  first to the latest configured flagship GPT model and then to DeepSeek.
+- Auto-fix defaults to the primary configured repository; organization-wide writes require an explicit allowlist or `*`.
+- Generated work stays in a unique branch and pull request; explicit owner authorization remains mandatory for merge.
+- Non-timeout provider errors stop execution and remain visible in SQLite, logs, CLI, API, and Dashboard.
+
+### 14.3 Staged Production Auto Deployment
+
+The server runs a root-only systemd timer independently from the unprivileged gugabobo runtime.
+It polls the canonical `main` branch, stages and validates a new fast-forward revision, builds a
+revision-tagged runner image, and only then activates production. Pull request branches are never
+deployment targets.
+
+```mermaid
+sequenceDiagram
+    participant T as systemd timer
+    participant G as origin/main
+    participant S as staging release
+    participant P as production
+    participant O as QQ and Telegram owners
+
+    T->>G: Fetch canonical main
+    alt No new fast-forward revision
+        T-->>T: Record current or blocked state
+    else New revision
+        T->>S: Export commit and install dependencies
+        S->>S: Ruff, pytest, and runner image build
+        alt Validation fails
+            T->>O: Notify deployment failure
+        else Validation passes
+            T->>P: Fast-forward, install, activate image, restart
+            T->>P: Verify localhost health endpoint
+            alt Health check fails
+                T->>P: Restore previous commit and runner image
+                T->>O: Notify rollback
+            else Healthy
+                T->>O: Notify deployment success
+            end
+        end
+    end
+```
+
+Safety invariants:
+
+- The deployment service follows only `origin/main` and requires fast-forward ancestry.
+- The target must be linked to a merged `main` pull request and have a successful GitHub Actions `test` check.
+- SQLite must contain the pending deployment record created by the merge lifecycle for that exact revision.
+- Validation runs before the production checkout changes.
+- The deployment timer runs as root; API, Telegram, and lifecycle processes remain unprivileged.
+- Tracked local production changes block deployment.
+- The previous Git revision and runner image are retained for rollback.
+- A failed revision is not retried until a newer revision exists or an administrator clears it.
+- Deployment status, records, audit logs, and owner notifications expose the lifecycle outcome.
 
 Recommended branch protection:
 
@@ -1882,23 +2007,23 @@ reflection record
 post-merge verification
 ```
 
-### P6: Social Expansion
+### P6: Autonomous GitHub Issue Implementation
 
 Goal:
 
 ```text
-Add external social sensing and writing support.
+Discover organization issues and prepare controlled, reviewable fixes.
 ```
 
 Tasks:
 
 ```text
-X monitoring
-X draft/reply support
-Xiaohongshu comment analysis
-Xiaohongshu draft generation
-social feedback ingestion
-public posting approval
+organization-wide issue discovery
+bounded value evaluation
+allowlisted repository policy
+fair repository scan cursor
+isolated code-model execution
+owner-authorized pull-request lifecycle
 ```
 
 ## 25. Risk Register
@@ -2058,15 +2183,24 @@ Recommended tasks:
 3. Add structured cost and token usage records for coding runs.
 ```
 
-P0 through P4 are operational. The current P5 foundation includes approval-gated
-Claude Code execution in a restricted Docker container, network-disabled Ruff
-and pytest checks, tokenless Git remote URLs with askpass authentication, unique
+P0 through P5 are operational. The current P6 foundation includes manual approval-gated
+improvements and autonomous allowlisted issue improvements in restricted Docker containers,
+network-disabled Ruff and pytest checks, tokenless Git remote URLs with askpass authentication, unique
 branches, GitHub Actions check-run synchronization, Dashboard controls, and
 audit records. PR creation notifies all configured QQ and Telegram owners. A
-single explicit owner authorization is persisted across channels and triggers an
-immediate GitHub merge request. GitHub-rejected merges remain queued for retry.
+single explicit owner authorization is persisted across channels. The lifecycle
+agent waits for the exact authorized head SHA to pass the GitHub Actions `test`
+check before attempting the merge. GitHub-rejected merges remain queued for retry.
 Merge/rejection creates reflection records, and merged revisions are linked to
-deployment records visible in Dashboard.
+deployment records visible in Dashboard. A root-only systemd timer validates new
+fast-forward `main` revisions in staging, activates healthy candidates, rolls back
+failed service health checks, and notifies owners of the outcome.
 The lifecycle agent also performs organization-wide GitHub `COMMENT` code reviews,
 deduplicated by repository, PR number, and head SHA. Review history, failures, retries,
 and links are persisted and visible in Dashboard.
+It can additionally evaluate organization issues and autonomously submit allowlisted fixes as pull
+requests. Code review, issue evaluation, and code editing use the timeout-only Claude to GPT to
+DeepSeek chain; ordinary conversation model selection remains independent.
+External issue data is treated as untrusted. Coding containers receive only a
+short-lived relay credential, never the upstream provider key; Claude has no Bash
+or MCP tools, and the Codex fallback uses workspace and environment sandboxing.
