@@ -102,7 +102,9 @@ chmod 600 /opt/gugabobo/repo/.env
 At minimum, set a long random `GUGABOBO_ADMIN_TOKEN`, one LLM provider and key,
 and the relevant QQ or Telegram values. For self-improvement, use a fine-grained
 PAT from the GuGabobo GitHub account with **Contents: read/write** and **Pull
-requests: read/write** on this repository.
+requests: read/write** on this repository. Automatic deployment also requires
+**Actions: read** so the server can verify the merged `main` workflow and its
+`test` job before activation.
 
 If Docker Hub or `github.com` requires the server's local HTTP proxy, set
 `GUGABOBO_DOCKER_PROXY=http://127.0.0.1:<port>`. When this value is empty, setup
@@ -204,8 +206,8 @@ GUGABOBO_AUTO_DEPLOY_ENABLED=true
 For every new fast-forward revision, the root-only deployment service:
 
 1. Requires the target commit to be associated with a merged `main` pull request
-   and a successful GitHub Actions `test` check, plus a pending deployment record
-   created by the gugabobo lifecycle agent.
+   and a successful GitHub Actions `CI` workflow containing a successful `test`
+   job, plus a pending deployment record created by the gugabobo lifecycle agent.
 2. Exports the target commit into `/opt/gugabobo/deploy-staging`.
 3. Creates an isolated virtual environment and runs Ruff and pytest.
 4. Builds a revision-tagged runner image.

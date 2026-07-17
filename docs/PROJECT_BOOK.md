@@ -1307,7 +1307,7 @@ sequenceDiagram
 Safety invariants:
 
 - The deployment service follows only `origin/main` and requires fast-forward ancestry.
-- The target must be linked to a merged `main` pull request and have a successful GitHub Actions `test` check.
+- The target must be linked to a merged `main` pull request and have a successful GitHub Actions `CI` workflow with a successful `test` job.
 - SQLite must contain the pending deployment record created by the merge lifecycle for that exact revision.
 - Validation runs before the production checkout changes.
 - The deployment timer runs as root; API, Telegram, and lifecycle processes remain unprivileged.
