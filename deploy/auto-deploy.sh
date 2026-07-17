@@ -102,7 +102,10 @@ def get(path):
 
 try:
     pulls = get(f"/repos/{owner}/{repo}/commits/{revision}/pulls")
-    checks = get(f"/repos/{owner}/{repo}/commits/{revision}/check-runs?per_page=100")
+    runs = get(
+        f"/repos/{owner}/{repo}/actions/runs"
+        f"?head_sha={revision}&per_page=100"
+    )
 except (urllib.error.URLError, ValueError, KeyError) as error:
     print(f"GitHub deployment verification failed: {error}", file=sys.stderr)
     raise SystemExit(1)
@@ -116,10 +119,32 @@ merged = [
 ]
 if not merged:
     raise SystemExit(2)
-test_runs = [run for run in checks.get("check_runs", []) if run.get("name") == "test"]
-if not test_runs or any(run.get("status") != "completed" for run in test_runs):
+ci_runs = [
+    run
+    for run in runs.get("workflow_runs", [])
+    if run.get("name") == "CI"
+    and run.get("event") == "push"
+    and run.get("head_sha") == revision
+]
+if not ci_runs or ci_runs[0].get("status") != "completed":
     raise SystemExit(2)
-if any(run.get("conclusion") != "success" for run in test_runs):
+if ci_runs[0].get("conclusion") != "success":
+    raise SystemExit(3)
+run_id = ci_runs[0].get("id")
+if not isinstance(run_id, int):
+    raise SystemExit(2)
+try:
+    jobs = get(
+        f"/repos/{owner}/{repo}/actions/runs/{run_id}/jobs"
+        "?filter=latest&per_page=100"
+    )
+except (urllib.error.URLError, ValueError, KeyError) as error:
+    print(f"GitHub deployment verification failed: {error}", file=sys.stderr)
+    raise SystemExit(1)
+test_jobs = [job for job in jobs.get("jobs", []) if job.get("name") == "test"]
+if not test_jobs or any(job.get("status") != "completed" for job in test_jobs):
+    raise SystemExit(2)
+if any(job.get("conclusion") != "success" for job in test_jobs):
     raise SystemExit(3)
 PY
 }
@@ -324,10 +349,11 @@ case "$db_path" in
   /*) ;;
   *) db_path="$REPO_DIR/$db_path" ;;
 esac
-set +e
-deployment_reference=$(verify_pending_deployment "$db_path")
-pending_status=$?
-set -e
+if deployment_reference=$(verify_pending_deployment "$db_path"); then
+  pending_status=0
+else
+  pending_status=$?
+fi
 if [ "$pending_status" -ne 0 ]; then
   write_status "waiting" "Waiting for the lifecycle agent to create a pending deployment record."
   exit 0
@@ -341,11 +367,12 @@ if [ -z "$github_token" ]; then
   write_status "blocked" "GitHub token is required to verify the deployment target."
   exit 0
 fi
-set +e
-verify_github_target "$github_token" "$github_api_url" "$deployment_owner" \
-  "$deployment_repo" "$deployment_pr_number"
-verification_status=$?
-set -e
+if verify_github_target "$github_token" "$github_api_url" "$deployment_owner" \
+  "$deployment_repo" "$deployment_pr_number"; then
+  verification_status=0
+else
+  verification_status=$?
+fi
 case "$verification_status" in
   0) ;;
   2)

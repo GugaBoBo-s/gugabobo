@@ -422,7 +422,8 @@ Sandbox self-improvement commits are authored as `GUGABOBO_GIT_AUTHOR_NAME` /
 `GUGABOBO_GIT_AUTHOR_EMAIL`, defaulting to that account's GitHub noreply email so
 commits link back to it. This is independent of the developer's local git
 identity. On the server, set `GUGABOBO_GITHUB_TOKEN` to a token from the GuGabobo
-account so pull requests are opened by the bot rather than the owner.
+account so pull requests are opened by the bot rather than the owner. Server-side
+deployment verification additionally requires repository **Actions: read** access.
 
 ### Organization-wide code review
 
