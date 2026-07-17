@@ -216,8 +216,8 @@ def test_registry_specs_available_to_user_role(tmp_path):
     specs = registry.specs_for("user")
     names = {spec["function"]["name"] for spec in specs}
 
-    # all three read-only tools are min_skill=chat, so a plain user gets them
-    assert names == {"get_current_time", "recall_messages", "search_memory"}
+    # read-only + web_search are min_skill=chat, so a plain user gets them
+    assert names == {"get_current_time", "recall_messages", "search_memory", "web_search"}
 
 
 def test_registry_blocked_tool_denied_at_dispatch(tmp_path):
@@ -487,3 +487,42 @@ def test_owner_tools_hidden_from_user_and_trusted(tmp_path):
         assert tool not in user_names
         assert tool not in trusted_names
         assert tool in owner_names
+
+
+# ── web_search tool ─────────────────────────────────────────────────────────
+def test_web_search_tool_uses_injected_callable(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    calls = []
+
+    def fake_search(query):
+        calls.append(query)
+        return "1. 结果标题\n摘要内容\nhttp://example.com"
+
+    ctx = ToolContext(
+        store=store, conversation_id="c", access_role="user",
+        source="s", user_id="u", web_search=fake_search,
+    )
+    registry = ToolRegistry()
+
+    out = registry.dispatch("web_search", '{"query": "gpt-5 发布了吗"}', ctx)
+
+    assert calls == ["gpt-5 发布了吗"]
+    assert "结果标题" in out
+
+
+def test_web_search_tool_rejects_empty_query(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    ctx = ToolContext(store=store, conversation_id="c", access_role="user",
+                      web_search=lambda q: "should not run")
+    registry = ToolRegistry()
+
+    out = registry.dispatch("web_search", '{"query": "  "}', ctx)
+
+    assert "不能为空" in out
+
+
+def test_web_search_available_to_all_roles(tmp_path):
+    registry = ToolRegistry()
+    for role in ("user", "trusted", "owner"):
+        names = {s["function"]["name"] for s in registry.specs_for(role)}
+        assert "web_search" in names
