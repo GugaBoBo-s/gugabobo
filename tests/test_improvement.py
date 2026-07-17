@@ -209,6 +209,39 @@ def test_store_task_improvement_and_pr_crud(tmp_path):
     assert store.list_owner_notifications()[0]["id"] == notification_id
 
 
+def test_external_pull_requests_do_not_share_zero_improvement_id(tmp_path) -> None:
+    store = MemoryStore(tmp_path / "external-pr.db")
+
+    first_id = store.add_pull_request(
+        improvement_task_id=0,
+        github_owner="GugaBoBo-s",
+        github_repo="gugabobo",
+        number=16,
+        url="https://github.com/GugaBoBo-s/gugabobo/pull/16",
+        branch_name="codex/first",
+    )
+    second_id = store.add_pull_request(
+        improvement_task_id=0,
+        github_owner="GugaBoBo-s",
+        github_repo="gugabobo",
+        number=17,
+        url="https://github.com/GugaBoBo-s/gugabobo/pull/17",
+        branch_name="codex/second",
+    )
+    duplicate_id = store.add_pull_request(
+        improvement_task_id=0,
+        github_owner="gugabobo-s",
+        github_repo="GUGABOBO",
+        number=17,
+        url="https://example.invalid/duplicate",
+        branch_name="duplicate",
+    )
+
+    assert first_id != second_id
+    assert duplicate_id == second_id
+    assert [record["number"] for record in store.list_pull_requests()] == [17, 16]
+
+
 def test_create_from_feedback_creates_task_and_audit(tmp_path, monkeypatch):
     get_settings.cache_clear()
     store, feedback_id = make_store_with_feedback(tmp_path)

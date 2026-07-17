@@ -1207,11 +1207,18 @@ class MemoryStore:
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             existing = conn.execute(
-                "SELECT id FROM pull_requests WHERE improvement_task_id = ? "
+                "SELECT id FROM pull_requests WHERE "
+                "(? > 0 AND improvement_task_id = ?) "
                 "OR (lower(github_owner) = lower(?) AND lower(github_repo) = lower(?) "
                 "AND number = ?) "
                 "ORDER BY id DESC LIMIT 1",
-                (improvement_task_id, github_owner, github_repo, number),
+                (
+                    improvement_task_id,
+                    improvement_task_id,
+                    github_owner,
+                    github_repo,
+                    number,
+                ),
             ).fetchone()
             if existing:
                 return int(existing["id"])
