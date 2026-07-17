@@ -216,8 +216,14 @@ def test_registry_specs_available_to_user_role(tmp_path):
     specs = registry.specs_for("user")
     names = {spec["function"]["name"] for spec in specs}
 
-    # read-only + web_search are min_skill=chat, so a plain user gets them
-    assert names == {"get_current_time", "recall_messages", "search_memory", "web_search"}
+    # read-only + web_search + read_url are min_skill=chat, so a plain user gets them
+    assert names == {
+        "get_current_time",
+        "recall_messages",
+        "search_memory",
+        "web_search",
+        "read_url",
+    }
 
 
 def test_registry_blocked_tool_denied_at_dispatch(tmp_path):
@@ -526,3 +532,42 @@ def test_web_search_available_to_all_roles(tmp_path):
     for role in ("user", "trusted", "owner"):
         names = {s["function"]["name"] for s in registry.specs_for(role)}
         assert "web_search" in names
+
+
+# ── read_url tool ────────────────────────────────────────────────────────────
+def test_read_url_tool_uses_injected_callable(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    calls = []
+
+    def fake_reader(url):
+        calls.append(url)
+        return "标题：示例\n\n这是正文内容。"
+
+    ctx = ToolContext(
+        store=store, conversation_id="c", access_role="user",
+        source="s", user_id="u", read_url=fake_reader,
+    )
+    registry = ToolRegistry()
+
+    out = registry.dispatch("read_url", '{"url": "https://example.com/x"}', ctx)
+
+    assert calls == ["https://example.com/x"]
+    assert "正文内容" in out
+
+
+def test_read_url_tool_rejects_empty(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    ctx = ToolContext(store=store, conversation_id="c", access_role="user",
+                      read_url=lambda u: "should not run")
+    registry = ToolRegistry()
+
+    out = registry.dispatch("read_url", '{"url": "  "}', ctx)
+
+    assert "不能为空" in out
+
+
+def test_read_url_available_to_all_roles(tmp_path):
+    registry = ToolRegistry()
+    for role in ("user", "trusted", "owner"):
+        names = {s["function"]["name"] for s in registry.specs_for(role)}
+        assert "read_url" in names
