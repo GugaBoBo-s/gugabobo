@@ -25,6 +25,10 @@ class ToolContext:
     # older callers/tests that only pass the first three fields working.
     source: str = "unknown"
     user_id: str = "unknown"
+    # Injected clients for owner tools. Optional so read-only tools and tests
+    # need not provide them; owner tools create a default if absent.
+    napcat_client: object | None = None
+    github_client: object | None = None
 
 
 @dataclass(frozen=True)
@@ -158,6 +162,136 @@ def _tool_record_feedback(context: ToolContext, args: dict[str, object]) -> str:
     return f"已记录反馈 #{feedback_id}：{content}"
 
 
+def _get_napcat(context: ToolContext):
+    if context.napcat_client is not None:
+        return context.napcat_client
+    from gugabobo.infra.napcat_client import NapCatClient
+
+    return NapCatClient()
+
+
+def _get_github(context: ToolContext):
+    if context.github_client is not None:
+        return context.github_client
+    from gugabobo.infra.github_client import GitHubClient
+
+    return GitHubClient()
+
+
+def _tool_send_qq_message(context: ToolContext, args: dict[str, object]) -> str:
+    target = str(args.get("target", "") or "").strip()
+    content = str(args.get("content", "") or "").strip()
+    if not target or not content:
+        return "错误：target 和 content 都不能为空。"
+    client = _get_napcat(context)
+
+    # Resolve recipient: pure digits = QQ id, otherwise look up by remark/nickname.
+    if target.isdigit():
+        recipient_id, label = target, target
+    else:
+        try:
+            matches = client.find_friends(target)
+        except Exception as exc:
+            return f"查找好友「{target}」出错：{exc}。可以直接给我 QQ 号。"
+        if not matches:
+            return f"没有在好友里找到「{target}」。可以直接给我对方的 QQ 号。"
+        if len(matches) > 1:
+            lines = "\n".join(
+                f"- {f.get('remark') or f.get('nickname')}（QQ {f.get('user_id')}）"
+                for f in matches
+            )
+            return f"「{target}」匹配到多个联系人，请指定 QQ 号：\n{lines}"
+        friend = matches[0]
+        recipient_id = str(friend.get("user_id"))
+        label = str(friend.get("remark") or friend.get("nickname") or recipient_id)
+
+    try:
+        client.send_private_msg(recipient_id, content)
+    except Exception as exc:
+        context.store.add_audit_log(
+            actor_source=context.source,
+            actor_user_id=context.user_id,
+            action="tool.send_qq_message",
+            target=f"qq:{recipient_id}",
+            status="failed",
+            risk_level="high",
+            detail=str(exc)[:200],
+        )
+        return f"发送给 {label}（QQ {recipient_id}）失败：{exc}"
+    context.store.add_audit_log(
+        actor_source=context.source,
+        actor_user_id=context.user_id,
+        action="tool.send_qq_message",
+        target=f"qq:{recipient_id}",
+        status="ok",
+        risk_level="high",
+        detail=content[:200],
+    )
+    return f"已发送给 {label}（QQ {recipient_id}）：{content}"
+
+
+def _tool_github_read(context: ToolContext, args: dict[str, object]) -> str:
+    action = str(args.get("action", "") or "").strip()
+    client = _get_github(context)
+    if not getattr(client, "configured", False):
+        return "错误：GitHub 未配置（缺少 token）。"
+    try:
+        if action == "get_pull_request":
+            number = int(args.get("number", 0))
+            if number <= 0:
+                return "错误：get_pull_request 需要 number。"
+            pr = client.get_pull_request(number)
+            head = pr.get("head", {})
+            sha = head.get("sha", "") if isinstance(head, dict) else ""
+            checks = ""
+            if sha:
+                try:
+                    checks = client.get_checks_status(sha)
+                except Exception:
+                    checks = "unknown"
+            return (
+                f"PR #{pr.get('number')} [{pr.get('state')}"
+                f"{'/merged' if pr.get('merged') else ''}] {pr.get('title')}\n"
+                f"作者：{(pr.get('user') or {}).get('login', '?')}  检查：{checks or 'n/a'}\n"
+                f"{pr.get('html_url', '')}"
+            )
+        if action == "list_pull_requests":
+            state = str(args.get("state", "open") or "open")
+            prs = client.list_pull_requests(state=state)
+            if not prs:
+                return f"没有 {state} 状态的 PR。"
+            return "\n".join(
+                f"#{p.get('number')} [{p.get('state')}] {p.get('title')}" for p in prs[:20]
+            )
+        if action == "list_issues":
+            state = str(args.get("state", "open") or "open")
+            issues = client.list_issues(state=state, limit=20)
+            # GitHub returns PRs in the issues endpoint too; filter them out.
+            issues = [i for i in issues if "pull_request" not in i]
+            if not issues:
+                return f"没有 {state} 状态的 issue。"
+            return "\n".join(
+                f"#{i.get('number')} [{i.get('state')}] {i.get('title')}" for i in issues[:20]
+            )
+        return (
+            "错误：未知 action。支持：get_pull_request(number) / "
+            "list_pull_requests(state) / list_issues(state)。"
+        )
+    except Exception as exc:
+        return f"GitHub 查询失败：{exc}"
+
+
+def _tool_list_conversations(context: ToolContext, args: dict[str, object]) -> str:
+    limit = _clamp_limit(args.get("limit"), default=15, maximum=50)
+    rows = context.store.list_conversations(limit=limit)
+    if not rows:
+        return "还没有任何会话记录。"
+    return "\n".join(
+        f"{row['conversation_id']}：{row['message_count']} 条，最后活跃 {row['last_message_at']}"
+        for row in rows
+    )
+
+
 def default_tools() -> list[Tool]:
     return [
         Tool(
@@ -256,6 +390,76 @@ def default_tools() -> list[Tool]:
             },
             handler=_tool_record_feedback,
             min_skill="feedback",
+        ),
+        Tool(
+            name="send_qq_message",
+            description=(
+                "主动通过 QQ 给指定联系人发送一条私聊消息。当主人要你给某人发消息、"
+                "转告、通知时使用（例如『用QQ给kc说明天开会』『告诉老王我到了』）。"
+                "target 可以是好友备注/昵称，也可以是纯数字 QQ 号；内容里不要带敏感信息。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "收件人：好友备注/昵称，或纯数字 QQ 号。",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "要发送的消息正文。",
+                    },
+                },
+                "required": ["target", "content"],
+            },
+            handler=_tool_send_qq_message,
+            min_skill="owner_action",
+        ),
+        Tool(
+            name="github_read",
+            description=(
+                "查询 GitHub 仓库的 PR / issue / CI 状态（只读）。当主人问某个 PR 合了没、"
+                "CI 过了没、有哪些开放的 PR 或 issue 时使用。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["get_pull_request", "list_pull_requests", "list_issues"],
+                        "description": "查询类型。",
+                    },
+                    "number": {
+                        "type": "integer",
+                        "description": "PR 编号，get_pull_request 时必填。",
+                    },
+                    "state": {
+                        "type": "string",
+                        "description": "列表查询的状态过滤：open/closed/all，默认 open。",
+                    },
+                },
+                "required": ["action"],
+            },
+            handler=_tool_github_read,
+            min_skill="owner_action",
+        ),
+        Tool(
+            name="list_conversations",
+            description=(
+                "列出最近活跃的会话概览（每个会话的消息数和最后活跃时间）。"
+                "当主人问『我最近都在忙什么』『哪些群/对话比较活跃』时使用。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "返回会话数，默认 15，最多 50。",
+                    }
+                },
+            },
+            handler=_tool_list_conversations,
+            min_skill="owner_action",
         ),
     ]
 

@@ -326,3 +326,164 @@ def test_chat_skill_without_tools_uses_plain_path():
     reply = skill.reply("你好")
 
     assert reply == "plain: 你好"
+
+
+# ── owner tools: send_qq_message / github_read / list_conversations ─────────
+class FakeNapCat:
+    def __init__(self, friends=None, fail=False):
+        self._friends = friends or []
+        self.fail = fail
+        self.sent = []
+
+    def find_friends(self, target):
+        return list(self._friends)
+
+    def send_private_msg(self, user_id, message):
+        if self.fail:
+            raise RuntimeError("network down")
+        self.sent.append((str(user_id), message))
+
+
+class FakeGitHub:
+    configured = True
+
+    def __init__(self):
+        self.prs = {21: {"number": 21, "state": "closed", "merged": True,
+                         "title": "add tools", "user": {"login": "GuGabobo"},
+                         "head": {"sha": "abc123"}, "html_url": "http://x/21"}}
+
+    def get_pull_request(self, number):
+        return self.prs[number]
+
+    def get_checks_status(self, sha):
+        return "success"
+
+    def list_pull_requests(self, state="open"):
+        return [] if state == "open" else [self.prs[21]]
+
+    def list_issues(self, state="open", limit=20):
+        return [{"number": 5, "state": "open", "title": "a bug"}]
+
+
+def _owner_ctx(store, **kw):
+    return ToolContext(
+        store=store, conversation_id="telegram:user:owner", access_role="owner",
+        source="telegram_private", user_id="owner", **kw
+    )
+
+
+def test_send_qq_message_by_numeric_id(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    napcat = FakeNapCat()
+    registry = ToolRegistry()
+
+    out = registry.dispatch(
+        "send_qq_message", '{"target": "12345", "content": "你好"}',
+        _owner_ctx(store, napcat_client=napcat),
+    )
+
+    assert "已发送" in out
+    assert napcat.sent == [("12345", "你好")]
+    assert any(log["action"] == "tool.send_qq_message" for log in store.list_audit_logs(limit=5))
+
+
+def test_send_qq_message_resolves_friend_by_name(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    napcat = FakeNapCat(friends=[{"user_id": 999, "remark": "kc", "nickname": "K"}])
+    registry = ToolRegistry()
+
+    out = registry.dispatch(
+        "send_qq_message", '{"target": "kc", "content": "明天开会"}',
+        _owner_ctx(store, napcat_client=napcat),
+    )
+
+    assert "已发送" in out and "kc" in out
+    assert napcat.sent == [("999", "明天开会")]
+
+
+def test_send_qq_message_ambiguous_friend(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    napcat = FakeNapCat(friends=[
+        {"user_id": 1, "remark": "kc", "nickname": "K"},
+        {"user_id": 2, "remark": "kc2", "nickname": "K2"},
+    ])
+    registry = ToolRegistry()
+
+    out = registry.dispatch(
+        "send_qq_message", '{"target": "kc", "content": "hi"}',
+        _owner_ctx(store, napcat_client=napcat),
+    )
+
+    assert "多个" in out
+    assert napcat.sent == []
+
+
+def test_send_qq_message_denied_for_non_owner(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    napcat = FakeNapCat()
+    registry = ToolRegistry()
+
+    ctx = ToolContext(store=store, conversation_id="c", access_role="trusted",
+                      source="s", user_id="u", napcat_client=napcat)
+    out = registry.dispatch("send_qq_message", '{"target": "1", "content": "x"}', ctx)
+
+    assert "不能使用工具" in out
+    assert napcat.sent == []
+
+
+def test_github_read_get_pull_request(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    registry = ToolRegistry()
+
+    out = registry.dispatch(
+        "github_read", '{"action": "get_pull_request", "number": 21}',
+        _owner_ctx(store, github_client=FakeGitHub()),
+    )
+
+    assert "#21" in out and "merged" in out and "success" in out
+
+
+def test_github_read_list_issues_filters_prs(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    registry = ToolRegistry()
+
+    out = registry.dispatch(
+        "github_read", '{"action": "list_issues"}',
+        _owner_ctx(store, github_client=FakeGitHub()),
+    )
+
+    assert "#5" in out and "a bug" in out
+
+
+def test_github_read_owner_only(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    ctx = ToolContext(store=store, conversation_id="c", access_role="user",
+                      source="s", user_id="u")
+    registry = ToolRegistry()
+
+    out = registry.dispatch("github_read", '{"action": "list_issues"}', ctx)
+
+    assert "不能使用工具" in out
+
+
+def test_list_conversations_tool(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    store.add_message(source="telegram_private", user_id="u1", role="user",
+                      content="hi", conversation_id="telegram:user:u1")
+    registry = ToolRegistry()
+
+    out = registry.dispatch("list_conversations", "{}", _owner_ctx(store))
+
+    assert "telegram:user:u1" in out
+
+
+def test_owner_tools_hidden_from_user_and_trusted(tmp_path):
+    registry = ToolRegistry()
+    user_names = {s["function"]["name"] for s in registry.specs_for("user")}
+    trusted_names = {s["function"]["name"] for s in registry.specs_for("trusted")}
+    owner_names = {s["function"]["name"] for s in registry.specs_for("owner")}
+
+    for tool in ("send_qq_message", "github_read", "list_conversations"):
+        assert tool not in user_names
+        assert tool not in trusted_names
+        assert tool in owner_names
