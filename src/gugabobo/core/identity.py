@@ -38,6 +38,14 @@ class IdentityService:
             platform_user_id=context.user_id,
             role=context_access_role(context),
         )
+        # Owner accounts are declared the same real person via OWNER_*_IDS config,
+        # so they auto-share one identity without a manual link step. Collapse all
+        # owner persons, then re-read this account's (now unified) person_id.
+        if context_access_role(context) == "owner":
+            self.store.collapse_owner_persons()
+            account = self.store.get_channel_account(
+                context.platform, context.user_id
+            ) or account
         person_id = int(account["person_id"])
         metadata = dict(context.metadata or {})
         metadata["person_id"] = person_id

@@ -730,6 +730,69 @@ class MemoryStore:
             (target_conversation_id, merged_conversation_id),
         )
 
+    def _merge_person_into(
+        self,
+        conn: sqlite3.Connection,
+        keep_person_id: int,
+        drop_person_id: int,
+    ) -> None:
+        # Fold drop_person_id into keep_person_id: move its private conversation,
+        # reassign its channel accounts, and tombstone the dropped person.
+        if keep_person_id == drop_person_id:
+            return
+        self._merge_private_conversations(
+            conn,
+            f"person:{keep_person_id}:direct",
+            f"person:{drop_person_id}:direct",
+        )
+        keep = conn.execute(
+            "SELECT role FROM persons WHERE id = ?", (keep_person_id,)
+        ).fetchone()
+        drop = conn.execute(
+            "SELECT role FROM persons WHERE id = ?", (drop_person_id,)
+        ).fetchone()
+        merged_role = self._higher_role(
+            str(keep["role"]) if keep else "user",
+            str(drop["role"]) if drop else "user",
+        )
+        conn.execute(
+            "UPDATE persons SET role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (merged_role, keep_person_id),
+        )
+        conn.execute(
+            "UPDATE channel_accounts SET person_id = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE person_id = ?",
+            (keep_person_id, drop_person_id),
+        )
+        conn.execute(
+            "UPDATE persons SET merged_into_person_id = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = ?",
+            (keep_person_id, drop_person_id),
+        )
+
+    def collapse_owner_persons(self) -> int:
+        """Merge all owner-role persons into the lowest owner person id.
+
+        Owner accounts are declared trusted-by-configuration (OWNER_*_IDS), so
+        they represent the same real person and should share one identity /
+        memory / context without a manual link step. Returns the surviving
+        owner person id, or 0 if there are no owner persons.
+        """
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT id FROM persons "
+                "WHERE role = 'owner' AND merged_into_person_id IS NULL "
+                "ORDER BY id ASC"
+            ).fetchall()
+            person_ids = [int(r["id"]) for r in rows]
+            if len(person_ids) <= 1:
+                return person_ids[0] if person_ids else 0
+            keep_id = person_ids[0]
+            for drop_id in person_ids[1:]:
+                self._merge_person_into(conn, keep_id, drop_id)
+            return keep_id
+
     def _mark_link_code_consumed(
         self,
         conn: sqlite3.Connection,
