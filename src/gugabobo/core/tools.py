@@ -29,6 +29,9 @@ class ToolContext:
     # need not provide them; owner tools create a default if absent.
     napcat_client: object | None = None
     github_client: object | None = None
+    # Optional injected web-search callable (query -> formatted string) for
+    # tests; falls back to the real Serper client when absent.
+    web_search: Callable[[str], str] | None = None
 
 
 @dataclass(frozen=True)
@@ -292,6 +295,17 @@ def _tool_list_conversations(context: ToolContext, args: dict[str, object]) -> s
     )
 
 
+def _tool_web_search(context: ToolContext, args: dict[str, object]) -> str:
+    query = str(args.get("query", "") or "").strip()
+    if not query:
+        return "错误：query 不能为空。"
+    if context.web_search is not None:
+        return context.web_search(query)
+    from gugabobo.infra.web_search import run_web_search
+
+    return run_web_search(query)
+
+
 def default_tools() -> list[Tool]:
     return [
         Tool(
@@ -460,6 +474,26 @@ def default_tools() -> list[Tool]:
             },
             handler=_tool_list_conversations,
             min_skill="owner_action",
+        ),
+        Tool(
+            name="web_search",
+            description=(
+                "联网搜索，获取实时/最新的外部信息。当问题涉及时事、最新版本、"
+                "价格、文档、你不确定或训练数据里可能过时的事实时使用；"
+                "不要用它回答闲聊或你已经确定知道的常识。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "搜索关键词或问题，尽量具体。",
+                    }
+                },
+                "required": ["query"],
+            },
+            handler=_tool_web_search,
+            min_skill="chat",
         ),
     ]
 

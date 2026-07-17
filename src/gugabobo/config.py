@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(default="", repr=False)
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-5.6"
+    serper_api_key: str = Field(default="", repr=False)
+    serper_base_url: str = "https://google.serper.dev"
+    web_search_proxy: str = ""
+    web_search_timeout_seconds: int = Field(default=20, ge=1)
+    web_search_max_results: int = Field(default=6, ge=1, le=20)
     llm_timeout_seconds: int = Field(default=60, ge=1)
     llm_context_messages: int = Field(default=400, ge=1)
     llm_memory_items: int = Field(default=12, ge=0)
