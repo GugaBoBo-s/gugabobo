@@ -88,6 +88,106 @@ def test_search_memory_tool_filters_by_query(tmp_path):
     assert miss == "没有找到相关的长期记忆。"
 
 
+# ── write tools: write_memory + record_feedback ────────────────────────────
+def _write_ctx(store, role="trusted"):
+    return ToolContext(
+        store=store,
+        conversation_id="telegram:user:u1",
+        access_role=role,
+        source="telegram_private",
+        user_id="u1",
+    )
+
+
+def test_write_memory_tool_persists_and_audits(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    registry = ToolRegistry()
+
+    out = registry.dispatch(
+        "write_memory",
+        '{"content": "用户是后端工程师", "memory_type": "identity", "importance": 8}',
+        _write_ctx(store),
+    )
+
+    assert "已记住" in out
+    items = store.list_memory_items(subject="telegram:user:u1")
+    assert items[0]["content"] == "用户是后端工程师"
+    assert items[0]["source"] == "agent_tool"
+    # audit trail recorded
+    logs = store.list_audit_logs(limit=10)
+    assert any(log["action"] == "tool.write_memory" for log in logs)
+
+
+def test_write_memory_tool_rejects_secrets(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    registry = ToolRegistry()
+
+    out = registry.dispatch(
+        "write_memory",
+        '{"content": "我的 API key 是 sk-abc123"}',
+        _write_ctx(store),
+    )
+
+    assert "拒绝" in out
+    assert store.list_memory_items(subject="telegram:user:u1") == []
+
+
+def test_write_memory_tool_rejects_empty_content(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    registry = ToolRegistry()
+
+    out = registry.dispatch("write_memory", '{"content": "   "}', _write_ctx(store))
+
+    assert "不能为空" in out
+    assert store.list_memory_items(subject="telegram:user:u1") == []
+
+
+def test_record_feedback_tool_persists_and_audits(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    registry = ToolRegistry()
+
+    out = registry.dispatch(
+        "record_feedback",
+        '{"content": "回复太啰嗦了"}',
+        _write_ctx(store),
+    )
+
+    assert "已记录反馈" in out
+    feedbacks = store.list_feedbacks(limit=10)
+    assert feedbacks[0]["content"] == "回复太啰嗦了"
+    assert feedbacks[0]["source"] == "telegram_private"
+    logs = store.list_audit_logs(limit=10)
+    assert any(log["action"] == "tool.record_feedback" for log in logs)
+
+
+def test_write_tools_hidden_from_user_role(tmp_path):
+    registry = ToolRegistry()
+
+    user_names = {spec["function"]["name"] for spec in registry.specs_for("user")}
+    trusted_names = {spec["function"]["name"] for spec in registry.specs_for("trusted")}
+
+    # plain user only sees read-only tools
+    assert "write_memory" not in user_names
+    assert "record_feedback" not in user_names
+    # trusted (and owner) get the write tools
+    assert "write_memory" in trusted_names
+    assert "record_feedback" in trusted_names
+
+
+def test_write_memory_denied_for_user_role_at_dispatch(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    registry = ToolRegistry()
+
+    out = registry.dispatch(
+        "write_memory",
+        '{"content": "不该被记录"}',
+        _write_ctx(store, role="user"),
+    )
+
+    assert "不能使用工具" in out
+    assert store.list_memory_items(subject="telegram:user:u1") == []
+
+
 # ── registry access control ────────────────────────────────────────────────
 def test_registry_dispatch_rejects_unknown_tool(tmp_path):
     store = MemoryStore(tmp_path / "t.db")

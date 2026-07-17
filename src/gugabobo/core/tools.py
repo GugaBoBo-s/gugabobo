@@ -21,6 +21,10 @@ class ToolContext:
     store: MemoryStore
     conversation_id: str
     access_role: str
+    # Who is talking, for feedback attribution and audit trails. Defaults keep
+    # older callers/tests that only pass the first three fields working.
+    source: str = "unknown"
+    user_id: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -86,6 +90,74 @@ def _tool_search_memory(context: ToolContext, args: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def _clamp_importance(raw: object, default: int = 6) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(10, value))
+
+
+# Content the agent must never persist to long-term memory (mirrors the
+# persona's memory-safety rules). Kept deliberately small and obvious.
+_SECRET_HINTS = (
+    "api key",
+    "apikey",
+    "token",
+    "password",
+    "密码",
+    "密钥",
+    "身份证",
+    "银行卡",
+    "信用卡",
+)
+
+
+def _tool_write_memory(context: ToolContext, args: dict[str, object]) -> str:
+    content = str(args.get("content", "") or "").strip()
+    if not content:
+        return "错误：memory content 不能为空。"
+    lowered = content.lower()
+    if any(hint in lowered for hint in _SECRET_HINTS):
+        return "错误：拒绝记录疑似敏感信息（密钥/密码/证件/银行卡等）。"
+    memory_type = str(args.get("memory_type", "") or "note").strip() or "note"
+    importance = _clamp_importance(args.get("importance"))
+    memory_id = context.store.add_memory_item(
+        subject=context.conversation_id,
+        content=content,
+        memory_type=memory_type,
+        importance=importance,
+        source="agent_tool",
+    )
+    context.store.add_audit_log(
+        actor_source=context.source,
+        actor_user_id=context.user_id,
+        action="tool.write_memory",
+        target=f"memory:{memory_id}",
+        detail=content[:200],
+    )
+    return f"已记住（记忆 #{memory_id}，重要度 {importance}）：{content}"
+
+
+def _tool_record_feedback(context: ToolContext, args: dict[str, object]) -> str:
+    content = str(args.get("content", "") or "").strip()
+    if not content:
+        return "错误：feedback content 不能为空。"
+    feedback_id = context.store.add_feedback(
+        source=context.source,
+        user_id=context.user_id,
+        content=content,
+    )
+    context.store.add_audit_log(
+        actor_source=context.source,
+        actor_user_id=context.user_id,
+        action="tool.record_feedback",
+        target=f"feedback:{feedback_id}",
+        detail=content[:200],
+    )
+    return f"已记录反馈 #{feedback_id}：{content}"
+
+
 def default_tools() -> list[Tool]:
     return [
         Tool(
@@ -134,6 +206,56 @@ def default_tools() -> list[Tool]:
             },
             handler=_tool_search_memory,
             min_skill="chat",
+        ),
+        Tool(
+            name="write_memory",
+            description=(
+                "把关于当前用户的长期事实或偏好写入长期记忆，之后的对话能记住。"
+                "当用户透露稳定的偏好、身份、习惯或长期项目事实时主动使用"
+                "（例如『我是后端工程师』『我喜欢喝美式』）。"
+                "不要记录一次性的闲聊、临时状态，或 API key、密码等敏感信息。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "要记住的事实，简短、明确、可解释。",
+                    },
+                    "memory_type": {
+                        "type": "string",
+                        "description": "记忆类型，如 preference/identity/fact，默认 fact。",
+                    },
+                    "importance": {
+                        "type": "integer",
+                        "description": "重要度 1-10，默认 6。",
+                    },
+                },
+                "required": ["content"],
+            },
+            handler=_tool_write_memory,
+            min_skill="memory",
+        ),
+        Tool(
+            name="record_feedback",
+            description=(
+                "当用户在吐槽、抱怨、提改进建议或指出 bug 时，把它记进反馈表，"
+                "供后续改进。当用户表达不满或建议时主动使用"
+                "（例如『你回复太啰嗦了』『这个功能能不能加个X』）。"
+                "普通提问、闲聊不要记。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "反馈的核心内容，用一句话概括用户的意见。",
+                    }
+                },
+                "required": ["content"],
+            },
+            handler=_tool_record_feedback,
+            min_skill="feedback",
         ),
     ]
 
