@@ -176,3 +176,46 @@ def test_expired_link_code_cannot_merge_accounts(tmp_path):
     telegram_account = store.get_channel_account("telegram", "20002")
     assert "已经过期" in response
     assert qq_account["person_id"] != telegram_account["person_id"]
+
+
+def test_owner_accounts_auto_share_identity_without_linking(tmp_path):
+    store = MemoryStore(tmp_path / "owner.db")
+    identity = IdentityService(store)
+
+    # Two owner accounts on different platforms, no manual link command
+    qq = identity.resolve_context(private_context("qq", "241398668", is_owner=True))
+    tg = identity.resolve_context(private_context("telegram", "8033610870", is_owner=True))
+
+    # both collapse to the same person automatically
+    assert qq.person_id == tg.person_id
+    assert qq.conversation_id == tg.conversation_id
+
+
+def test_owner_memory_shared_across_platforms(tmp_path):
+    store = MemoryStore(tmp_path / "owner2.db")
+    identity = IdentityService(store)
+
+    qq = identity.resolve_context(private_context("qq", "241398668", is_owner=True))
+    # write a memory in the QQ-resolved (person) conversation
+    store.add_memory_item(
+        subject=qq.conversation_id,
+        content="用户喜欢喝美式咖啡",
+        memory_type="preference",
+        importance=8,
+    )
+
+    tg = identity.resolve_context(private_context("telegram", "8033610870", is_owner=True))
+    items = store.list_memory_items(subject=tg.conversation_id, limit=10)
+
+    assert any("美式" in it["content"] for it in items)
+
+
+def test_non_owner_accounts_stay_separate(tmp_path):
+    store = MemoryStore(tmp_path / "users.db")
+    identity = IdentityService(store)
+
+    a = identity.resolve_context(private_context("qq", "111", is_owner=False))
+    b = identity.resolve_context(private_context("telegram", "222", is_owner=False))
+
+    # plain users are NOT auto-linked — still require an explicit link command
+    assert a.person_id != b.person_id
