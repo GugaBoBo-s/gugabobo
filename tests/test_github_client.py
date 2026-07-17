@@ -124,6 +124,45 @@ def test_check_run_permission_denied_is_unknown(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_required_check_name_ignores_unrelated_success(monkeypatch):
+    configure_token(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "check_runs": [
+                    {"name": "lint", "status": "completed", "conclusion": "success"},
+                    {"name": "test", "status": "completed", "conclusion": "failure"},
+                ]
+            },
+        )
+
+    install_mock(monkeypatch, handler)
+
+    assert GitHubClient().get_checks_status("abc", "test") == "failure"
+    get_settings.cache_clear()
+
+
+def test_required_check_must_conclude_with_strict_success(monkeypatch):
+    configure_token(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "check_runs": [
+                    {"name": "test", "status": "completed", "conclusion": "skipped"},
+                ]
+            },
+        )
+
+    install_mock(monkeypatch, handler)
+
+    assert GitHubClient().get_checks_status("abc", "test") == "failure"
+    get_settings.cache_clear()
+
+
 def test_push_url_does_not_embed_token(monkeypatch):
     configure_token(monkeypatch, token="ghp_secret_value")
 

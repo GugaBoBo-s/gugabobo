@@ -703,7 +703,7 @@ class FakeGitHubClient:
         return {"state": "closed", "merged": True, "merged_at": "2026-07-09T10:00:00Z",
                 "head": {"sha": "abc"}}
 
-    def get_checks_status(self, ref):
+    def get_checks_status(self, ref, required_name=""):
         return "success"
 
 

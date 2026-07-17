@@ -512,6 +512,12 @@ erDiagram
         integer pr_number
     }
 
+    AUTOMATION_CURSORS {
+        string name PK
+        string value
+        string updated_at
+    }
+
     CONVERSATION ||--o{ MESSAGES : "conversation_id"
     CONVERSATION ||--o| CONVERSATION_SUMMARIES : "conversation_id"
     CONVERSATION ||--o{ MEMORY_ITEMS : "subject"
@@ -814,6 +820,12 @@ erDiagram
         string reply
         string result_json
         string last_error
+    }
+
+    AUTOMATION_CURSORS {
+        string name PK
+        string value
+        string updated_at
     }
 
     TOOL_CALLS {
@@ -1995,23 +2007,23 @@ reflection record
 post-merge verification
 ```
 
-### P6: Social Expansion
+### P6: Autonomous GitHub Issue Implementation
 
 Goal:
 
 ```text
-Add external social sensing and writing support.
+Discover organization issues and prepare controlled, reviewable fixes.
 ```
 
 Tasks:
 
 ```text
-X monitoring
-X draft/reply support
-Xiaohongshu comment analysis
-Xiaohongshu draft generation
-social feedback ingestion
-public posting approval
+organization-wide issue discovery
+bounded value evaluation
+allowlisted repository policy
+fair repository scan cursor
+isolated code-model execution
+owner-authorized pull-request lifecycle
 ```
 
 ## 25. Risk Register
@@ -2176,8 +2188,9 @@ improvements and autonomous allowlisted issue improvements in restricted Docker 
 network-disabled Ruff and pytest checks, tokenless Git remote URLs with askpass authentication, unique
 branches, GitHub Actions check-run synchronization, Dashboard controls, and
 audit records. PR creation notifies all configured QQ and Telegram owners. A
-single explicit owner authorization is persisted across channels and triggers an
-immediate GitHub merge request. GitHub-rejected merges remain queued for retry.
+single explicit owner authorization is persisted across channels. The lifecycle
+agent waits for the exact authorized head SHA to pass the GitHub Actions `test`
+check before attempting the merge. GitHub-rejected merges remain queued for retry.
 Merge/rejection creates reflection records, and merged revisions are linked to
 deployment records visible in Dashboard. A root-only systemd timer validates new
 fast-forward `main` revisions in staging, activates healthy candidates, rolls back
@@ -2188,3 +2201,6 @@ and links are persisted and visible in Dashboard.
 It can additionally evaluate organization issues and autonomously submit allowlisted fixes as pull
 requests. Code review, issue evaluation, and code editing use the timeout-only Claude to GPT to
 DeepSeek chain; ordinary conversation model selection remains independent.
+External issue data is treated as untrusted. Coding containers receive only a
+short-lived relay credential, never the upstream provider key; Claude has no Bash
+or MCP tools, and the Codex fallback uses workspace and environment sandboxing.

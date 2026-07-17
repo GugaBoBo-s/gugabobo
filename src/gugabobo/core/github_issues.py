@@ -93,6 +93,7 @@ class GitHubIssueAutomationService:
             for item in repositories
             if not bool(item.get("archived")) and not bool(item.get("disabled"))
         ]
+        active_repositories = self._rotate_repositories(active_repositories)
         result["repositories"] = len(active_repositories)
         remaining = self.settings.github_issue_max_per_scan
         for repository in active_repositories:
@@ -106,7 +107,7 @@ class GitHubIssueAutomationService:
                 continue
             github = self.github_factory(owner, repo)
             try:
-                issues = github.list_issues(state="open", limit=remaining)
+                issues = github.list_issues(state="open")
             except Exception as error:
                 result["errors"] = int(result["errors"]) + 1
                 self.logger.error(
@@ -115,12 +116,17 @@ class GitHubIssueAutomationService:
                     repo,
                     self._error(error),
                 )
+                self._set_repository_cursor(owner, repo)
                 continue
             result["issues"] = int(result["issues"]) + len(issues)
-            remaining -= len(issues)
             for issue in issues:
+                if remaining <= 0:
+                    break
                 outcome = self._process_issue(github, issue)
                 result[outcome] = int(result[outcome]) + 1
+                if outcome != "skipped":
+                    remaining -= 1
+            self._set_repository_cursor(owner, repo)
         if int(result["errors"]) > 0:
             result["status"] = "partial_error"
         return result
@@ -141,6 +147,7 @@ class GitHubIssueAutomationService:
             updated_at,
             title,
             body,
+            resume_worthwhile=self._auto_fix_allowed(github.owner, github.repo),
         )
         if run is None:
             return "skipped"
@@ -332,6 +339,31 @@ class GitHubIssueAutomationService:
             return False
         allowed = self.settings.github_issue_auto_fix_repository_set
         return "*" in allowed or f"{owner}/{repo}".casefold() in allowed
+
+    def _rotate_repositories(self, repositories: list[dict]) -> list[dict]:
+        if len(repositories) < 2:
+            return repositories
+        cursor = self.store.get_automation_cursor(self._cursor_name())
+        identities = [self._repository_identity(item) for item in repositories]
+        if cursor not in identities:
+            return repositories
+        start = identities.index(cursor) + 1
+        return repositories[start:] + repositories[:start]
+
+    def _set_repository_cursor(self, owner: str, repo: str) -> None:
+        self.store.set_automation_cursor(
+            self._cursor_name(),
+            f"{owner}/{repo}".casefold(),
+        )
+
+    def _cursor_name(self) -> str:
+        return f"github_issue_repository:{self.settings.github_organization.casefold()}"
+
+    def _repository_identity(self, repository: dict) -> str:
+        owner_data = repository.get("owner", {})
+        owner = str(owner_data.get("login", "")) if isinstance(owner_data, dict) else ""
+        repo = str(repository.get("name", ""))
+        return f"{owner}/{repo}".casefold()
 
     def _error(self, error: object) -> str:
         return redact_sensitive(

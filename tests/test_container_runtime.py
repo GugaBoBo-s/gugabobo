@@ -36,6 +36,7 @@ def test_container_run_applies_isolation_and_strips_business_secrets(tmp_path, m
             "ANTHROPIC_AUTH_TOKEN": claude_token,
             "ANTHROPIC_BASE_URL": "https://gateway.example.com",
         },
+        host_gateway=True,
     )
 
     command = captured["command"]
@@ -44,6 +45,7 @@ def test_container_run_applies_isolation_and_strips_business_secrets(tmp_path, m
     assert "--cap-drop=ALL" in command
     assert "--security-opt=no-new-privileges" in command
     assert "--network=bridge" in command
+    assert "host.docker.internal:host-gateway" in command
     assert "/var/run/docker.sock" not in " ".join(command)
     assert "GUGABOBO_GITHUB_TOKEN" not in captured["env"]
     assert "GITHUB_TOKEN" not in captured["env"]

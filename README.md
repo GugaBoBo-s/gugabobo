@@ -363,6 +363,12 @@ erDiagram
         string result_json
     }
 
+    AUTOMATION_CURSORS {
+        string name PK
+        string value
+        string updated_at
+    }
+
     CONVERSATION ||--o{ MESSAGES : "conversation_id"
     CONVERSATION ||--o| CONVERSATION_SUMMARIES : "conversation_id"
     CONVERSATION ||--o{ MEMORY_ITEMS : "subject"
@@ -564,8 +570,13 @@ Current behavior:
 
 - the improvement task must be approved before it can run
 - the sandbox is a no-hardlink Git clone under `GUGABOBO_SANDBOX_DIR`
-- Each code runner runs in a resource-limited container with only the sandbox and a
-  dedicated credential home mounted; host secrets and the Docker socket are absent
+- each code runner runs in a resource-limited container with only the sandbox mounted;
+  host secrets, persistent credential homes, and the Docker socket are absent
+- model credentials remain in a short-lived host relay; the container receives only an
+  ephemeral relay token that expires before generated changes are committed
+- Claude Code runs without Bash, MCP, project customizations, or reads outside approved
+  workspace paths; the Codex fallback uses its `workspace-write` sandbox with an empty
+  tool-command environment
 - `improve run` moves `runner_status` through `running` → `changes_ready` /
   `no_changes` / `failed`
 - `improve ship` additionally runs `ruff` and `pytest` in a network-disabled
@@ -606,9 +617,16 @@ Current behavior:
 - after receiving a PR notification, an owner may reply `同意合并` or `拒绝合并`
   without repeating the repository, branch, or PR number; explicit numbered
   commands such as `/merge 15` remain available
-- one approval is sufficient across QQ, Telegram, Dashboard, or CLI and triggers
-  an immediate GitHub merge request; GitHub branch protection may reject it, in
-  which case the durable authorization is retried by the lifecycle agent
+- one approval is sufficient across QQ, Telegram, Dashboard, or CLI; the durable
+  authorization is retained until the exact head SHA has a successful GitHub Actions
+  `test` check, then the lifecycle agent immediately attempts the GitHub merge
+- GitHub branch protection remains an additional authority; rejected authorized merges
+  remain queued for retry
+- externally created PRs targeting a managed repository's default branch are imported
+  when an owner explicitly addresses them, so they enter the same authorization,
+  reflection, notification, and deployment lifecycle
+- repository-qualified commands such as `同意合并 GugaBoBo-s/test07#15` disambiguate
+  same-number PRs; notification identities include owner, repository, and PR number
 - every approval is bound to the exact PR head SHA and the SHA is sent with the
   GitHub merge request; any later commit revokes the pending authorization and
   notifies the owner to review and approve the new head

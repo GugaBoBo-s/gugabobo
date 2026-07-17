@@ -11,9 +11,14 @@ from gugabobo.memory.store import MemoryStore
 class FakeOrganizationClient:
     configured = True
 
+    def __init__(self, repositories=None):
+        self.repositories = repositories or [
+            {"name": "gugabobo", "owner": {"login": "GugaBoBo-s"}}
+        ]
+
     def list_organization_repositories(self, organization):
         assert organization == "GugaBoBo-s"
-        return [{"name": "gugabobo", "owner": {"login": "GugaBoBo-s"}}]
+        return self.repositories
 
 
 class FakeRepositoryClient:
@@ -21,8 +26,10 @@ class FakeRepositoryClient:
     owner = "GugaBoBo-s"
     repo = "gugabobo"
 
-    def __init__(self, issues):
+    def __init__(self, issues, owner="GugaBoBo-s", repo="gugabobo"):
         self.issues = issues
+        self.owner = owner
+        self.repo = repo
         self.linked_pull_request = False
 
     def list_issues(self, state="open", limit=None):
@@ -76,10 +83,10 @@ class FakeImprovementService:
         )
 
 
-def issue(updated_at="2026-07-17T00:00:00Z"):
+def issue(updated_at="2026-07-17T00:00:00Z", number=7):
     return {
-        "number": 7,
-        "html_url": "https://github.com/GugaBoBo-s/gugabobo/issues/7",
+        "number": number,
+        "html_url": f"https://github.com/GugaBoBo-s/gugabobo/issues/{number}",
         "updated_at": updated_at,
         "title": "Parser loses escaped values",
         "body": "Reproduction and expected behavior",
@@ -101,13 +108,21 @@ def settings(tmp_path: Path, **overrides):
     return Settings(**values)
 
 
-def build_service(tmp_path, repository, model, improvement, **overrides):
+def build_service(
+    tmp_path,
+    repository,
+    model,
+    improvement,
+    organization_client=None,
+    github_factory=None,
+    **overrides,
+):
     config = settings(tmp_path, **overrides)
     return GitHubIssueAutomationService(
         MemoryStore(config.db_path),
         config,
-        organization_client=FakeOrganizationClient(),
-        github_factory=lambda owner, repo: repository,
+        organization_client=organization_client or FakeOrganizationClient(),
+        github_factory=github_factory or (lambda owner, repo: repository),
         code_model=model,
         improvement_factory=lambda github: improvement,
     )
@@ -171,6 +186,33 @@ def test_issue_outside_auto_fix_allowlist_keeps_worthwhile_decision(tmp_path):
     assert record["status"] == "worthwhile"
 
 
+def test_worthwhile_issue_resumes_after_repository_is_allowlisted(tmp_path):
+    repository = FakeRepositoryClient([issue()])
+    model = FakeCodeModel()
+    improvement = FakeImprovementService()
+    first = build_service(
+        tmp_path,
+        repository,
+        model,
+        improvement,
+        github_issue_auto_fix_repositories="GugaBoBo-s/another-repo",
+    )
+
+    first.tick()
+    second = build_service(
+        tmp_path,
+        repository,
+        model,
+        improvement,
+        github_issue_auto_fix_repositories="GugaBoBo-s/gugabobo",
+    )
+    result = second.tick()
+
+    assert result["pull_requests"] == 1
+    assert len(model.calls) == 1
+    assert second.store.list_github_issue_runs()[0]["status"] == "pr_open"
+
+
 def test_updated_issue_creates_a_new_evaluation_run(tmp_path):
     repository = FakeRepositoryClient([issue()])
     model = FakeCodeModel(worthwhile=False)
@@ -197,3 +239,50 @@ def test_issue_with_linked_open_pull_request_is_not_evaluated(tmp_path):
     assert result["evaluated"] == 1
     assert model.calls == []
     assert record["status"] == "linked_pull_request"
+
+
+def test_processed_newest_issue_does_not_starve_older_issue(tmp_path):
+    repository = FakeRepositoryClient([issue(number=7), issue(number=8)])
+    model = FakeCodeModel(worthwhile=False)
+    service = build_service(
+        tmp_path,
+        repository,
+        model,
+        FakeImprovementService(),
+        github_issue_max_per_scan=1,
+    )
+
+    first = service.tick()
+    second = service.tick()
+
+    assert first["evaluated"] == 1
+    assert second["evaluated"] == 1
+    assert len(model.calls) == 2
+    assert len(service.store.list_github_issue_runs()) == 2
+
+
+def test_repository_cursor_rotates_when_scan_budget_is_exhausted(tmp_path):
+    repositories = [
+        {"name": "first", "owner": {"login": "GugaBoBo-s"}},
+        {"name": "second", "owner": {"login": "GugaBoBo-s"}},
+    ]
+    clients = {
+        "first": FakeRepositoryClient([issue(number=1)], repo="first"),
+        "second": FakeRepositoryClient([issue(number=2)], repo="second"),
+    }
+    model = FakeCodeModel(worthwhile=False)
+    service = build_service(
+        tmp_path,
+        clients["first"],
+        model,
+        FakeImprovementService(),
+        organization_client=FakeOrganizationClient(repositories),
+        github_factory=lambda owner, repo: clients[repo],
+        github_issue_max_per_scan=1,
+    )
+
+    service.tick()
+    service.tick()
+
+    runs = service.store.list_github_issue_runs()
+    assert {run["github_repo"] for run in runs} == {"first", "second"}

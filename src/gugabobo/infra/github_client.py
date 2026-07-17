@@ -227,7 +227,7 @@ class GitHubClient:
         result = self._request("GET", f"/commits/{ref}/check-runs")
         return dict(result) if isinstance(result, dict) else {}
 
-    def get_checks_status(self, ref: str) -> str:
+    def get_checks_status(self, ref: str, required_name: str = "") -> str:
         try:
             data = self.get_check_runs(ref)
         except httpx.HTTPStatusError as error:
@@ -235,12 +235,18 @@ class GitHubClient:
                 return "unknown"
             raise
         check_runs = data.get("check_runs", [])
+        if required_name and isinstance(check_runs, list):
+            check_runs = [
+                item for item in check_runs if str(item.get("name", "")) == required_name
+            ]
         if not isinstance(check_runs, list) or not check_runs:
             return "unknown"
         if any(str(item.get("status", "")) != "completed" for item in check_runs):
             return "pending"
         successful = {"success", "neutral", "skipped"}
         conclusions = {str(item.get("conclusion", "")) for item in check_runs}
+        if required_name:
+            return "success" if conclusions == {"success"} else "failure"
         return "success" if conclusions <= successful else "failure"
 
     def list_organization_repositories(self, organization: str) -> list[dict]:

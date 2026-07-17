@@ -60,6 +60,7 @@ class ContainerRuntime:
         input_text: str | None = None,
         home_dir: Path | None = None,
         environment: dict[str, str] | None = None,
+        host_gateway: bool = False,
     ) -> ContainerResult:
         resolved_workspace = workspace.resolve()
         resolved_home = home_dir.resolve() if home_dir else None
@@ -88,6 +89,8 @@ class ContainerRuntime:
         ]
         if input_text is not None:
             docker_command.append("--interactive")
+        if host_gateway:
+            docker_command.extend(["--add-host", "host.docker.internal:host-gateway"])
         if resolved_home:
             resolved_home.mkdir(parents=True, exist_ok=True)
             docker_command.extend(

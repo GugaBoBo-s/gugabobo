@@ -284,6 +284,12 @@ CREATE TABLE IF NOT EXISTS inbound_events (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(platform, event_id)
 );
+
+CREATE TABLE IF NOT EXISTS automation_cursors (
+    name TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -367,6 +373,44 @@ class MemoryStore:
                 "ALTER TABLE merge_authorizations ADD COLUMN "
                 "authorized_head_sha TEXT NOT NULL DEFAULT ''"
             )
+        notifications = conn.execute(
+            "SELECT id, dedupe_key, platform, recipient_id FROM owner_notifications "
+            "WHERE dedupe_key LIKE 'pr:%'"
+        ).fetchall()
+        for notification in notifications:
+            parts = str(notification["dedupe_key"]).split(":")
+            if len(parts) < 3 or not parts[1].isdigit():
+                continue
+            repositories = conn.execute(
+                "SELECT github_owner, github_repo FROM pull_requests WHERE number = ? "
+                "GROUP BY github_owner, github_repo",
+                (int(parts[1]),),
+            ).fetchall()
+            if len(repositories) != 1:
+                continue
+            owner = str(repositories[0]["github_owner"]).casefold()
+            repo = str(repositories[0]["github_repo"]).casefold()
+            new_key = f"pr:{owner}/{repo}:{parts[1]}:{':'.join(parts[2:])}"
+            duplicate = conn.execute(
+                "SELECT id FROM owner_notifications WHERE dedupe_key = ? AND platform = ? "
+                "AND recipient_id = ? AND id != ?",
+                (
+                    new_key,
+                    notification["platform"],
+                    notification["recipient_id"],
+                    notification["id"],
+                ),
+            ).fetchone()
+            if duplicate:
+                conn.execute(
+                    "DELETE FROM owner_notifications WHERE id = ?",
+                    (notification["id"],),
+                )
+            else:
+                conn.execute(
+                    "UPDATE owner_notifications SET dedupe_key = ? WHERE id = ?",
+                    (new_key, notification["id"]),
+                )
 
     def ensure_channel_account(
         self,
@@ -1164,7 +1208,8 @@ class MemoryStore:
             conn.execute("BEGIN IMMEDIATE")
             existing = conn.execute(
                 "SELECT id FROM pull_requests WHERE improvement_task_id = ? "
-                "OR (github_owner = ? AND github_repo = ? AND number = ?) "
+                "OR (lower(github_owner) = lower(?) AND lower(github_repo) = lower(?) "
+                "AND number = ?) "
                 "ORDER BY id DESC LIMIT 1",
                 (improvement_task_id, github_owner, github_repo, number),
             ).fetchone()
@@ -1229,10 +1274,10 @@ class MemoryStore:
         clauses = ["number = ?"]
         values: list[Any] = [number]
         if github_owner:
-            clauses.append("github_owner = ?")
+            clauses.append("lower(github_owner) = lower(?)")
             values.append(github_owner)
         if github_repo:
-            clauses.append("github_repo = ?")
+            clauses.append("lower(github_repo) = lower(?)")
             values.append(github_repo)
         with self.connect() as conn:
             row = conn.execute(
@@ -1273,7 +1318,8 @@ class MemoryStore:
                 "pull_requests.merged_at, pull_requests.created_at, "
                 "pull_requests.updated_at FROM owner_notifications AS notifications "
                 "JOIN pull_requests ON notifications.dedupe_key = "
-                "'pr:' || pull_requests.number || ':opened' "
+                "'pr:' || lower(pull_requests.github_owner) || '/' || "
+                "lower(pull_requests.github_repo) || ':' || pull_requests.number || ':opened' "
                 f"WHERE {' AND '.join(conditions)} "
                 "ORDER BY notifications.id DESC, pull_requests.id DESC LIMIT 1",
                 values,
@@ -1410,6 +1456,7 @@ class MemoryStore:
         issue_updated_at: str,
         title: str,
         body: str,
+        resume_worthwhile: bool = False,
     ) -> dict[str, Any] | None:
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -1435,13 +1482,17 @@ class MemoryStore:
                 )
                 run_id = int(cursor.lastrowid)
             else:
+                resumable_statuses = ["failed"]
+                if resume_worthwhile:
+                    resumable_statuses.append("worthwhile")
+                placeholders = ", ".join("?" for _ in resumable_statuses)
                 cursor = conn.execute(
                     "UPDATE github_issue_runs SET status = 'processing', "
                     "attempt_count = attempt_count + 1, issue_url = ?, title = ?, body = ?, "
                     "last_error = '', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND "
-                    "(status = 'failed' OR (status = 'processing' AND "
+                    f"(status IN ({placeholders}) OR (status = 'processing' AND "
                     "updated_at < datetime('now', '-30 minutes')))",
-                    (issue_url, title, body, int(row["id"])),
+                    (issue_url, title, body, int(row["id"]), *resumable_statuses),
                 )
                 if cursor.rowcount == 0:
                     return None
@@ -1524,6 +1575,23 @@ class MemoryStore:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_automation_cursor(self, name: str) -> str:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM automation_cursors WHERE name = ?",
+                (name,),
+            ).fetchone()
+        return str(row["value"]) if row else ""
+
+    def set_automation_cursor(self, name: str, value: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO automation_cursors (name, value) VALUES (?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET value = excluded.value, "
+                "updated_at = CURRENT_TIMESTAMP",
+                (name, value),
+            )
 
     def upsert_merge_authorization(
         self,
@@ -2006,6 +2074,7 @@ class MemoryStore:
             "owner_notifications",
             "outbound_drafts",
             "inbound_events",
+            "automation_cursors",
         ]
         with self.connect() as conn:
             return [

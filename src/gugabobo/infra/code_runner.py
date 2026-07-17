@@ -6,6 +6,7 @@ from typing import Protocol
 from gugabobo.config import Settings, get_settings
 from gugabobo.infra.claude_runner import ClaudeCodeRunner, RunResult
 from gugabobo.infra.container_runtime import ContainerRuntime
+from gugabobo.infra.credential_relay import CredentialRelay
 
 
 class CodeRunner(Protocol):
@@ -44,24 +45,35 @@ class CodexCodeRunner:
             "--ignore-rules",
             "--ephemeral",
             "--skip-git-repo-check",
-            "--dangerously-bypass-approvals-and-sandbox",
+            "--strict-config",
+            "--sandbox",
+            "workspace-write",
+            "--config",
+            'shell_environment_policy.inherit="none"',
+            "--config",
+            "sandbox_workspace_write.network_access=false",
             "--model",
             self.settings.code_openai_model,
             "-",
         ]
-        environment = {
-            "OPENAI_API_KEY": self.settings.openai_api_key,
-            "OPENAI_BASE_URL": self.settings.openai_base_url.rstrip("/"),
-        }
-        result = self.container_runtime.run(
-            workspace=cwd,
-            command=command,
-            network="bridge",
+        with CredentialRelay(
+            self.settings.openai_base_url,
+            self.settings.openai_api_key,
+            auth_mode="bearer",
             timeout=self.settings.claude_timeout_seconds,
-            input_text=prompt,
-            home_dir=self.settings.runner_home_dir,
-            environment=environment,
-        )
+        ) as relay:
+            result = self.container_runtime.run(
+                workspace=cwd,
+                command=command,
+                network="bridge",
+                timeout=self.settings.claude_timeout_seconds,
+                input_text=prompt,
+                environment={
+                    "OPENAI_API_KEY": relay.relay_token,
+                    "OPENAI_BASE_URL": relay.container_base_url,
+                },
+                host_gateway=True,
+            )
         return RunResult(
             ok=result.returncode == 0,
             output=result.stdout,
