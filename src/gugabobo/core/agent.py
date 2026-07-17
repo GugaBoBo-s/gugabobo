@@ -149,6 +149,8 @@ class CoreAgent:
                             store=self.store,
                             conversation_id=context.conversation_id,
                             access_role=access_role,
+                            source=context.source,
+                            user_id=context.user_id,
                         )
 
                         def tool_dispatch(name: str, arguments: str) -> str:
