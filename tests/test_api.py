@@ -64,7 +64,8 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     client = TestClient(app)
 
     page_response = client.get("/dashboard")
-    data_response = client.get("/dashboard-data")
+    unauthenticated_data_response = client.get("/dashboard-data")
+    data_response = client.get("/dashboard-data", headers=admin_headers())
 
     assert page_response.status_code == 200
     assert "咕嘎BoBo Dashboard" in page_response.text
@@ -86,6 +87,7 @@ def test_dashboard_endpoints(tmp_path, monkeypatch):
     assert "部署记录" in page_response.text
     assert "主人通知" in page_response.text
     assert '""":' not in page_response.text
+    assert unauthenticated_data_response.status_code == 401
     assert data_response.status_code == 200
     assert "status" in data_response.json()
     assert "messages" in data_response.json()
@@ -208,7 +210,7 @@ def test_dashboard_napcat_runtime_control_reports_missing_directory(tmp_path, mo
     configure_test_env(tmp_path, monkeypatch)
     client = TestClient(app)
 
-    status_response = client.get("/runtime/status")
+    status_response = client.get("/runtime/status", headers=admin_headers())
     start_response = client.post(
         "/dashboard-control/runtime/napcat/start",
         headers=admin_headers(),
@@ -224,7 +226,7 @@ def test_qq_diagnostics_endpoint(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     client = TestClient(app)
 
-    response = client.get("/diagnostics/qq")
+    response = client.get("/diagnostics/qq", headers=admin_headers())
 
     assert response.status_code == 200
     assert response.json()["api"]["running"] is True
@@ -239,7 +241,7 @@ def test_telegram_diagnostics_endpoint(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     client = TestClient(app)
 
-    response = client.get("/diagnostics/telegram")
+    response = client.get("/diagnostics/telegram", headers=admin_headers())
 
     assert response.status_code == 200
     assert response.json()["configured"] is False
@@ -268,7 +270,7 @@ def test_dashboard_telegram_diagnostic_requires_admin_token(tmp_path, monkeypatc
     get_settings.cache_clear()
 
 
-def test_dashboard_onebot_diagnostic_records_message(tmp_path, monkeypatch):
+def test_dashboard_onebot_diagnostic_has_no_message_side_effect(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     client = TestClient(app)
 
@@ -276,15 +278,17 @@ def test_dashboard_onebot_diagnostic_records_message(tmp_path, monkeypatch):
         "/dashboard-control/diagnostics/onebot-test",
         headers=admin_headers(),
     )
-    messages_response = client.get("/messages?conversation_id=qq:user:10001")
+    messages_response = client.get("/messages?conversation_id=qq:user:dashboard-diagnostic")
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
-    assert messages_response.json()[0]["content"] == "ping"
+    assert response.json()["mode"] == "parse_only"
+    assert response.json()["reply_sent"] is False
+    assert messages_response.json() == []
     get_settings.cache_clear()
 
 
-def test_dashboard_telegram_diagnostic_records_message(tmp_path, monkeypatch):
+def test_dashboard_telegram_diagnostic_has_no_message_side_effect(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     client = TestClient(app)
 
@@ -292,11 +296,13 @@ def test_dashboard_telegram_diagnostic_records_message(tmp_path, monkeypatch):
         "/dashboard-control/diagnostics/telegram-test",
         headers=admin_headers(),
     )
-    messages_response = client.get("/messages?conversation_id=telegram:user:10001")
+    messages_response = client.get("/messages?conversation_id=telegram:user:dashboard-diagnostic")
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
-    assert messages_response.json()[0]["content"] == "ping"
+    assert response.json()["mode"] == "parse_only"
+    assert response.json()["reply_sent"] is False
+    assert messages_response.json() == []
     get_settings.cache_clear()
 
 
@@ -399,6 +405,21 @@ def test_dashboard_config_control_updates_env_file(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
+def test_dashboard_config_rejects_unknown_llm_provider(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    response = client.post(
+        "/dashboard-control/config",
+        json={"values": {"GUGABOBO_LLM_PROVIDER": "unknown-provider"}},
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 400
+    assert "GUGABOBO_LLM_PROVIDER" in response.json()["detail"]
+    get_settings.cache_clear()
+
+
 def test_code_review_scan_requires_admin_and_returns_result(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
 
@@ -479,7 +500,7 @@ def test_dashboard_runtime_control_reports_unconfigured_telegram(tmp_path, monke
     get_settings.cache_clear()
     client = TestClient(app)
 
-    status_response = client.get("/runtime/status")
+    status_response = client.get("/runtime/status", headers=admin_headers())
     start_response = client.post(
         "/dashboard-control/runtime/telegram/start",
         headers=admin_headers(),

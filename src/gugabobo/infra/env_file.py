@@ -1,5 +1,9 @@
 from pathlib import Path
 
+from pydantic import ValidationError
+
+from gugabobo.config import Settings
+
 
 EDITABLE_CONFIG_KEYS = {
     "GUGABOBO_OWNER_QQ_IDS",
@@ -101,6 +105,8 @@ FLOAT_CONFIG_RANGES = {
     "GUGABOBO_GITHUB_ISSUE_MIN_CONFIDENCE": (0.0, 1.0),
 }
 
+LLM_PROVIDERS = {"moonshot", "deepseek", "openai"}
+
 
 class EnvFile:
     def __init__(self, path: Path = Path(".env")) -> None:
@@ -121,7 +127,10 @@ class EnvFile:
         for key, value in normalized.items():
             if key not in seen:
                 updated_lines.append(f"{key}={value}")
-        self.path.write_text("\n".join(updated_lines).rstrip() + "\n", encoding="utf-8")
+        content = "\n".join(updated_lines).rstrip() + "\n"
+        temporary_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
+        temporary_path.write_text(content, encoding="utf-8")
+        temporary_path.replace(self.path)
         return normalized
 
     def _read_lines(self) -> list[str]:
@@ -155,6 +164,17 @@ class EnvFile:
                 normalized[key] = str(min(maximum, max(minimum, float(value))))
                 continue
             normalized[key] = str(value).replace("\r", "").replace("\n", "").strip()
+        provider = normalized.get("GUGABOBO_LLM_PROVIDER")
+        if provider is not None and provider not in LLM_PROVIDERS:
+            allowed = ", ".join(sorted(LLM_PROVIDERS))
+            raise ValueError(f"GUGABOBO_LLM_PROVIDER must be one of: {allowed}")
+        settings_values = {
+            key.removeprefix("GUGABOBO_").lower(): value for key, value in normalized.items()
+        }
+        try:
+            Settings.model_validate(settings_values)
+        except ValidationError as error:
+            raise ValueError(str(error)) from error
         return normalized
 
     def _bool_string(self, value: object) -> str:
