@@ -32,6 +32,9 @@ class ToolContext:
     # Optional injected web-search callable (query -> formatted string) for
     # tests; falls back to the real Serper client when absent.
     web_search: Callable[[str], str] | None = None
+    # Optional injected read-url callable (url -> text) for tests; falls back
+    # to the real WebReaderClient when absent.
+    read_url: Callable[[str], str] | None = None
 
 
 @dataclass(frozen=True)
@@ -306,6 +309,17 @@ def _tool_web_search(context: ToolContext, args: dict[str, object]) -> str:
     return run_web_search(query)
 
 
+def _tool_read_url(context: ToolContext, args: dict[str, object]) -> str:
+    url = str(args.get("url", "") or "").strip()
+    if not url:
+        return "错误：url 不能为空。"
+    if context.read_url is not None:
+        return context.read_url(url)
+    from gugabobo.infra.web_reader import run_read_url
+
+    return run_read_url(url)
+
+
 def default_tools() -> list[Tool]:
     return [
         Tool(
@@ -493,6 +507,26 @@ def default_tools() -> list[Tool]:
                 "required": ["query"],
             },
             handler=_tool_web_search,
+            min_skill="chat",
+        ),
+        Tool(
+            name="read_url",
+            description=(
+                "读取一个网页链接的正文内容。当用户发来一个网址问『这篇讲了啥』，"
+                "或 web_search 的摘要不够、需要看某个结果的全文时使用。"
+                "只接受 http/https 完整链接。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "要读取的完整网址（http:// 或 https:// 开头）。",
+                    }
+                },
+                "required": ["url"],
+            },
+            handler=_tool_read_url,
             min_skill="chat",
         ),
     ]
