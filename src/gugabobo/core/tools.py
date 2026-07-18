@@ -532,11 +532,78 @@ def default_tools() -> list[Tool]:
     ]
 
 
+def build_mcp_tools(
+    client,
+    prefix: str,
+    min_skill: str = "owner_action",
+) -> list[Tool]:
+    """Turn a remote MCP server's tools into locally dispatchable Tools.
+
+    Fetches the server's tool list and wraps each one so the agent's normal
+    tool-calling loop can invoke it. Exposed names are prefixed to avoid
+    clashing with built-in tools; the original MCP name is used for the call.
+    Every invocation is written to the audit log because these tools act on the
+    owner's real external account.
+    """
+
+    from gugabobo.infra.mcp_client import tool_result_to_text
+
+    tools: list[Tool] = []
+    for remote in client.list_tools():
+        remote_name = remote.name
+        exposed_name = f"{prefix}_{remote_name}"
+        parameters = remote.input_schema or {"type": "object", "properties": {}}
+
+        def _make_handler(mcp_name: str):
+            def handler(context: ToolContext, args: dict[str, object]) -> str:
+                try:
+                    result = client.call_tool(mcp_name, args)
+                except Exception as exc:
+                    context.store.add_audit_log(
+                        actor_source=context.source,
+                        actor_user_id=context.user_id,
+                        action=f"tool.mcp.{prefix}.{mcp_name}",
+                        target=f"mcp:{prefix}",
+                        status="failed",
+                        risk_level="high",
+                        detail=str(exc)[:200],
+                    )
+                    return f"调用 {mcp_name} 失败：{exc}"
+                text = tool_result_to_text(result)
+                context.store.add_audit_log(
+                    actor_source=context.source,
+                    actor_user_id=context.user_id,
+                    action=f"tool.mcp.{prefix}.{mcp_name}",
+                    target=f"mcp:{prefix}",
+                    status="ok",
+                    risk_level="high",
+                    detail=json.dumps(args, ensure_ascii=False)[:200],
+                )
+                return text
+
+            return handler
+
+        tools.append(
+            Tool(
+                name=exposed_name,
+                description=remote.description or exposed_name,
+                parameters=parameters,
+                handler=_make_handler(remote_name),
+                min_skill=min_skill,
+            )
+        )
+    return tools
+
+
 class ToolRegistry:
     """Holds the available tools and dispatches calls, gated by access role."""
 
     def __init__(self, tools: list[Tool] | None = None) -> None:
         self._tools = {tool.name: tool for tool in (tools or default_tools())}
+
+    def register(self, tools: list[Tool]) -> None:
+        for tool in tools:
+            self._tools[tool.name] = tool
 
     def available_for(self, access_role: str) -> list[Tool]:
         return [

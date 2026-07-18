@@ -86,6 +86,11 @@ class Settings(BaseSettings):
     web_search_max_results: int = Field(default=6, ge=1, le=20)
     read_url_timeout_seconds: int = Field(default=20, ge=1)
     read_url_max_chars: int = Field(default=8000, ge=500, le=50000)
+    mcd_mcp_enabled: bool = False
+    mcd_mcp_url: str = "https://mcp.mcd.cn"
+    mcd_mcp_token: str = Field(default="", repr=False)
+    mcd_mcp_timeout_seconds: int = Field(default=30, ge=1)
+    mcd_mcp_proxy: str = ""
     llm_timeout_seconds: int = Field(default=60, ge=1)
     llm_context_messages: int = Field(default=400, ge=1)
     llm_memory_items: int = Field(default=12, ge=0)
