@@ -20,7 +20,36 @@ def build_agent(background_summarize: bool = True) -> CoreAgent:
     agent = CoreAgent(store)
     agent.background_summarize = background_summarize
     agent.enable_tools = True
+    _register_mcp_tools(agent, settings)
     return agent
+
+
+def _register_mcp_tools(agent: CoreAgent, settings) -> None:
+    """Best-effort registration of external MCP tools.
+
+    A missing token, disabled flag, or network failure must never prevent the
+    agent from starting; it just runs without those tools.
+    """
+
+    if not (settings.mcd_mcp_enabled and settings.mcd_mcp_token):
+        return
+    from gugabobo.core.tools import build_mcp_tools
+    from gugabobo.infra.logs import get_logger
+    from gugabobo.infra.mcp_client import McpClient
+
+    try:
+        client = McpClient(
+            url=settings.mcd_mcp_url,
+            token=settings.mcd_mcp_token,
+            timeout=settings.mcd_mcp_timeout_seconds,
+            proxy=settings.mcd_mcp_proxy or None,
+        )
+        client.initialize()
+        tools = build_mcp_tools(client, prefix="mcd", min_skill="owner_action")
+        agent.tool_registry.register(tools)
+        get_logger().info("registered %d McDonald's MCP tools", len(tools))
+    except Exception as exc:
+        get_logger().warning("McDonald's MCP registration failed: %s", exc)
 
 
 class RuntimeManager:
