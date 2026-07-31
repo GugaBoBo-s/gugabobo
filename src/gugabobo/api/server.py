@@ -20,11 +20,11 @@ from gugabobo.core.lifecycle import (
     PullRequestLifecycleService,
     is_merge_command,
 )
+from gugabobo.infra.container_runtime import ContainerRuntime
 from gugabobo.infra.env_file import EnvFile
 from gugabobo.infra.images import urls_to_data_uris
 from gugabobo.infra.logs import get_logger, read_log_lines
 from gugabobo.infra.napcat_client import NapCatClient
-from gugabobo.infra.container_runtime import ContainerRuntime
 from gugabobo.infra.runtime import RuntimeManager, build_agent
 
 
