@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import secrets
 import sqlite3
+import time
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any
-
+from types import TracebackType
+from typing import Any, TypeVar
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -316,20 +318,107 @@ CREATE TABLE IF NOT EXISTS automation_cursors (
 """
 
 
+T = TypeVar("T")
+
+
+class _RetryingConnection(sqlite3.Connection):
+    def __init__(
+        self,
+        database: Path | str,
+        *,
+        busy_timeout_ms: int,
+        lock_retry_attempts: int,
+        retry_delay_seconds: float,
+    ) -> None:
+        super().__init__(database, timeout=busy_timeout_ms / 1000)
+        self._lock_retry_attempts = lock_retry_attempts
+        self._retry_delay_seconds = retry_delay_seconds
+
+    @staticmethod
+    def _is_lock_error(error: sqlite3.OperationalError) -> bool:
+        error_code = getattr(error, "sqlite_errorcode", None)
+        if not isinstance(error_code, int):
+            return False
+        primary_error_code = error_code & 0xFF
+        return primary_error_code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+
+    def _retry(self, operation: Callable[..., T], *args: Any) -> T:
+        for retry_index in range(self._lock_retry_attempts + 1):
+            try:
+                return operation(*args)
+            except sqlite3.OperationalError as error:
+                if not self._is_lock_error(error) or retry_index == self._lock_retry_attempts:
+                    raise
+                time.sleep(self._retry_delay_seconds * (2**retry_index))
+        raise RuntimeError("SQLite retry loop exited unexpectedly")
+
+    def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+        return self._retry(super().execute, sql, parameters)
+
+    def executemany(self, sql: str, parameters: Iterable[Any], /) -> sqlite3.Cursor:
+        return self._retry(super().executemany, sql, parameters)
+
+    def executescript(self, sql_script: str, /) -> sqlite3.Cursor:
+        return self._retry(super().executescript, sql_script)
+
+    def commit(self) -> None:
+        self._retry(super().commit)
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> bool:
+        if exc_type is not None:
+            self.rollback()
+            return False
+        try:
+            self.commit()
+        except BaseException:
+            self.rollback()
+            raise
+        return False
+
+
 class MemoryStore:
-    def __init__(self, db_path: Path | str) -> None:
+    def __init__(
+        self,
+        db_path: Path | str,
+        *,
+        busy_timeout_ms: int = 5000,
+        lock_retry_attempts: int = 3,
+        retry_delay_seconds: float = 0.05,
+    ) -> None:
+        if busy_timeout_ms < 0:
+            raise ValueError("busy_timeout_ms must be non-negative")
+        if lock_retry_attempts < 0:
+            raise ValueError("lock_retry_attempts must be non-negative")
+        if retry_delay_seconds < 0:
+            raise ValueError("retry_delay_seconds must be non-negative")
         self.db_path = Path(db_path)
+        self.busy_timeout_ms = busy_timeout_ms
+        self.lock_retry_attempts = lock_retry_attempts
+        self.retry_delay_seconds = retry_delay_seconds
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.init()
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = _RetryingConnection(
+            self.db_path,
+            busy_timeout_ms=self.busy_timeout_ms,
+            lock_retry_attempts=self.lock_retry_attempts,
+            retry_delay_seconds=self.retry_delay_seconds,
+        )
         conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
         return conn
 
     def init(self) -> None:
         with self.connect() as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
             conn.executescript(SCHEMA)
+            conn.execute("BEGIN IMMEDIATE")
             self._migrate_access_rules(conn)
             self._migrate_audit_logs(conn)
             self._migrate_github_lifecycle(conn)
