@@ -87,6 +87,24 @@ def test_group_message_requires_mention_or_wake_word():
     assert should_reply_to_event(mentioned_event, ["gugabobo"])
 
 
+def test_group_string_cq_message_detects_self_mention():
+    event = OneBotMessageEvent.from_payload(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 999,
+            "group_id": 123,
+            "user_id": 10001,
+            "raw_message": "[CQ:at,qq=999] 你好",
+            "message": "[CQ:at,qq=999] 你好",
+        }
+    )
+
+    assert event.text_content() == "你好"
+    assert event.mentions_self() is True
+    assert should_reply_to_event(event, ["gugabobo"])
+
+
 def test_group_message_event_builds_channel_context():
     event = OneBotMessageEvent.from_payload(
         {

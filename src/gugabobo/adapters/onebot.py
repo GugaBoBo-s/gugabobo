@@ -74,14 +74,16 @@ class OneBotMessageEvent:
         return bool(self.text_content() or self.image_urls())
 
     def mentions_self(self) -> bool:
-        if not self.self_id or not isinstance(self.message, list):
+        if not self.self_id:
             return False
-        for segment in self.message:
-            if segment.get("type") != "at":
-                continue
-            if str(segment.get("data", {}).get("qq", "")) == self.self_id:
-                return True
-        return False
+        if isinstance(self.message, list):
+            for segment in self.message:
+                if segment.get("type") != "at":
+                    continue
+                if str(segment.get("data", {}).get("qq", "")) == self.self_id:
+                    return True
+        message_text = self.message if isinstance(self.message, str) else self.raw_message
+        return _cq_mentions_user(message_text, self.self_id)
 
     def to_channel_context(
         self,
@@ -111,6 +113,18 @@ class OneBotMessageEvent:
 
 def _strip_cq_codes(text: str) -> str:
     return re.sub(r"\[CQ:[^\]]*\]", "", text)
+
+
+def _cq_mentions_user(text: str, user_id: str) -> bool:
+    for match in re.finditer(r"\[CQ:at,([^\]]*)\]", text):
+        parameters = dict(
+            item.split("=", 1)
+            for item in match.group(1).split(",")
+            if "=" in item
+        )
+        if parameters.get("qq") == user_id:
+            return True
+    return False
 
 
 def should_reply_to_event(event: OneBotMessageEvent, group_wake_words: list[str]) -> bool:

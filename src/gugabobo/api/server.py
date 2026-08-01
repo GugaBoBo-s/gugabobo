@@ -1,6 +1,7 @@
 import hmac
+from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -33,6 +34,7 @@ class Utf8JSONResponse(JSONResponse):
 
 
 app = FastAPI(title="gugabobo API", version="0.1.0", default_response_class=Utf8JSONResponse)
+ListLimit = Annotated[int, Query(ge=1, le=500)]
 
 
 class ChatRequest(BaseModel):
@@ -254,7 +256,7 @@ def dashboard_data(
 
 
 @app.get("/logs")
-def logs(limit: int = 100) -> dict[str, object]:
+def logs(limit: ListLimit = 100) -> dict[str, object]:
     return {"lines": read_log_lines(limit=limit)}
 
 
@@ -389,7 +391,7 @@ def chat(request: ChatRequest) -> dict[str, str]:
 
 @app.get("/messages")
 def messages(
-    limit: int = 20,
+    limit: ListLimit = 20,
     conversation_id: str | None = None,
 ) -> list[dict[str, object]]:
     agent = build_agent()
@@ -408,28 +410,28 @@ def message(message_id: int) -> dict[str, object]:
 
 
 @app.get("/feedbacks")
-def feedbacks(limit: int = 20) -> list[dict[str, object]]:
+def feedbacks(limit: ListLimit = 20) -> list[dict[str, object]]:
     agent = build_agent()
     return agent.store.list_feedbacks(limit=limit)
 
 
 @app.get("/memories")
-def memories(subject: str | None = None, limit: int = 20) -> list[dict[str, object]]:
+def memories(subject: str | None = None, limit: ListLimit = 20) -> list[dict[str, object]]:
     return build_agent().store.list_memory_items(subject=subject, limit=limit)
 
 
 @app.get("/access-rules")
-def access_rules(limit: int = 50) -> list[dict[str, object]]:
+def access_rules(limit: ListLimit = 50) -> list[dict[str, object]]:
     return build_agent().store.list_access_rules(limit=limit)
 
 
 @app.get("/audit-logs")
-def audit_logs(limit: int = 50) -> list[dict[str, object]]:
+def audit_logs(limit: ListLimit = 50) -> list[dict[str, object]]:
     return build_agent().store.list_audit_logs(limit=limit)
 
 
 @app.get("/tasks")
-def tasks(limit: int = 50) -> list[dict[str, object]]:
+def tasks(limit: ListLimit = 50) -> list[dict[str, object]]:
     return build_agent().store.list_tasks(limit=limit)
 
 
@@ -442,17 +444,17 @@ def task(task_id: int) -> dict[str, object]:
 
 
 @app.get("/improvements")
-def improvements(limit: int = 50) -> list[dict[str, object]]:
+def improvements(limit: ListLimit = 50) -> list[dict[str, object]]:
     return build_agent().store.list_improvement_tasks(limit=limit)
 
 
 @app.get("/prs")
-def pull_requests(limit: int = 50) -> list[dict[str, object]]:
+def pull_requests(limit: ListLimit = 50) -> list[dict[str, object]]:
     return build_agent().store.list_pull_requests(limit=limit)
 
 
 @app.get("/code-reviews")
-def code_reviews(limit: int = 50) -> list[dict[str, object]]:
+def code_reviews(limit: ListLimit = 50) -> list[dict[str, object]]:
     return build_agent().store.list_code_reviews(limit=limit)
 
 
@@ -474,7 +476,7 @@ def scan_code_reviews(
 
 
 @app.get("/github-issues")
-def github_issue_runs(limit: int = 50) -> list[dict[str, object]]:
+def github_issue_runs(limit: ListLimit = 50) -> list[dict[str, object]]:
     return build_agent().store.list_github_issue_runs(limit=limit)
 
 
@@ -558,22 +560,22 @@ def pull_request(pr_id: int) -> dict[str, object]:
 
 
 @app.get("/merge-authorizations")
-def merge_authorizations(limit: int = 50) -> list[dict[str, object]]:
+def merge_authorizations(limit: ListLimit = 50) -> list[dict[str, object]]:
     return build_agent().store.list_merge_authorizations(limit=limit)
 
 
 @app.get("/improvement-reflections")
-def improvement_reflections(limit: int = 50) -> list[dict[str, object]]:
+def improvement_reflections(limit: ListLimit = 50) -> list[dict[str, object]]:
     return build_agent().store.list_improvement_reflections(limit=limit)
 
 
 @app.get("/deployments")
-def deployments(limit: int = 50) -> list[dict[str, object]]:
+def deployments(limit: ListLimit = 50) -> list[dict[str, object]]:
     return build_agent().store.list_deployment_records(limit=limit)
 
 
 @app.get("/owner-notifications")
-def owner_notifications(limit: int = 50) -> list[dict[str, object]]:
+def owner_notifications(limit: ListLimit = 50) -> list[dict[str, object]]:
     return build_agent().store.list_owner_notifications(limit=limit)
 
 
