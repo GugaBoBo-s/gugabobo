@@ -343,7 +343,7 @@ class OrganizationCodeReviewService:
                 if execution:
                     execution.ensure_active()
             current = consolidated
-        return current[0] if current else "No actionable findings were identified."
+        return current[0] if current else "未发现可操作的问题。"
 
     def _consolidation_messages(self, reviews: list[str]) -> list[dict[str, str]]:
         system = (
@@ -365,12 +365,12 @@ class OrganizationCodeReviewService:
         file_count: int,
         batch_count: int,
     ) -> str:
-        normalized = content.strip() or "No actionable findings were identified."
-        coverage = f"Reviewed {file_count} changed files in {batch_count} LLM batch(es)."
+        normalized = content.strip() or "未发现可操作的问题。"
+        coverage = f"已审查 {file_count} 个变更文件，共 {batch_count} 个 LLM 批次。"
         if file_count >= self.settings.github_review_max_files:
-            coverage += " The configured or GitHub API file limit was reached."
+            coverage += "已达到配置或 GitHub API 的文件数量上限。"
         return (
-            f"{self._marker(head_sha)}\n## gugabobo code review\n\n"
+            f"{self._marker(head_sha)}\n## gugabobo 代码审查\n\n"
             f"{coverage}\n\n{normalized}"
         )[:60000]
 
