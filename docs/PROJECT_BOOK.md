@@ -2176,7 +2176,7 @@ reflection recorded after outcome
 Recommended next milestone:
 
 ```text
-P5 self-improvement hardening and post-merge reflection
+P6 autonomous GitHub issue implementation hardening
 ```
 
 Recommended tasks:
@@ -2185,6 +2185,7 @@ Recommended tasks:
 1. Add repository-level policy tests for generated diffs.
 2. Add structured cost and token usage records for coding runs.
 3. Add repository-specific review policies and review cost controls.
+4. Tune issue policies and add repository-specific implementation checks.
 ```
 
 P0 through P5 are operational. The current P6 foundation includes manual approval-gated
