@@ -635,8 +635,11 @@ gugabobo deployment report deployed <revision> --detail "health check passed"
 Current behavior:
 
 - an improvement task must be approved before a pull request can be opened
-- the pull request commits a proposal file `improvements/<id>.md`; it records
-  intent only and does not modify source code yet
+- `improve pr` and the proposal-only pull-request endpoint commit an
+  `improvements/<id>.md` intent document without modifying source code
+- `improve ship` and allowlisted GitHub issue automation instead run the code
+  model in the isolated runner, validate the generated source changes, and open
+  a pull request from the resulting branch
 - opening a pull request is a high-risk action recorded in audit logs
 - API write endpoints require `GUGABOBO_ADMIN_TOKEN`, and opening a pull request
   requires `confirm_text=OPEN`
