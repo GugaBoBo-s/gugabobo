@@ -34,6 +34,35 @@ def test_health_endpoint(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
+def test_list_endpoints_reject_out_of_range_limits(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+    endpoints = (
+        "/logs",
+        "/messages",
+        "/feedbacks",
+        "/memories",
+        "/access-rules",
+        "/audit-logs",
+        "/tasks",
+        "/improvements",
+        "/prs",
+        "/code-reviews",
+        "/github-issues",
+        "/merge-authorizations",
+        "/improvement-reflections",
+        "/deployments",
+        "/owner-notifications",
+    )
+
+    for endpoint in endpoints:
+        for limit in (-1, 0, 501):
+            response = client.get(endpoint, params={"limit": limit})
+            assert response.status_code == 422, (endpoint, limit, response.text)
+
+    get_settings.cache_clear()
+
+
 def test_chat_endpoint_records_message(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     client = TestClient(app)
