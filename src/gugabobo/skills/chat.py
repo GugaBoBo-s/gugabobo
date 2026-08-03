@@ -2,7 +2,7 @@ from typing import Callable
 
 from gugabobo.core.persona import Persona
 from gugabobo.infra.logs import get_logger
-from gugabobo.infra.llm import OpenAICompatibleClient, build_llm_client
+from gugabobo.infra.llm import LiteLLMClient, build_llm_client
 
 # Hard cap on tool-call rounds per reply, so a model that keeps asking for tools
 # can never spin the loop (and the token bill) forever.
@@ -10,7 +10,7 @@ _MAX_TOOL_ROUNDS = 5
 
 
 class ChatSkill:
-    def __init__(self, persona: Persona, llm_client: OpenAICompatibleClient | None = None) -> None:
+    def __init__(self, persona: Persona, llm_client: LiteLLMClient | None = None) -> None:
         self.persona = persona
         self.llm_client = llm_client or build_llm_client()
 

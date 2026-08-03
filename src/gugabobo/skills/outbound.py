@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 
 from gugabobo.core.channel import ChannelContext
-from gugabobo.infra.llm import OpenAICompatibleClient
+from gugabobo.infra.llm import LiteLLMClient
 from gugabobo.config import get_settings
 from gugabobo.infra.logs import get_logger
 from gugabobo.infra.napcat_client import NapCatClient
@@ -31,7 +31,7 @@ _CANCEL_PATTERN = re.compile(r"^取消发送\s*#?(\d+)\s*$")
 class OutboundSkill:
     def __init__(
         self,
-        llm_client: OpenAICompatibleClient,
+        llm_client: LiteLLMClient,
         store: MemoryStore,
         napcat_client: NapCatClient | None = None,
     ) -> None:

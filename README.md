@@ -152,7 +152,8 @@ Without `--send`, polling processes updates but only reports that replies are av
 
 ## LLM providers
 
-`gugabobo` supports OpenAI-compatible providers. Set `GUGABOBO_LLM_PROVIDER` to choose one.
+`gugabobo` routes model API calls through LiteLLM and supports Moonshot, DeepSeek, and
+OpenAI-compatible endpoints. Set `GUGABOBO_LLM_PROVIDER` to choose the ordinary chat provider.
 
 ```env
 GUGABOBO_LLM_PROVIDER=moonshot
@@ -565,12 +566,13 @@ gugabobo pr list
 
 ### Code runner chain (P5)
 
-gugabobo does not implement its own coding agent. Code review, issue evaluation, and code editing
-always start with the latest configured Claude Opus model. A timeout, and only a timeout, advances
-to the latest configured flagship GPT model; a second timeout advances to DeepSeek. Authentication,
-validation, rate-limit, format, and execution errors stop the chain so fallback cannot conceal a
-broken provider or an unsafe result. Ordinary chat continues to use `GUGABOBO_LLM_PROVIDER`
-independently.
+gugabobo does not implement its own coding agent. Code review and issue evaluation call their
+model chain through LiteLLM, while code editing runs the configured coding CLI inside Docker. Both
+paths always start with the latest configured Claude Opus model. A timeout, and only a timeout,
+advances to the latest configured flagship GPT model; a second timeout advances to DeepSeek.
+Authentication, validation, rate-limit, format, and execution errors stop the chain so fallback
+cannot conceal a broken provider or an unsafe result. Ordinary chat continues to use
+`GUGABOBO_LLM_PROVIDER` independently.
 
 ```env
 GUGABOBO_SANDBOX_DIR=.gugabobo/sandbox
