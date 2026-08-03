@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from typing import Protocol
+
 from gugabobo.config import Settings, get_settings
 from gugabobo.infra.napcat_client import NapCatClient
 from gugabobo.infra.redaction import redact_sensitive
-from gugabobo.infra.telegram_client import TelegramClient
 from gugabobo.memory.store import MemoryStore
+
+
+class SyncTelegramNotificationClient(Protocol):
+    def send_message(self, chat_id: str, text: str) -> None: ...
 
 
 class OwnerNotifier:
@@ -13,12 +18,12 @@ class OwnerNotifier:
         store: MemoryStore,
         settings: Settings | None = None,
         napcat_client: NapCatClient | None = None,
-        telegram_client: TelegramClient | None = None,
+        telegram_client: SyncTelegramNotificationClient | None = None,
     ) -> None:
         self.store = store
         self.settings = settings or get_settings()
         self.napcat_client = napcat_client or NapCatClient()
-        self.telegram_client = telegram_client or TelegramClient()
+        self.telegram_client = telegram_client
 
     def notify_pr_opened(
         self,
@@ -140,7 +145,8 @@ class OwnerNotifier:
                     content=content,
                 )
                 ids.append(notification_id)
-                self.deliver(notification_id)
+                if platform != "telegram" or self.telegram_client is not None:
+                    self.deliver(notification_id)
         return ids
 
     def deliver(self, notification_id: int) -> bool:
@@ -154,6 +160,8 @@ class OwnerNotifier:
             if platform == "qq":
                 self.napcat_client.send_private_msg(recipient_id, content)
             elif platform == "telegram":
+                if self.telegram_client is None:
+                    raise RuntimeError("async Telegram notification worker is not running")
                 self.telegram_client.send_message(recipient_id, content)
             else:
                 raise RuntimeError(f"unsupported notification platform: {platform}")
@@ -169,6 +177,8 @@ class OwnerNotifier:
 
     def retry_pending(self, limit: int = 50) -> dict[str, int]:
         records = self.store.list_owner_notifications(limit=limit, retryable_only=True)
+        if self.telegram_client is None:
+            records = [record for record in records if record["platform"] != "telegram"]
         sent = sum(1 for record in records if self.deliver(int(record["id"])))
         return {"attempted": len(records), "sent": sent}
 

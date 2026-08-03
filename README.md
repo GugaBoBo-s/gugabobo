@@ -109,6 +109,16 @@ GUGABOBO_TELEGRAM_WEBHOOK_SECRET=
 GUGABOBO_TELEGRAM_REPLY_ENABLED=false
 GUGABOBO_TELEGRAM_GROUP_WAKE_WORDS=gugabobo,咕嘎BoBo
 GUGABOBO_TELEGRAM_PROXY=
+GUGABOBO_TELEGRAM_COMMUNITY_GROUP_URL=https://t.me/ScarletKc_Group
+GUGABOBO_TELEGRAM_COMPANION_BOT_URL=https://t.me/FogMoeBot
+GUGABOBO_TELEGRAM_ANNOUNCEMENT_CHANNEL_URL=https://t.me/FOG_MOE
+GUGABOBO_TELEGRAM_SUMMARY_BOT_URL=https://t.me/rigerubot?startgroup=true
+GUGABOBO_TELEGRAM_DEVELOPER_GUGABOBO_URL=https://t.me/woshigugabobo
+GUGABOBO_TELEGRAM_DEVELOPER_SCARLETKC_URL=https://t.me/scarletkc
+GUGABOBO_TELEGRAM_GITHUB_SCARLETKC_URL=https://github.com/scarletkc
+GUGABOBO_TELEGRAM_GITHUB_FOGMOE_URL=https://github.com/FogMoe
+GUGABOBO_TELEGRAM_GITHUB_GEYUGONG_URL=https://github.com/orgs/FogMoe/people/GeYugong
+GUGABOBO_TELEGRAM_GITHUB_GUGABOBO_URL=https://github.com/GugaBoBo-s
 ```
 
 Current behavior:
@@ -118,6 +128,10 @@ Current behavior:
 - unlinked users and every group keep separate conversation context
 - verified QQ and Telegram accounts belonging to one person share private context
 - risky owner-only operations require explicit owner confirmation
+- `/community` and `/fogmoe` show buttons for the 詩音閣 group, 雾萌 bot, FOGMOE channel, and `@rigerubot` group summary bot
+- `/summary` directs group administrators to add `@rigerubot` for group summaries
+- `/developers` shows the project developer accounts `@woshigugabobo` and `@scarletkc`
+- `/github` links ScarletKC, FogMoe, GeYugong, and GugaBoBo-s on GitHub
 - Telegram-specific code stays in the adapter layer, not in the core agent
 
 ### Link QQ and Telegram accounts

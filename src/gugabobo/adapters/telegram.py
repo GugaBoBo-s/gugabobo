@@ -1,48 +1,43 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+
+from aiogram.types import Message, Update
 
 from gugabobo.core.channel import ChannelContext
 
 
 @dataclass(frozen=True)
-class TelegramMessageEvent:
+class TelegramIncomingMessage:
     update_id: str
-    message_id: str
-    chat_id: str
-    chat_type: str
-    user_id: str
-    text: str
-    username: str | None = None
-    photo_file_ids: tuple[str, ...] = ()
-    raw_message: dict[str, Any] | None = None
+    message: Message
 
     @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> TelegramMessageEvent:
-        message = payload.get("message") or payload.get("edited_message") or {}
-        chat = message.get("chat") or {}
-        user = message.get("from") or {}
-        chat_id = str(chat.get("id", ""))
-        user_id = str(user.get("id", chat_id))
-        text = str(message.get("text") or message.get("caption") or "").strip()
-        return cls(
-            update_id=str(payload.get("update_id", "")),
-            message_id=str(message.get("message_id", "")),
-            chat_id=chat_id,
-            chat_type=str(chat.get("type", "")),
-            user_id=user_id,
-            text=text,
-            username=str(user["username"]) if user.get("username") is not None else None,
-            photo_file_ids=_extract_photo_file_ids(message),
-            raw_message=message,
-        )
+    def from_update(cls, update: Update) -> TelegramIncomingMessage | None:
+        message = update.message or update.edited_message
+        if message is None:
+            return None
+        return cls(update_id=str(update.update_id), message=message)
+
+    @property
+    def text(self) -> str:
+        return (self.message.text or self.message.caption or "").strip()
+
+    @property
+    def user_id(self) -> str:
+        user = self.message.from_user
+        return str(user.id if user else self.message.chat.id)
+
+    @property
+    def chat_id(self) -> str:
+        return str(self.message.chat.id)
 
     @property
     def channel_type(self) -> str:
-        if self.chat_type == "private":
+        chat_type = self.message.chat.type
+        if chat_type == "private":
             return "private"
-        if self.chat_type in {"group", "supergroup"}:
+        if chat_type in {"group", "supergroup"}:
             return "group"
         return "unknown"
 
@@ -55,65 +50,52 @@ class TelegramMessageEvent:
         return "telegram"
 
     @property
-    def conversation_id(self) -> str:
-        if self.channel_type == "group":
-            return f"telegram:group:{self.chat_id}"
-        return f"telegram:user:{self.user_id}"
-
-    def mentions_bot(self, bot_username: str) -> bool:
-        if not bot_username or not self.text:
-            return False
-        normalized_username = bot_username.lstrip("@").lower()
-        return f"@{normalized_username}" in self.text.lower()
+    def photo_file_ids(self) -> tuple[str, ...]:
+        if not self.message.photo:
+            return ()
+        return (self.message.photo[-1].file_id,)
 
     def has_content(self) -> bool:
         return bool(self.text or self.photo_file_ids)
 
-    def should_reply(self, group_wake_words: list[str], bot_username: str = "") -> bool:
+    def to_channel_context(
+        self,
+        owner_ids: set[str],
+        group_wake_words: list[str],
+        bot_username: str,
+    ) -> ChannelContext:
+        username = self.message.from_user.username if self.message.from_user else None
+        return ChannelContext(
+            platform="telegram",
+            channel_type=self.channel_type,
+            source=self.source,
+            user_id=self.user_id,
+            conversation_id=(
+                f"telegram:group:{self.chat_id}"
+                if self.channel_type == "group"
+                else f"telegram:user:{self.user_id}"
+            ),
+            group_id=self.chat_id if self.channel_type == "group" else None,
+            chat_id=self.chat_id,
+            is_owner=self.user_id in owner_ids,
+            is_wake_triggered=self._should_reply(group_wake_words, bot_username),
+            raw_event_id=self.update_id,
+            metadata={
+                "message_id": str(self.message.message_id),
+                "chat_type": str(self.message.chat.type),
+                "username": username,
+            },
+        )
+
+    def _should_reply(self, group_wake_words: list[str], bot_username: str) -> bool:
         if not self.has_content():
             return False
         if self.channel_type == "private":
             return True
         if self.channel_type != "group":
             return False
-        text = self.text.lower()
-        return self.mentions_bot(bot_username) or any(
-            text.startswith(word.lower()) for word in group_wake_words
-        )
-
-    def to_channel_context(
-        self,
-        owner_ids: set[str] | None = None,
-        group_wake_words: list[str] | None = None,
-        bot_username: str = "",
-    ) -> ChannelContext:
-        owner_id_set = owner_ids or set()
-        wake_words = group_wake_words or []
-        return ChannelContext(
-            platform="telegram",
-            channel_type=self.channel_type,
-            source=self.source,
-            user_id=self.user_id,
-            conversation_id=self.conversation_id,
-            group_id=self.chat_id if self.channel_type == "group" else None,
-            chat_id=self.chat_id,
-            is_owner=self.user_id in owner_id_set,
-            is_wake_triggered=self.should_reply(wake_words, bot_username),
-            raw_event_id=self.update_id,
-            metadata={
-                "message_id": self.message_id,
-                "chat_type": self.chat_type,
-                "username": self.username,
-            },
-        )
-
-
-def _extract_photo_file_ids(message: dict[str, Any]) -> tuple[str, ...]:
-    photo = message.get("photo")
-    if isinstance(photo, list) and photo:
-        largest = photo[-1]
-        if isinstance(largest, dict):
-            file_id = largest.get("file_id")
-            if file_id:
-                return (str(file_id),)
-    return ()
+        text = self.text.casefold()
+        normalized_username = bot_username.lstrip("@").casefold()
+        mentioned = bool(normalized_username and f"@{normalized_username}" in text)
+        awakened = any(text.startswith(word.casefold()) for word in group_wake_words)
+        return mentioned or awakened

@@ -30,6 +30,16 @@ class Settings(BaseSettings):
     telegram_reply_enabled: bool = False
     telegram_group_wake_words: str = "gugabobo,咕嘎BoBo"
     telegram_proxy: str = ""
+    telegram_community_group_url: str = "https://t.me/ScarletKc_Group"
+    telegram_companion_bot_url: str = "https://t.me/FogMoeBot"
+    telegram_announcement_channel_url: str = "https://t.me/FOG_MOE"
+    telegram_summary_bot_url: str = "https://t.me/rigerubot?startgroup=true"
+    telegram_developer_gugabobo_url: str = "https://t.me/woshigugabobo"
+    telegram_developer_scarletkc_url: str = "https://t.me/scarletkc"
+    telegram_github_scarletkc_url: str = "https://github.com/scarletkc"
+    telegram_github_fogmoe_url: str = "https://github.com/FogMoe"
+    telegram_github_geyugong_url: str = "https://github.com/orgs/FogMoe/people/GeYugong"
+    telegram_github_gugabobo_url: str = "https://github.com/GugaBoBo-s"
     github_token: str = Field(default="", repr=False)
     github_owner: str = "GugaBoBo-s"
     github_repo: str = "gugabobo"

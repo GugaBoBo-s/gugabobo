@@ -9,6 +9,7 @@ description = "Cloud-first autonomous agent prototype"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "aiogram[proxy]>=3.30,<4",
   "fastapi>=0.111",
   "httpx[socks]>=0.27",
   "pydantic>=2.7",
