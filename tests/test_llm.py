@@ -1,3 +1,5 @@
+import os
+
 from litellm.types.utils import ModelResponse
 
 from gugabobo.config import Settings
@@ -112,3 +114,15 @@ def test_deepseek_runtime_uses_native_provider_prefix():
     )
 
     assert runtime.routed_model == "deepseek/deepseek-test"
+
+
+def test_litellm_model_cost_map_stays_local():
+    import gugabobo.infra  # noqa: F401
+    from litellm.litellm_core_utils.get_model_cost_map import (
+        get_model_cost_map_source_info,
+    )
+
+    assert os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] == "true"
+    source_info = get_model_cost_map_source_info()
+    assert source_info["source"] == "local"
+    assert source_info["is_env_forced"] is True
