@@ -3,9 +3,10 @@ from io import BytesIO
 
 import pytest
 from aiogram.types import User
+from python_socks import parse_proxy_url
 
 from gugabobo.config import get_settings
-from gugabobo.infra.telegram_client import TelegramClient
+from gugabobo.infra.telegram_client import TelegramClient, normalize_proxy_url
 
 
 class FakeSession:
@@ -152,3 +153,19 @@ def test_bot_commands_include_community_summary_and_developers(monkeypatch):
     ]
     assert bot.session.closed is True
     get_settings.cache_clear()
+
+
+def test_normalize_proxy_url_rewrites_hostname_resolution_schemes():
+    assert normalize_proxy_url("socks5h://127.0.0.1:10808") == "socks5://127.0.0.1:10808"
+    assert normalize_proxy_url("SOCKS5H://127.0.0.1:10808") == "socks5://127.0.0.1:10808"
+    assert normalize_proxy_url("socks4a://127.0.0.1:10808") == "socks4://127.0.0.1:10808"
+    for original in ("socks5h://user:pw@127.0.0.1:10808", "socks4a://127.0.0.1:10808"):
+        parse_proxy_url(normalize_proxy_url(original))
+
+
+def test_normalize_proxy_url_preserves_supported_values():
+    assert normalize_proxy_url("socks5://127.0.0.1:10808") == "socks5://127.0.0.1:10808"
+    assert normalize_proxy_url("http://127.0.0.1:8080") == "http://127.0.0.1:8080"
+    assert normalize_proxy_url("socks5h://user:pw@host:1080") == "socks5://user:pw@host:1080"
+    assert normalize_proxy_url("  ") == ""
+    assert normalize_proxy_url("") == ""

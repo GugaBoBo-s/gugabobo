@@ -11,6 +11,21 @@ from gugabobo.infra.images import bytes_to_data_uri
 from gugabobo.infra.logs import get_logger
 from gugabobo.infra.redaction import redact_sensitive
 
+
+def normalize_proxy_url(proxy: str) -> str:
+    """Return a proxy URL that python-socks accepts, or an empty string."""
+    target = proxy.strip()
+    if not target:
+        return ""
+    # python-socks rejects the socks5h/socks4a hostname-resolution schemes that
+    # httpx accepts. SOCKS5 already resolves remotely by default there, so the
+    # plain scheme is equivalent.
+    for alias, scheme in (("socks5h://", "socks5://"), ("socks4a://", "socks4://")):
+        if target.lower().startswith(alias):
+            return scheme + target[len(alias) :]
+    return target
+
+
 class TelegramClient:
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -25,7 +40,9 @@ class TelegramClient:
         if not self.configured:
             raise RuntimeError("Telegram bot token is not configured")
         if self._bot is None:
-            session = AiohttpSession(proxy=self.settings.telegram_proxy or None)
+            session = AiohttpSession(
+                proxy=normalize_proxy_url(self.settings.telegram_proxy) or None
+            )
             self._bot = Bot(token=self.settings.telegram_bot_token, session=session)
         return self._bot
 
