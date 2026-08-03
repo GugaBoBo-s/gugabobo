@@ -85,45 +85,39 @@ tool environment.
 
 ## Development Commands
 
-Use the local virtual environment for this repo because another global editable `gugabobo` package may exist on the machine.
+Run development commands from the repository root. Never assume a specific checkout path,
+drive letter, username, or home directory.
+
+Use Python 3.11 or newer and keep all project dependencies in the repository-local `.venv`.
+If `.venv` does not exist, create it with an available Python 3.11+ interpreter. After that,
+always invoke the virtual environment's executables directly; do not rely on shell activation,
+global Python packages, or a globally installed editable `gugabobo` package.
+
+PowerShell setup:
 
 ```powershell
-cd D:\0code\gugabobo
-.\.venv\Scripts\Activate.ps1
-```
-
-Install dependencies:
-
-```powershell
+python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 ```
 
-Run tests:
+POSIX shell setup:
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
 ```
 
-Run lint:
+Use the command variant for the current platform.
 
-```powershell
-.\.venv\Scripts\python.exe -m ruff check .
-```
-
-Try the CLI:
-
-```powershell
-.\.venv\Scripts\gugabobo.exe status
-.\.venv\Scripts\gugabobo.exe chat "你好"
-.\.venv\Scripts\gugabobo.exe feedback add "回复太长"
-.\.venv\Scripts\gugabobo.exe feedback list
-```
-
-Run the API:
-
-```powershell
-.\.venv\Scripts\gugabobo.exe api
-```
+| Task | PowerShell | POSIX shell |
+|---|---|---|
+| Run tests | `.\.venv\Scripts\python.exe -m pytest` | `.venv/bin/python -m pytest` |
+| Run lint | `.\.venv\Scripts\python.exe -m ruff check .` | `.venv/bin/python -m ruff check .` |
+| Show status | `.\.venv\Scripts\gugabobo.exe status` | `.venv/bin/gugabobo status` |
+| Chat | `.\.venv\Scripts\gugabobo.exe chat "你好"` | `.venv/bin/gugabobo chat "你好"` |
+| Add feedback | `.\.venv\Scripts\gugabobo.exe feedback add "回复太长"` | `.venv/bin/gugabobo feedback add "回复太长"` |
+| List feedback | `.\.venv\Scripts\gugabobo.exe feedback list` | `.venv/bin/gugabobo feedback list` |
+| Run the API | `.\.venv\Scripts\gugabobo.exe api` | `.venv/bin/gugabobo api` |
 
 ## Code Guidelines
 
