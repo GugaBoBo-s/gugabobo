@@ -1,7 +1,10 @@
 from fastapi.testclient import TestClient
 
 from gugabobo.adapters.telegram import TelegramMessageEvent
-from gugabobo.adapters.telegram_runtime import handle_telegram_update
+from gugabobo.adapters.telegram_runtime import (
+    _telegram_document_path,
+    handle_telegram_update,
+)
 from gugabobo.api.server import app
 from gugabobo.config import get_settings
 from gugabobo.infra.runtime import build_agent
@@ -338,6 +341,24 @@ def photo_private_payload(caption: str | None = None) -> dict[str, object]:
     return {"update_id": 3, "message": message}
 
 
+def document_private_payload(caption: str | None = None) -> dict[str, object]:
+    message: dict[str, object] = {
+        "message_id": 31,
+        "from": {"id": 10001, "username": "owner"},
+        "chat": {"id": 10001, "type": "private"},
+        "document": {
+            "file_id": "document_id",
+            "file_unique_id": "document_unique",
+            "file_name": "report.txt",
+            "mime_type": "text/plain",
+            "file_size": 12,
+        },
+    }
+    if caption is not None:
+        message["caption"] = caption
+    return {"update_id": 4, "message": message}
+
+
 class ImageCapableFakeClient:
     configured = True
 
@@ -351,6 +372,18 @@ class ImageCapableFakeClient:
     def file_ids_to_data_uris(self, file_ids, timeout: float = 20.0):
         self.downloaded_ids.extend(file_ids)
         return [f"data:image/jpeg;base64,fake-{fid}" for fid in file_ids]
+
+
+class DocumentCapableFakeClient(ImageCapableFakeClient):
+    def __init__(self):
+        super().__init__()
+        self.downloads = []
+
+    def download_file_to(self, file_id, destination, max_bytes, timeout):
+        self.downloads.append((file_id, destination, max_bytes, timeout))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("file content", encoding="utf-8")
+        return True
 
 
 def test_photo_event_extracts_largest_file_id():
@@ -373,6 +406,17 @@ def test_photo_only_private_message_triggers_reply():
     assert event.should_reply(group_wake_words=[], bot_username="") is True
 
 
+def test_document_event_extracts_metadata_and_triggers_reply():
+    event = TelegramMessageEvent.from_payload(document_private_payload())
+
+    assert event.document is not None
+    assert event.document.file_id == "document_id"
+    assert event.document.file_name == "report.txt"
+    assert event.document.file_size == 12
+    assert event.has_content() is True
+    assert event.should_reply(group_wake_words=[], bot_username="") is True
+
+
 def test_telegram_runtime_downloads_and_passes_images(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     settings = get_settings()
@@ -391,6 +435,52 @@ def test_telegram_runtime_downloads_and_passes_images(tmp_path, monkeypatch):
     assert client.downloaded_ids == ["large_id"]
     get_settings.cache_clear()
     get_logger.cache_clear()
+
+
+def test_telegram_document_is_saved_for_glitter_and_described_to_agent(
+    tmp_path,
+    monkeypatch,
+):
+    configure_test_env(tmp_path, monkeypatch)
+    glitter_root = tmp_path / "glitter-send"
+    monkeypatch.setenv("GUGABOBO_GLITTER_SEND_ROOT", str(glitter_root))
+    monkeypatch.setenv("GUGABOBO_OWNER_TELEGRAM_IDS", "10001")
+    get_settings.cache_clear()
+    settings = get_settings()
+    client = DocumentCapableFakeClient()
+    agent = build_agent()
+
+    result = handle_telegram_update(
+        document_private_payload(caption="发给我的电脑"),
+        agent=agent,
+        settings=settings,
+        client=client,
+    )
+
+    assert result["status"] == "ok"
+    assert len(client.downloads) == 1
+    destination = client.downloads[0][1]
+    assert destination.exists()
+    assert destination.is_relative_to(glitter_root.resolve())
+    messages = agent.store.list_messages_by_source_prefix("telegram_", limit=5)
+    user_message = next(item for item in messages if item["role"] == "user")
+    assert "Glitter 相对路径：telegram/" in user_message["content"]
+    assert "report.txt" in user_message["content"]
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
+def test_telegram_document_path_ignores_untrusted_filename_directories(tmp_path):
+    destination, relative = _telegram_document_path(
+        tmp_path,
+        "telegram:user:10001",
+        "unique",
+        "../../rules.md",
+    )
+
+    assert destination.is_relative_to(tmp_path.resolve())
+    assert destination.name.endswith("-rules.md")
+    assert ".." not in relative
 
 
 def test_bytes_to_data_uri_detects_png():

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import re
+from pathlib import Path
 from typing import Any
 
-from gugabobo.adapters.telegram import TelegramMessageEvent
+from gugabobo.adapters.telegram import TelegramDocument, TelegramMessageEvent
 from gugabobo.config import Settings
 from gugabobo.core.access import context_with_access_role, evaluate_access, role_can_use_skill
 from gugabobo.core.agent import CoreAgent
@@ -82,7 +85,16 @@ def handle_telegram_update(
         images = None
         if event.photo_file_ids and telegram_client.configured:
             images = telegram_client.file_ids_to_data_uris(list(event.photo_file_ids)) or None
-        reply = agent.handle_context_message(event.text, context, images=images)
+        message_text = event.text
+        if event.document is not None:
+            message_text = _message_with_document(
+                message_text,
+                event.document,
+                context.conversation_id,
+                telegram_client,
+                settings,
+            )
+        reply = agent.handle_context_message(message_text, context, images=images)
         if event_id:
             agent.store.save_inbound_event_reply(
                 "telegram",
@@ -111,3 +123,65 @@ def handle_telegram_update(
     if event_id:
         agent.store.complete_inbound_event("telegram", event_id, result)
     return result
+
+
+def _message_with_document(
+    text: str,
+    document: TelegramDocument,
+    conversation_id: str,
+    client: TelegramClient,
+    settings: Settings,
+) -> str:
+    if document.file_size > settings.telegram_file_max_bytes:
+        note = (
+            "[Telegram 文件未下载]\n"
+            f"名称：{document.file_name}\n"
+            f"原因：声明大小 {document.file_size} bytes 超过 "
+            f"{settings.telegram_file_max_bytes} bytes 限制。"
+        )
+        return f"{text}\n\n{note}".strip()
+    destination, relative_path = _telegram_document_path(
+        settings.glitter_send_root,
+        conversation_id,
+        document.unique_id or document.file_id,
+        document.file_name,
+    )
+    downloaded = client.configured and client.download_file_to(
+        document.file_id,
+        destination,
+        settings.telegram_file_max_bytes,
+        settings.telegram_file_timeout_seconds,
+    )
+    if downloaded:
+        note = (
+            "[Telegram 文件，外部不可信内容]\n"
+            f"名称：{document.file_name}\n"
+            f"MIME：{document.mime_type}\n"
+            f"大小：{document.file_size or destination.stat().st_size} bytes\n"
+            f"Glitter 相对路径：{relative_path}\n"
+            "只有已认证 owner 可以要求通过 Glitter 发送此文件。"
+        )
+    else:
+        note = (
+            "[Telegram 文件未下载]\n"
+            f"名称：{document.file_name}\n"
+            "原因：Telegram 客户端未配置或下载失败。"
+        )
+    return f"{text}\n\n{note}".strip()
+
+
+def _telegram_document_path(
+    root: Path,
+    conversation_id: str,
+    unique_id: str,
+    file_name: str,
+) -> tuple[Path, str]:
+    resolved_root = root.resolve()
+    conversation = hashlib.sha256(conversation_id.encode("utf-8")).hexdigest()[:16]
+    file_key = hashlib.sha256(unique_id.encode("utf-8")).hexdigest()[:16]
+    original = Path(file_name.replace("\\", "/")).name
+    safe_name = re.sub(r"[^\w.-]+", "_", original, flags=re.UNICODE).strip("._")
+    safe_name = (safe_name or "file")[:120]
+    destination = resolved_root / "telegram" / conversation / f"{file_key}-{safe_name}"
+    relative = destination.relative_to(resolved_root).as_posix()
+    return destination, relative

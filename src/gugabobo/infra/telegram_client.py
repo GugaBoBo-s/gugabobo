@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import httpx
+from pathlib import Path
 
 from gugabobo.config import get_settings
 from gugabobo.infra.images import bytes_to_data_uri
@@ -112,6 +113,43 @@ class TelegramClient:
             if data_uri:
                 data_uris.append(data_uri)
         return data_uris
+
+    def download_file_to(
+        self,
+        file_id: str,
+        destination: Path,
+        max_bytes: int,
+        timeout: float,
+    ) -> bool:
+        temporary = destination.with_suffix(destination.suffix + ".part")
+        try:
+            data = self.call("getFile", {"file_id": file_id})
+            result = data.get("result", {})
+            file_path = str(result.get("file_path", "")) if isinstance(result, dict) else ""
+            if not file_path:
+                raise RuntimeError("Telegram getFile did not return file_path")
+            token = self.settings.telegram_bot_token
+            url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            total = 0
+            with self.client.stream("GET", url, timeout=timeout) as response:
+                response.raise_for_status()
+                declared = int(response.headers.get("content-length", 0) or 0)
+                if declared > max_bytes:
+                    raise ValueError(f"Telegram file exceeds {max_bytes} byte limit")
+                with temporary.open("wb") as output:
+                    for chunk in response.iter_bytes():
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise ValueError(f"Telegram file exceeds {max_bytes} byte limit")
+                        output.write(chunk)
+            temporary.replace(destination)
+            return True
+        except Exception as exc:
+            temporary.unlink(missing_ok=True)
+            detail = redact_sensitive(exc, (self.settings.telegram_bot_token,))
+            get_logger().warning("telegram document download failed file_id=%s error=%s", file_id, detail)
+            return False
 
 
 def _split_message(text: str, limit: int = 4000) -> list[str]:

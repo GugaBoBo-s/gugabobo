@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Callable
@@ -12,6 +13,7 @@ from gugabobo.memory.store import MemoryStore
 # Beijing time — the bot's operators and users are China-based, so tool output
 # defaults to this rather than server UTC.
 _BEIJING = timezone(timedelta(hours=8))
+_GITHUB_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
 @dataclass(frozen=True)
@@ -415,6 +417,59 @@ def _tool_github_read(context: ToolContext, args: dict[str, object]) -> str:
         return f"GitHub 查询失败：{exc}"
 
 
+def _tool_github_create_issue(context: ToolContext, args: dict[str, object]) -> str:
+    from gugabobo.config import get_settings
+
+    settings = get_settings()
+    repository = str(args.get("repository", "") or "").strip()
+    if not repository:
+        repository = f"{settings.github_owner}/{settings.github_repo}"
+    if not _GITHUB_REPOSITORY.fullmatch(repository):
+        return "错误：repository 必须使用 owner/repo 格式。"
+    if repository.casefold() not in settings.github_issue_create_repository_set:
+        return f"错误：仓库 {repository} 不在 issue 创建 allowlist 中。"
+    title = " ".join(str(args.get("title", "") or "").split())
+    body = str(args.get("body", "") or "").strip()
+    if not 1 <= len(title) <= 256:
+        return "错误：issue 标题长度必须在 1 到 256 个字符之间。"
+    if len(body) > 60000:
+        return "错误：issue 正文不能超过 60000 个字符。"
+    owner, repo = repository.split("/", 1)
+    client = context.github_client
+    if client is None or (
+        getattr(client, "owner", owner).casefold() != owner.casefold()
+        or getattr(client, "repo", repo).casefold() != repo.casefold()
+    ):
+        from gugabobo.infra.github_client import GitHubClient
+
+        client = GitHubClient(settings, owner=owner, repo=repo)
+    if not getattr(client, "configured", False):
+        return "错误：GitHub 未配置（缺少 token）。"
+    try:
+        issue = client.create_issue(title, body)
+    except Exception as exc:
+        context.store.add_audit_log(
+            actor_source=context.source,
+            actor_user_id=context.user_id,
+            action="tool.github.create_issue",
+            target=repository,
+            status="failed",
+            risk_level="high",
+            detail=str(exc)[:500],
+        )
+        return f"GitHub issue 创建失败：{exc}"
+    context.store.add_audit_log(
+        actor_source=context.source,
+        actor_user_id=context.user_id,
+        action="tool.github.create_issue",
+        target=f"{repository}#{issue.number}",
+        status="ok",
+        risk_level="high",
+        detail=title[:256],
+    )
+    return f"已创建 {repository} issue #{issue.number}：{issue.title}\n{issue.url}"
+
+
 def _tool_list_conversations(context: ToolContext, args: dict[str, object]) -> str:
     limit = _clamp_limit(args.get("limit"), default=15, maximum=50)
     rows = context.store.list_conversations(limit=limit)
@@ -620,6 +675,27 @@ def default_tools() -> list[Tool]:
                 "required": ["peer", "path"],
             },
             handler=_tool_send_file_with_glitter,
+            min_skill="owner_action",
+        ),
+        Tool(
+            name="github_create_issue",
+            description=(
+                "仅在已认证主人明确要求时，向配置 allowlist 中的 GitHub 仓库创建 issue。"
+                "这是外部写操作；普通聊天、建议或含糊表达不能触发。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "repository": {
+                        "type": "string",
+                        "description": "目标仓库，格式 owner/repo；省略时使用默认仓库。",
+                    },
+                    "title": {"type": "string", "description": "issue 标题。"},
+                    "body": {"type": "string", "description": "issue 正文，可为空。"},
+                },
+                "required": ["title"],
+            },
+            handler=_tool_github_create_issue,
             min_skill="owner_action",
         ),
         Tool(

@@ -7,6 +7,15 @@ from gugabobo.core.channel import ChannelContext
 
 
 @dataclass(frozen=True)
+class TelegramDocument:
+    file_id: str
+    unique_id: str
+    file_name: str
+    mime_type: str
+    file_size: int
+
+
+@dataclass(frozen=True)
 class TelegramMessageEvent:
     update_id: str
     message_id: str
@@ -16,6 +25,7 @@ class TelegramMessageEvent:
     text: str
     username: str | None = None
     photo_file_ids: tuple[str, ...] = ()
+    document: TelegramDocument | None = None
     raw_message: dict[str, Any] | None = None
 
     @classmethod
@@ -35,6 +45,7 @@ class TelegramMessageEvent:
             text=text,
             username=str(user["username"]) if user.get("username") is not None else None,
             photo_file_ids=_extract_photo_file_ids(message),
+            document=_extract_document(message),
             raw_message=message,
         )
 
@@ -67,7 +78,7 @@ class TelegramMessageEvent:
         return f"@{normalized_username}" in self.text.lower()
 
     def has_content(self) -> bool:
-        return bool(self.text or self.photo_file_ids)
+        return bool(self.text or self.photo_file_ids or self.document)
 
     def should_reply(self, group_wake_words: list[str], bot_username: str = "") -> bool:
         if not self.has_content():
@@ -117,3 +128,20 @@ def _extract_photo_file_ids(message: dict[str, Any]) -> tuple[str, ...]:
             if file_id:
                 return (str(file_id),)
     return ()
+
+
+def _extract_document(message: dict[str, Any]) -> TelegramDocument | None:
+    document = message.get("document")
+    if not isinstance(document, dict) or not document.get("file_id"):
+        return None
+    try:
+        file_size = max(0, int(document.get("file_size", 0)))
+    except (TypeError, ValueError):
+        file_size = 0
+    return TelegramDocument(
+        file_id=str(document["file_id"]),
+        unique_id=str(document.get("file_unique_id", "")),
+        file_name=str(document.get("file_name", "file")),
+        mime_type=str(document.get("mime_type", "application/octet-stream")),
+        file_size=file_size,
+    )

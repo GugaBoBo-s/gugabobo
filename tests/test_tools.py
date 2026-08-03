@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from gugabobo.config import get_settings
 from gugabobo.core.persona import Persona
 from gugabobo.core.tools import (
     Tool,
@@ -291,6 +292,8 @@ class FakeNapCat:
 
 class FakeGitHub:
     configured = True
+    owner = "GugaBoBo-s"
+    repo = "gugabobo"
 
     def __init__(self):
         self.prs = {21: {"number": 21, "state": "closed", "merged": True,
@@ -308,6 +311,18 @@ class FakeGitHub:
 
     def list_issues(self, state="open", limit=20):
         return [{"number": 5, "state": "open", "title": "a bug"}]
+
+    def create_issue(self, title, body=""):
+        self.created_issue = (title, body)
+        return type(
+            "Issue",
+            (),
+            {
+                "number": 51,
+                "title": title,
+                "url": "https://github.com/GugaBoBo-s/gugabobo/issues/51",
+            },
+        )()
 
 
 def _owner_ctx(store, **kw):
@@ -411,6 +426,64 @@ def test_github_read_owner_only(tmp_path):
     assert "不能使用工具" in out
 
 
+def test_owner_can_create_allowlisted_github_issue_from_conversation(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "GUGABOBO_GITHUB_ISSUE_CREATE_REPOSITORIES",
+        "GugaBoBo-s/gugabobo",
+    )
+    get_settings.cache_clear()
+    store = MemoryStore(tmp_path / "t.db")
+    github = FakeGitHub()
+
+    out = ToolRegistry().dispatch(
+        "github_create_issue",
+        '{"repository":"GugaBoBo-s/gugabobo","title":"修复登录",'
+        '"body":"登录后会跳回首页。"}',
+        _owner_ctx(store, github_client=github),
+    )
+
+    assert "issue #51" in out
+    assert github.created_issue == ("修复登录", "登录后会跳回首页。")
+    assert any(
+        log["action"] == "tool.github.create_issue"
+        and log["status"] == "ok"
+        for log in store.list_audit_logs()
+    )
+    get_settings.cache_clear()
+
+
+def test_github_issue_creation_rejects_non_owner_and_non_allowlisted_repo(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "GUGABOBO_GITHUB_ISSUE_CREATE_REPOSITORIES",
+        "GugaBoBo-s/gugabobo",
+    )
+    get_settings.cache_clear()
+    store = MemoryStore(tmp_path / "t.db")
+    registry = ToolRegistry()
+    payload = '{"repository":"other/project","title":"test"}'
+
+    user = registry.dispatch(
+        "github_create_issue",
+        payload,
+        ToolContext(store=store, conversation_id="c", access_role="user"),
+    )
+    owner = registry.dispatch(
+        "github_create_issue",
+        payload,
+        _owner_ctx(store, github_client=FakeGitHub()),
+    )
+
+    assert "不能使用工具" in user
+    assert "不在 issue 创建 allowlist" in owner
+    get_settings.cache_clear()
+
+
 def test_list_conversations_tool(tmp_path):
     store = MemoryStore(tmp_path / "t.db")
     store.add_message(source="telegram_private", user_id="u1", role="user",
@@ -434,6 +507,7 @@ def test_owner_tools_hidden_from_user_and_trusted(tmp_path):
         "list_conversations",
         "send_file_with_glitter",
         "edit_agent_guidance",
+        "github_create_issue",
     ):
         assert tool not in user_names
         assert tool not in trusted_names

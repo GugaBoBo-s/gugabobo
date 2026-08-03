@@ -31,6 +31,13 @@ class ReviewResult:
     url: str
 
 
+@dataclass(frozen=True)
+class IssueResult:
+    number: int
+    url: str
+    title: str
+
+
 class GitHubClient:
     def __init__(
         self,
@@ -285,6 +292,18 @@ class GitHubClient:
                 break
             page += 1
         return issues if limit is None else issues[:limit]
+
+    def create_issue(self, title: str, body: str = "") -> IssueResult:
+        data = self._request(
+            "POST",
+            "/issues",
+            {"title": title, "body": body},
+        )
+        return IssueResult(
+            number=int(data["number"]),
+            url=str(data["html_url"]),
+            title=str(data.get("title", title)),
+        )
 
     def has_open_linked_pull_request(self, issue_number: int) -> bool:
         timeline = self._paginate(self._url(f"/issues/{issue_number}/timeline"))

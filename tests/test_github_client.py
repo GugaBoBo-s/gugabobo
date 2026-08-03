@@ -69,6 +69,34 @@ def test_create_pull_request_flow(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_create_issue_flow(monkeypatch):
+    configure_token(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/issues") and request.method == "POST":
+            return httpx.Response(
+                201,
+                json={
+                    "number": 51,
+                    "title": "Conversation issue",
+                    "html_url": "https://github.com/GugaBoBo-s/gugabobo/issues/51",
+                },
+            )
+        return httpx.Response(404, json={})
+
+    seen = install_mock(monkeypatch, handler)
+
+    result = GitHubClient().create_issue("Conversation issue", "Details")
+
+    assert result.number == 51
+    assert result.url.endswith("/issues/51")
+    assert json.loads(seen[0].content) == {
+        "title": "Conversation issue",
+        "body": "Details",
+    }
+    get_settings.cache_clear()
+
+
 def test_put_file_encodes_content(monkeypatch):
     configure_token(monkeypatch)
 

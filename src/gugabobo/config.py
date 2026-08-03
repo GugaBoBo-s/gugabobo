@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     telegram_reply_enabled: bool = False
     telegram_group_wake_words: str = "gugabobo,咕嘎BoBo"
     telegram_proxy: str = ""
+    telegram_file_max_bytes: int = Field(default=20_000_000, ge=1, le=100_000_000)
+    telegram_file_timeout_seconds: int = Field(default=30, ge=1, le=300)
     github_token: str = Field(default="", repr=False)
     github_owner: str = "GugaBoBo-s"
     github_repo: str = "gugabobo"
@@ -45,6 +47,7 @@ class Settings(BaseSettings):
     github_issue_min_confidence: float = Field(default=0.75, ge=0, le=1)
     github_issue_auto_fix_enabled: bool = True
     github_issue_auto_fix_repositories: str = ""
+    github_issue_create_repositories: str = ""
     auto_deploy_enabled: bool = True
     git_author_name: str = "GuGabobo"
     git_author_email: str = "263493647+GuGabobo@users.noreply.github.com"
@@ -149,6 +152,15 @@ class Settings(BaseSettings):
         configured = {
             item.strip().casefold()
             for item in self.github_issue_auto_fix_repositories.split(",")
+            if item.strip()
+        }
+        return configured or {f"{self.github_owner}/{self.github_repo}".casefold()}
+
+    @property
+    def github_issue_create_repository_set(self) -> set[str]:
+        configured = {
+            item.strip().casefold()
+            for item in self.github_issue_create_repositories.split(",")
             if item.strip()
         }
         return configured or {f"{self.github_owner}/{self.github_repo}".casefold()}

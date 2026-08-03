@@ -22,6 +22,7 @@
 - Isolated code-runner changes with CI-gated pull requests
 - Organization-wide automated GitHub pull request reviews
 - Organization-wide issue discovery, value evaluation, and allowlisted autonomous PR creation
+- Owner-authorized conversational GitHub issue creation for allowlisted repositories
 - Code-only model routing from Claude to GPT to DeepSeek on consecutive timeouts
 - Automated tests and GitHub Actions CI
 
@@ -126,6 +127,19 @@ Current behavior:
 - verified QQ and Telegram accounts belonging to one person share private context
 - risky owner-only operations require explicit owner confirmation
 - Telegram-specific code stays in the adapter layer, not in the core agent
+- Telegram documents are downloaded with a size limit into the controlled Glitter send root
+
+Telegram `document` messages are recognized even without a caption. Accepted files are streamed
+into `GUGABOBO_GLITTER_SEND_ROOT/telegram/...` using a generated path derived from Telegram IDs;
+the untrusted original filename cannot choose directories. The Agent receives only file metadata
+and the Glitter-relative path. An authenticated owner can then explicitly ask it to call
+`send_file_with_glitter`; other roles cannot send the file. Oversized, failed, and unconfigured
+downloads are reported to the Agent without exposing a nonexistent path.
+
+```env
+GUGABOBO_TELEGRAM_FILE_MAX_BYTES=20000000
+GUGABOBO_TELEGRAM_FILE_TIMEOUT_SECONDS=30
+```
 
 ### Link QQ and Telegram accounts
 
@@ -209,7 +223,8 @@ The owner-only `send_file_with_glitter` tool calls
 [Glitter](https://github.com/scarletkc/glitter) from the same project virtual environment. It can
 send only files or directories below `GUGABOBO_GLITTER_SEND_ROOT`; absolute paths and `..` escapes
 are rejected after path resolution. The receiver still applies Glitter's normal peer trust and
-transfer confirmation behavior.
+transfer confirmation behavior. Telegram documents accepted by the adapter are placed below this
+same root, so their reported relative path can be passed directly to the tool.
 
 ```env
 GUGABOBO_GLITTER_SEND_ROOT=.gugabobo/glitter-send
@@ -573,6 +588,17 @@ Automated reviews never use `APPROVE` or `REQUEST_CHANGES`, never authorize merg
 override branch protection.
 
 ### GitHub issue automation
+
+An authenticated owner can explicitly ask the chat Agent to create an issue through the
+`github_create_issue` tool. The target must be present in
+`GUGABOBO_GITHUB_ISSUE_CREATE_REPOSITORIES`; when the setting is empty, only the configured
+`GUGABOBO_GITHUB_OWNER/GUGABOBO_GITHUB_REPO` repository is allowed. The tool validates the
+`owner/repo` name, title, and body, and records both successful and failed attempts in the audit
+log. It is hidden from `user` and `trusted`, and creating an issue never authorizes PR merging.
+
+```env
+GUGABOBO_GITHUB_ISSUE_CREATE_REPOSITORIES=GugaBoBo-s/gugabobo
+```
 
 The lifecycle daemon can discover open issues across the configured organization, ask the code
 model chain whether each issue is bounded, testable, safe, and valuable, and persist the rationale.
