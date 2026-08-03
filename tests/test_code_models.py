@@ -1,5 +1,5 @@
-import httpx
 import pytest
+from litellm.exceptions import Timeout as LiteLLMTimeout
 
 from gugabobo.config import Settings
 from gugabobo.infra.code_models import CodeModelRouter, OpenAIResponsesCodeClient
@@ -41,7 +41,11 @@ def test_code_model_uses_claude_without_calling_fallbacks():
 
 
 def test_code_model_falls_back_in_order_only_on_timeouts():
-    claude = FakeCodeModel("claude", "claude-code", httpx.ReadTimeout("slow"))
+    claude = FakeCodeModel(
+        "claude",
+        "claude-code",
+        LiteLLMTimeout("slow", model="claude-code", llm_provider="anthropic"),
+    )
     openai = FakeCodeModel("openai", "gpt-code", TimeoutError("slow"))
     deepseek = FakeCodeModel("deepseek", "deepseek-code", "done")
 
@@ -62,13 +66,10 @@ def test_code_model_does_not_fallback_on_non_timeout_error():
 
 
 def test_code_model_treats_gateway_timeout_status_as_timeout():
-    request = httpx.Request("POST", "https://gateway.example/v1/messages")
-    response = httpx.Response(504, request=request)
-    claude = FakeCodeModel(
-        "claude",
-        "claude-code",
-        httpx.HTTPStatusError("gateway timeout", request=request, response=response),
-    )
+    class GatewayTimeout(RuntimeError):
+        status_code = 504
+
+    claude = FakeCodeModel("claude", "claude-code", GatewayTimeout("gateway timeout"))
     openai = FakeCodeModel("openai", "gpt-code", "done")
 
     result = CodeModelRouter([claude, openai]).complete_with_metadata([])
@@ -79,35 +80,20 @@ def test_code_model_treats_gateway_timeout_status_as_timeout():
 def test_openai_code_model_uses_responses_api(monkeypatch):
     captured = {}
 
-    class Response:
-        def raise_for_status(self):
-            return None
+    def responses(**kwargs):
+        captured.update(kwargs)
+        return {
+            "output": [
+                {"content": [{"type": "output_text", "text": "review result"}]}
+            ]
+        }
 
-        def json(self):
-            return {
-                "output": [
-                    {"content": [{"type": "output_text", "text": "review result"}]}
-                ]
-            }
-
-    class Client:
-        def __init__(self, timeout):
-            captured["timeout"] = timeout
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def post(self, url, headers, json):
-            captured.update(url=url, headers=headers, payload=json)
-            return Response()
-
-    monkeypatch.setattr("gugabobo.infra.code_models.httpx.Client", Client)
+    monkeypatch.setattr("gugabobo.infra.litellm_client.litellm.responses", responses)
     client = OpenAIResponsesCodeClient(
         "openai",
+        "openai",
         "secret",
+        "GUGABOBO_OPENAI_API_KEY",
         "https://api.openai.com/v1",
         "gpt-code",
         12,
@@ -116,8 +102,7 @@ def test_openai_code_model_uses_responses_api(monkeypatch):
     result = client.complete([{"role": "user", "content": "review"}])
 
     assert result == "review result"
-    assert captured["url"] == "https://api.openai.com/v1/responses"
-    assert captured["payload"] == {
-        "model": "gpt-code",
-        "input": [{"role": "user", "content": "review"}],
-    }
+    assert captured["model"] == "openai/gpt-code"
+    assert captured["base_url"] == "https://api.openai.com/v1"
+    assert captured["timeout"] == 12
+    assert captured["input"] == [{"role": "user", "content": "review"}]

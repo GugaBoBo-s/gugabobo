@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import httpx
-
 from gugabobo.config import Settings, get_settings
 from gugabobo.core.persona import Persona
+from gugabobo.infra.litellm_client import LiteLLMRequest, chat_response_data
 
 
 @dataclass(frozen=True)
@@ -29,8 +28,10 @@ def _build_user_content(text: str, images: list[str]) -> object:
     return parts
 
 
-class OpenAICompatibleClient:
+class LiteLLMClient:
     provider_name = "openai-compatible"
+    litellm_provider = "openai"
+    api_key_setting = "the selected provider API key"
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
@@ -60,32 +61,24 @@ class OpenAICompatibleClient:
         images: list[str] | None = None,
     ) -> LLMResult:
         if not self.configured:
-            raise RuntimeError(f"{self.provider_name} API key is not configured")
-        response = self._post_chat_completion(
+            raise RuntimeError(
+                f"{self.provider_name} API key is not configured; set {self.api_key_setting}"
+            )
+        messages = self.build_messages(
             text, persona, history or [], system_context or [], images or []
         )
-        choice = response["choices"][0]
-        content = choice["message"]["content"]
-        return LLMResult(content=str(content).strip(), model=str(response.get("model", "")))
+        response = self._request().completion(messages, temperature=0.7)
+        content, model, message, tool_calls = chat_response_data(response, self.model)
+        return LLMResult(content, model, message, tool_calls)
 
     def complete(self, messages: list[dict[str, str]], temperature: float = 0.0) -> str:
         if not self.configured:
-            raise RuntimeError(f"{self.provider_name} API key is not configured")
-        url = f"{self.base_url.rstrip('/')}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-        }
-        with httpx.Client(timeout=self.settings.llm_timeout_seconds) as client:
-            response = client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-        return str(data["choices"][0]["message"]["content"]).strip()
+            raise RuntimeError(
+                f"{self.provider_name} API key is not configured; set {self.api_key_setting}"
+            )
+        result = self._request().completion(list(messages), temperature)
+        content, _, _, _ = chat_response_data(result, self.model)
+        return content
 
     def build_messages(
         self,
@@ -116,60 +109,31 @@ class OpenAICompatibleClient:
         # model wants to call tools, finish_reason is "tool_calls" and the raw
         # assistant message (with tool_calls) is returned for the loop to append.
         if not self.configured:
-            raise RuntimeError(f"{self.provider_name} API key is not configured")
-        url = f"{self.base_url.rstrip('/')}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload: dict[str, object] = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-        }
-        if tools:
-            payload["tools"] = tools
-        with httpx.Client(timeout=self.settings.llm_timeout_seconds) as client:
-            response = client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-        message = data["choices"][0]["message"]
-        content = message.get("content")
-        tool_calls = message.get("tool_calls")
+            raise RuntimeError(
+                f"{self.provider_name} API key is not configured; set {self.api_key_setting}"
+            )
+        response = self._request().completion(messages, temperature, tools)
+        content, model, message, tool_calls = chat_response_data(response, self.model)
         return LLMResult(
-            content=str(content).strip() if content else "",
-            model=str(data.get("model", "")),
-            message=dict(message),
-            tool_calls=list(tool_calls) if tool_calls else None,
+            content=content,
+            model=model,
+            message=message,
+            tool_calls=tool_calls,
         )
 
-    def _post_chat_completion(
-        self,
-        text: str,
-        persona: Persona,
-        history: list[dict[str, str]],
-        system_context: list[str],
-        images: list[str],
-    ) -> dict[str, object]:
-        url = f"{self.base_url.rstrip('/')}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        messages = self.build_messages(text, persona, history, system_context, images)
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": 0.7,
-        }
-        with httpx.Client(timeout=self.settings.llm_timeout_seconds) as client:
-            response = client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
+    def _request(self) -> LiteLLMRequest:
+        return LiteLLMRequest(
+            provider=self.litellm_provider,
+            model=self.model,
+            api_key=self.api_key,
+            base_url=self.base_url,
+            timeout=self.settings.llm_timeout_seconds,
+        )
 
 
-class MoonshotClient(OpenAICompatibleClient):
+class MoonshotClient(LiteLLMClient):
     provider_name = "moonshot"
+    api_key_setting = "GUGABOBO_MOONSHOT_API_KEY"
 
     @property
     def api_key(self) -> str:
@@ -184,8 +148,10 @@ class MoonshotClient(OpenAICompatibleClient):
         return self.settings.moonshot_model
 
 
-class DeepSeekClient(OpenAICompatibleClient):
+class DeepSeekClient(LiteLLMClient):
     provider_name = "deepseek"
+    litellm_provider = "deepseek"
+    api_key_setting = "GUGABOBO_DEEPSEEK_API_KEY"
 
     @property
     def api_key(self) -> str:
@@ -200,8 +166,9 @@ class DeepSeekClient(OpenAICompatibleClient):
         return self.settings.deepseek_model
 
 
-class OpenAIClient(OpenAICompatibleClient):
+class OpenAIClient(LiteLLMClient):
     provider_name = "openai"
+    api_key_setting = "GUGABOBO_OPENAI_API_KEY"
 
     @property
     def api_key(self) -> str:
@@ -216,7 +183,7 @@ class OpenAIClient(OpenAICompatibleClient):
         return self.settings.openai_model
 
 
-def build_llm_client(settings: Settings | None = None) -> OpenAICompatibleClient:
+def build_llm_client(settings: Settings | None = None) -> LiteLLMClient:
     resolved_settings = settings or get_settings()
     if resolved_settings.llm_provider == "openai":
         return OpenAIClient(resolved_settings)

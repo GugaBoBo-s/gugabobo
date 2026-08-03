@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from gugabobo.infra.llm import OpenAICompatibleClient
+from gugabobo.infra.llm import LiteLLMClient
 from gugabobo.infra.logs import get_logger
 
 _SUMMARY_SYSTEM_PROMPT = (
@@ -13,7 +13,7 @@ _SUMMARY_SYSTEM_PROMPT = (
 
 
 class SummarizerSkill:
-    def __init__(self, llm_client: OpenAICompatibleClient) -> None:
+    def __init__(self, llm_client: LiteLLMClient) -> None:
         self.llm_client = llm_client
 
     def summarize(

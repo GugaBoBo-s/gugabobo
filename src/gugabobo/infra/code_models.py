@@ -3,9 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-import httpx
+from litellm.exceptions import Timeout as LiteLLMTimeout
 
 from gugabobo.config import Settings, get_settings
+from gugabobo.infra.litellm_client import (
+    LiteLLMRequest,
+    chat_response_data,
+    responses_output_text,
+)
 
 
 @dataclass(frozen=True)
@@ -25,68 +30,28 @@ class CodeModelClient(Protocol):
     def complete(self, messages: list[dict[str, str]], temperature: float = 0.0) -> str: ...
 
 
-class AnthropicCodeClient:
-    provider_name = "claude"
-
-    def __init__(self, settings: Settings | None = None) -> None:
-        self.settings = settings or get_settings()
-
-    @property
-    def configured(self) -> bool:
-        return bool(self.settings.claude_auth_token)
-
-    @property
-    def model(self) -> str:
-        return self.settings.code_claude_model
-
-    def complete(self, messages: list[dict[str, str]], temperature: float = 0.0) -> str:
-        if not self.configured:
-            raise RuntimeError("Claude code model is not configured")
-        system_parts = [item["content"] for item in messages if item["role"] == "system"]
-        conversation = [item for item in messages if item["role"] != "system"]
-        base_url = self.settings.claude_base_url or "https://api.anthropic.com"
-        base_url = base_url.rstrip("/")
-        url = f"{base_url}/messages" if base_url.endswith("/v1") else f"{base_url}/v1/messages"
-        headers = {
-            "Authorization": f"Bearer {self.settings.claude_auth_token}",
-            "x-api-key": self.settings.claude_auth_token,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        }
-        payload: dict[str, object] = {
-            "model": self.model,
-            "max_tokens": 8192,
-            "messages": conversation,
-            "temperature": temperature,
-        }
-        if system_parts:
-            payload["system"] = "\n\n".join(system_parts)
-        with httpx.Client(timeout=self.settings.code_model_timeout_seconds) as client:
-            response = client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-        blocks = data.get("content", [])
-        return "\n".join(
-            str(block.get("text", ""))
-            for block in blocks
-            if isinstance(block, dict) and block.get("type") == "text"
-        ).strip()
-
-
-class OpenAICompatibleCodeClient:
+class LiteLLMCodeClient:
     def __init__(
         self,
         provider_name: str,
+        litellm_provider: str,
         api_key: str,
+        api_key_setting: str,
         base_url: str,
         model: str,
         timeout: int,
+        max_tokens: int | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         self.provider_name = provider_name
+        self.litellm_provider = litellm_provider
         self.api_key = api_key
+        self.api_key_setting = api_key_setting
         self.base_url = base_url
         self.model = model
         self.timeout = timeout
+        self.max_tokens = max_tokens
+        self.extra_headers = extra_headers
 
     @property
     def configured(self) -> bool:
@@ -94,50 +59,35 @@ class OpenAICompatibleCodeClient:
 
     def complete(self, messages: list[dict[str, str]], temperature: float = 0.0) -> str:
         if not self.configured:
-            raise RuntimeError(f"{self.provider_name} code model is not configured")
-        url = f"{self.base_url.rstrip('/')}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-        }
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-        return str(data["choices"][0]["message"]["content"]).strip()
+            raise RuntimeError(
+                f"{self.provider_name} code model is not configured; set {self.api_key_setting}"
+            )
+        response = self._request().completion(
+            list(messages),
+            temperature,
+            max_tokens=self.max_tokens,
+        )
+        content, _, _, _ = chat_response_data(response, self.model)
+        return content
+
+    def _request(self) -> LiteLLMRequest:
+        return LiteLLMRequest(
+            provider=self.litellm_provider,
+            model=self.model,
+            api_key=self.api_key,
+            base_url=self.base_url,
+            timeout=self.timeout,
+            extra_headers=self.extra_headers,
+        )
 
 
-class OpenAIResponsesCodeClient(OpenAICompatibleCodeClient):
+class OpenAIResponsesCodeClient(LiteLLMCodeClient):
     def complete(self, messages: list[dict[str, str]], temperature: float = 0.0) -> str:
         if not self.configured:
-            raise RuntimeError("openai code model is not configured")
-        url = f"{self.base_url.rstrip('/')}/responses"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {"model": self.model, "input": messages}
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-        if data.get("output_text"):
-            return str(data["output_text"]).strip()
-        parts: list[str] = []
-        for output in data.get("output", []):
-            if not isinstance(output, dict):
-                continue
-            for content in output.get("content", []):
-                if isinstance(content, dict) and content.get("type") == "output_text":
-                    parts.append(str(content.get("text", "")))
-        if not parts:
-            raise ValueError("OpenAI response did not contain output text")
-        return "\n".join(parts).strip()
+            raise RuntimeError(
+                f"{self.provider_name} code model is not configured; set {self.api_key_setting}"
+            )
+        return responses_output_text(self._request().responses(messages))
 
 
 class CodeModelRouter:
@@ -160,7 +110,10 @@ class CodeModelRouter:
     ) -> CodeModelResult:
         for index, client in enumerate(self.clients):
             if not client.configured:
-                raise RuntimeError(f"{client.provider_name} code model is not configured")
+                setting = getattr(client, "api_key_setting", "its configured API key")
+                raise RuntimeError(
+                    f"{client.provider_name} code model is not configured; set {setting}"
+                )
             try:
                 content = client.complete(messages, temperature)
                 return CodeModelResult(content, client.provider_name, client.model)
@@ -171,30 +124,46 @@ class CodeModelRouter:
 
 
 def _is_timeout(error: Exception) -> bool:
-    if isinstance(error, (httpx.TimeoutException, TimeoutError)):
+    if isinstance(error, (LiteLLMTimeout, TimeoutError)):
         return True
-    return isinstance(error, httpx.HTTPStatusError) and error.response.status_code in {
-        408,
-        504,
-        524,
-    }
+    status_code = getattr(error, "status_code", None)
+    if status_code is None:
+        status_code = getattr(getattr(error, "response", None), "status_code", None)
+    return status_code in {408, 504, 524}
 
 
 def build_code_model_router(settings: Settings | None = None) -> CodeModelRouter:
     resolved = settings or get_settings()
+    claude_base_url = (resolved.claude_base_url or "https://api.anthropic.com").rstrip("/")
+    if claude_base_url.endswith("/v1"):
+        claude_base_url = claude_base_url[:-3]
     return CodeModelRouter(
         [
-            AnthropicCodeClient(resolved),
+            LiteLLMCodeClient(
+                "claude",
+                "anthropic",
+                resolved.claude_auth_token,
+                "GUGABOBO_CLAUDE_AUTH_TOKEN",
+                claude_base_url,
+                resolved.code_claude_model,
+                resolved.code_model_timeout_seconds,
+                max_tokens=8192,
+                extra_headers={"Authorization": f"Bearer {resolved.claude_auth_token}"},
+            ),
             OpenAIResponsesCodeClient(
                 "openai",
+                "openai",
                 resolved.openai_api_key,
+                "GUGABOBO_OPENAI_API_KEY",
                 resolved.openai_base_url,
                 resolved.code_openai_model,
                 resolved.code_model_timeout_seconds,
             ),
-            OpenAICompatibleCodeClient(
+            LiteLLMCodeClient(
+                "deepseek",
                 "deepseek",
                 resolved.deepseek_api_key,
+                "GUGABOBO_DEEPSEEK_API_KEY",
                 resolved.deepseek_base_url,
                 resolved.code_deepseek_model,
                 resolved.code_model_timeout_seconds,
