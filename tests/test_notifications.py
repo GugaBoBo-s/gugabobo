@@ -76,6 +76,50 @@ def test_async_worker_delivers_queued_telegram_notification(tmp_path) -> None:
     assert store.list_owner_notifications()[0]["status"] == "sent"
 
 
+def test_async_worker_delivers_agent_generated_telegram_message(tmp_path) -> None:
+    store = MemoryStore(tmp_path / "agent-outbound.db")
+    notification_id = store.queue_owner_notification(
+        dedupe_key="agent-telegram:test",
+        event_type="agent_telegram_message",
+        platform="telegram",
+        recipient_id="@release_channel",
+        content="新版本已经发布。",
+    )
+    telegram = AsyncFakeTelegram()
+
+    result = asyncio.run(TelegramNotificationWorker(store, telegram).deliver_pending())
+
+    assert result == {"attempted": 1, "sent": 1}
+    assert telegram.messages == [("@release_channel", "新版本已经发布。")]
+    assert store.list_owner_notifications()[0]["id"] == notification_id
+    assert store.list_owner_notifications()[0]["status"] == "sent"
+
+
+def test_async_worker_is_not_starved_by_qq_notifications(tmp_path) -> None:
+    store = MemoryStore(tmp_path / "platform-filter.db")
+    for index in range(3):
+        store.queue_owner_notification(
+            dedupe_key=f"qq:{index}",
+            event_type="test",
+            platform="qq",
+            recipient_id=str(index),
+            content="qq",
+        )
+    store.queue_owner_notification(
+        dedupe_key="telegram:target",
+        event_type="agent_telegram_message",
+        platform="telegram",
+        recipient_id="12345",
+        content="telegram",
+    )
+    telegram = AsyncFakeTelegram()
+
+    result = asyncio.run(TelegramNotificationWorker(store, telegram).deliver_pending(limit=1))
+
+    assert result == {"attempted": 1, "sent": 1}
+    assert telegram.messages == [("12345", "telegram")]
+
+
 def test_same_pull_request_number_in_different_repositories_does_not_collide(tmp_path) -> None:
     store = MemoryStore(tmp_path / "repository-keys.db")
     settings = Settings(

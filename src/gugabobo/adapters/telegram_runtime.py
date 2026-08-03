@@ -45,10 +45,11 @@ class TelegramNotificationWorker:
             self.store.list_owner_notifications,
             limit,
             True,
+            300,
+            "telegram",
         )
-        telegram_records = [record for record in records if record["platform"] == "telegram"]
         sent = 0
-        for record in telegram_records:
+        for record in records:
             notification_id = int(record["id"])
             notification = await asyncio.to_thread(
                 self.store.claim_owner_notification,
@@ -75,7 +76,7 @@ class TelegramNotificationWorker:
                 "sent",
             )
             sent += 1
-        return {"attempted": len(telegram_records), "sent": sent}
+        return {"attempted": len(records), "sent": sent}
 
 
 class TelegramService:

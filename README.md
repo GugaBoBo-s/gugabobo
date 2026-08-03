@@ -92,6 +92,10 @@ An owner request to message another QQ user creates a ten-minute draft. NapCat s
 ## Telegram Bot
 
 Telegram uses the same `CoreAgent`, persona, memory store, LLM provider, dashboard, and permission model as QQ.
+Authenticated owners can ask the AI to send a Telegram message to a numeric user/chat ID, a
+negative group ID, or an `@channel_username`. The owner-only tool writes the message to the
+durable notification queue; the aiogram worker sends it asynchronously and records retries and
+the final delivery state. The Bot must already be able to access the target.
 
 Local webhook endpoint:
 
