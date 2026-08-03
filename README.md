@@ -176,6 +176,11 @@ GUGABOBO_LLM_SUMMARY_KEEP_RECENT_TOKENS=8000
 
 If the API key is missing or the provider call fails, chat falls back to the local placeholder reply.
 
+LiteLLM normally downloads its model pricing table from GitHub the first time it is imported, which
+blocks startup for up to five seconds on restricted networks. `gugabobo` sets
+`LITELLM_LOCAL_MODEL_COST_MAP=true` before that import so the bundled offline table is used instead.
+Set `LITELLM_LOCAL_MODEL_COST_MAP=false` in the process environment to restore the network fetch.
+
 LLM context is scoped by conversation. Linked QQ and Telegram private accounts share one
 person conversation; CLI/API users, unlinked people, and groups remain isolated.
 

@@ -1,3 +1,5 @@
+import os
+
 from gugabobo.config import Settings
 from gugabobo.infra.llm import DeepSeekClient, MoonshotClient
 from litellm.types.utils import ModelResponse
@@ -100,3 +102,15 @@ def test_litellm_model_response_is_normalized(monkeypatch):
     assert result.content == "真实对象响应"
     assert result.model == "provider-model"
     assert result.message == {"content": "真实对象响应", "role": "assistant"}
+
+
+def test_litellm_model_cost_map_stays_local():
+    import gugabobo.infra  # noqa: F401
+    from litellm.litellm_core_utils.get_model_cost_map import (
+        get_model_cost_map_source_info,
+    )
+
+    assert os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] == "true"
+    source_info = get_model_cost_map_source_info()
+    assert source_info["source"] == "local"
+    assert source_info["is_env_forced"] is True
