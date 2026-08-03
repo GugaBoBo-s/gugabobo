@@ -2,7 +2,13 @@ from gugabobo.core.agent import CoreAgent
 from gugabobo.core.channel import ChannelContext
 from gugabobo.core.persona import Persona
 from gugabobo.config import get_settings
-from gugabobo.infra.llm import DeepSeekClient, MoonshotClient, OpenAIClient, build_llm_client
+from gugabobo.infra.llm import (
+    AgentResult,
+    DeepSeekAgentRuntime,
+    MoonshotAgentRuntime,
+    OpenAIAgentRuntime,
+    build_agent_runtime,
+)
 from gugabobo.memory.store import MemoryStore
 from gugabobo.skills.chat import ChatSkill
 from gugabobo.skills.summarizer import SummarizerSkill
@@ -106,8 +112,8 @@ def test_regular_chat_does_not_record_long_term_memory(tmp_path, monkeypatch):
 class FakeLLMClient:
     configured = True
 
-    def chat(self, text, persona, history=None, system_context=None, images=None):
-        return type("Result", (), {"content": f"kimi reply: {text}", "model": "kimi-k2.6"})()
+    def run(self, text, **kwargs):
+        return AgentResult(f"kimi reply: {text}", "kimi-k2.6")
 
 
 class HistoryCapturingLLMClient:
@@ -118,11 +124,11 @@ class HistoryCapturingLLMClient:
         self.system_contexts = []
         self.images = []
 
-    def chat(self, text, persona, history=None, system_context=None, images=None):
-        self.histories.append(history or [])
-        self.system_contexts.append(system_context or [])
-        self.images.append(images or [])
-        return type("Result", (), {"content": f"reply: {text}", "model": "test-model"})()
+    def run(self, text, **kwargs):
+        self.histories.append(kwargs.get("history") or [])
+        self.system_contexts.append((kwargs.get("instructions") or [])[1:])
+        self.images.append(kwargs.get("images") or [])
+        return AgentResult(f"reply: {text}", "test-model")
 
 
 class DisabledLLMClient:
@@ -226,40 +232,42 @@ def test_persona_system_summary_contains_operating_rules():
     assert "API key" in summary
 
 
-def test_build_llm_client_uses_deepseek_provider(monkeypatch):
+def test_build_agent_runtime_uses_deepseek_provider(monkeypatch):
     monkeypatch.setenv("GUGABOBO_LLM_PROVIDER", "deepseek")
     monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "test-key")
     get_settings.cache_clear()
 
-    client = build_llm_client()
+    client = build_agent_runtime()
 
-    assert isinstance(client, DeepSeekClient)
+    assert isinstance(client, DeepSeekAgentRuntime)
     assert client.model == "deepseek-v4-flash"
     get_settings.cache_clear()
 
 
-def test_build_llm_client_defaults_to_moonshot(monkeypatch):
+def test_build_agent_runtime_defaults_to_moonshot(monkeypatch):
     monkeypatch.setenv("GUGABOBO_LLM_PROVIDER", "moonshot")
     monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "test-key")
     get_settings.cache_clear()
 
-    client = build_llm_client()
+    client = build_agent_runtime()
 
-    assert isinstance(client, MoonshotClient)
+    assert isinstance(client, MoonshotAgentRuntime)
     assert client.model == "kimi-k2.6"
     get_settings.cache_clear()
 
 
-def test_build_user_content_plain_text_without_images():
-    from gugabobo.infra.llm import _build_user_content
+def test_multimodal_content_preserves_plain_text():
+    from gugabobo.infra.llm import _multimodal_content
 
-    assert _build_user_content("你好", []) == "你好"
+    assert _multimodal_content(["你好"]) == [{"type": "text", "text": "你好"}]
 
 
-def test_build_user_content_multimodal_with_images():
-    from gugabobo.infra.llm import _build_user_content
+def test_multimodal_content_preserves_images():
+    from pydantic_ai import ImageUrl
 
-    content = _build_user_content("看图", ["data:image/png;base64,Zm9v"])
+    from gugabobo.infra.llm import _multimodal_content
+
+    content = _multimodal_content(["看图", ImageUrl("data:image/png;base64,Zm9v")])
 
     assert isinstance(content, list)
     assert content[0] == {"type": "text", "text": "看图"}
@@ -269,26 +277,28 @@ def test_build_user_content_multimodal_with_images():
     }
 
 
-def test_build_user_content_image_only_omits_empty_text():
-    from gugabobo.infra.llm import _build_user_content
+def test_multimodal_content_image_only_omits_empty_text():
+    from pydantic_ai import ImageUrl
 
-    content = _build_user_content("", ["data:image/png;base64,Zm9v"])
+    from gugabobo.infra.llm import _multimodal_content
+
+    content = _multimodal_content([ImageUrl("data:image/png;base64,Zm9v")])
 
     assert isinstance(content, list)
     assert len(content) == 1
     assert content[0]["type"] == "image_url"
 
 
-def test_build_llm_client_uses_openai_provider(monkeypatch):
+def test_build_agent_runtime_uses_openai_provider(monkeypatch):
     monkeypatch.setenv("GUGABOBO_LLM_PROVIDER", "openai")
     monkeypatch.setenv("GUGABOBO_OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("GUGABOBO_OPENAI_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("GUGABOBO_OPENAI_MODEL", "gpt-5.6")
     get_settings.cache_clear()
 
-    client = build_llm_client()
+    client = build_agent_runtime()
 
-    assert isinstance(client, OpenAIClient)
+    assert isinstance(client, OpenAIAgentRuntime)
     assert client.base_url == "https://api.example.com/v1"
     assert client.model == "gpt-5.6"
     get_settings.cache_clear()
@@ -301,13 +311,16 @@ class SummaryCapableLLMClient:
         self.chat_calls = []
         self.complete_calls = []
 
-    def chat(self, text, persona, history=None, system_context=None, images=None):
-        self.chat_calls.append({"history": history or [], "system_context": system_context or []})
-        return type("Result", (), {"content": f"reply: {text}", "model": "test-model"})()
+    def run(self, text, **kwargs):
+        instructions = kwargs.get("instructions") or []
+        self.chat_calls.append(
+            {"history": kwargs.get("history") or [], "system_context": instructions[1:]}
+        )
+        return AgentResult(f"reply: {text}", "test-model")
 
-    def complete(self, messages, temperature=0.3):
+    def run_messages(self, messages, **kwargs):
         self.complete_calls.append(messages)
-        return "滚动摘要：用户与咕嘎BoBo进行了多轮对话。"
+        return AgentResult("滚动摘要：用户与咕嘎BoBo进行了多轮对话。", "test-model")
 
 
 def _make_summary_agent(tmp_path):

@@ -11,6 +11,7 @@ from gugabobo.core.tools import ToolContext, ToolRegistry
 from gugabobo.config import Settings, get_settings
 from gugabobo.infra.logs import get_logger
 from gugabobo.infra.tokens import estimate_message_tokens
+from gugabobo.infra.semantic_memory import VexorMemorySearch
 from gugabobo.memory.store import MemoryStore
 from gugabobo.skills.chat import ChatSkill
 from gugabobo.skills.feedback import FeedbackSkill
@@ -39,8 +40,9 @@ class CoreAgent:
         self.feedback_skill = FeedbackSkill(store)
         self.memory_skill = MemorySkill(store)
         self.identity_service = IdentityService(store)
-        self.outbound_skill = OutboundSkill(self.chat_skill.llm_client, store)
-        self.summarizer_skill = SummarizerSkill(self.chat_skill.llm_client)
+        self.outbound_skill = OutboundSkill(self.chat_skill.runtime, store)
+        self.summarizer_skill = SummarizerSkill(self.chat_skill.runtime)
+        self.semantic_memory = VexorMemorySearch(get_settings())
         self.lifecycle_service = PullRequestLifecycleService(store)
         self.background_summarize = False
         # Tool-calling registry. Off by default so tests and any caller that
@@ -98,6 +100,7 @@ class CoreAgent:
         system_context = self.build_system_context(
             conversation_id=context.conversation_id,
             memory_limit=settings.llm_memory_items,
+            query=text,
         )
         stored_text = text
         if images:
@@ -268,12 +271,21 @@ class CoreAgent:
             return f"当前权限是 {role}，不能记录反馈。需要 trusted 或 owner。"
         return f"当前权限是 {role}，不能执行这个操作。"
 
-    def build_system_context(self, conversation_id: str, memory_limit: int) -> list[str]:
+    def build_system_context(
+        self,
+        conversation_id: str,
+        memory_limit: int,
+        query: str = "",
+    ) -> list[str]:
         context = []
         summary = self.store.get_conversation_summary(conversation_id)
         if summary:
             context.append(f"Conversation summary:\n{summary['summary']}")
-        memory_items = self.store.list_memory_items(subject=conversation_id, limit=memory_limit)
+        candidates = self.store.list_memory_items(
+            subject=conversation_id,
+            limit=self.semantic_memory.settings.vexor_memory_candidates,
+        )
+        memory_items = self.semantic_memory.search(query, candidates, memory_limit)
         if memory_items:
             memory_lines = [
                 f"- [{item['memory_type']}; importance={item['importance']}] {item['content']}"

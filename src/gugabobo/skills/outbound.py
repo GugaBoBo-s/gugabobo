@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import json
 import re
 from datetime import datetime, timezone
 
 from gugabobo.core.channel import ChannelContext
-from gugabobo.infra.llm import LiteLLMClient
+from pydantic import BaseModel
+
+from gugabobo.infra.llm import AgentRuntime
 from gugabobo.config import get_settings
 from gugabobo.infra.logs import get_logger
 from gugabobo.infra.napcat_client import NapCatClient
@@ -32,32 +33,33 @@ _CANCEL_PATTERN = re.compile(r"^取消发送\s*#?(\d+)\s*$")
 class OutboundSkill:
     def __init__(
         self,
-        llm_client: LiteLLMClient,
+        runtime: AgentRuntime,
         store: MemoryStore,
         napcat_client: NapCatClient | None = None,
     ) -> None:
-        self.llm_client = llm_client
+        self.runtime = runtime
         self.store = store
         self.napcat_client = napcat_client or NapCatClient()
 
     def parse_intent(self, text: str) -> dict[str, str] | None:
-        if not self.llm_client.configured:
+        if not self.runtime.configured:
             return None
         try:
-            raw = self.llm_client.complete(
+            result = self.runtime.run_messages(
                 [
                     {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
                     {"role": "user", "content": text},
-                ]
+                ],
+                output_type=OutboundIntent,
             )
-            parsed = json.loads(_strip_code_fence(raw))
         except Exception as exc:
             get_logger().warning("outbound intent parse failed: %s", self._safe_error(exc))
             return None
-        if not isinstance(parsed, dict) or parsed.get("action") != "send":
+        parsed = result.output
+        if not isinstance(parsed, OutboundIntent) or parsed.action != "send":
             return None
-        target = str(parsed.get("target", "")).strip()
-        content = str(parsed.get("content", "")).strip()
+        target = parsed.target.strip()
+        content = parsed.content.strip()
         if not target or not content:
             return None
         return {"target": target, "content": content}
@@ -217,15 +219,10 @@ class OutboundSkill:
         return expires <= now
 
 
-def _strip_code_fence(text: str) -> str:
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        lines = lines[1:] if len(lines) > 1 else lines
-        if lines and lines[-1].strip().startswith("```"):
-            lines = lines[:-1]
-        return "\n".join(lines).strip()
-    return stripped
+class OutboundIntent(BaseModel):
+    action: str
+    target: str = ""
+    content: str = ""
 
 
 def _friend_label(friend: dict[str, object]) -> str:

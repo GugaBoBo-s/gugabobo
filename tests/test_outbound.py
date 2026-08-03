@@ -2,8 +2,9 @@ import json
 
 from gugabobo.config import get_settings
 from gugabobo.core.channel import ChannelContext
+from gugabobo.infra.llm import AgentResult
 from gugabobo.memory.store import MemoryStore
-from gugabobo.skills.outbound import OutboundSkill
+from gugabobo.skills.outbound import OutboundIntent, OutboundSkill
 
 
 class FakeLLMClient:
@@ -13,16 +14,16 @@ class FakeLLMClient:
         self._payload = payload
         self.calls = []
 
-    def complete(self, messages):
+    def run_messages(self, messages, **kwargs):
         self.calls.append(messages)
-        return self._payload
+        return AgentResult(OutboundIntent.model_validate_json(self._payload), "test")
 
 
 class DisabledLLMClient:
     configured = False
 
-    def complete(self, messages):
-        raise AssertionError("complete should not be called when not configured")
+    def run_messages(self, messages, **kwargs):
+        raise AssertionError("run_messages should not be called when not configured")
 
 
 class FakeNapCatClient:
@@ -185,8 +186,8 @@ def test_send_failure_redacts_configured_access_token(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
-def test_cancel_and_code_fence_parsing(tmp_path):
-    payload = "```json\n" + send_payload("123", "hi") + "\n```"
+def test_cancel_structured_outbound_draft(tmp_path):
+    payload = send_payload("123", "hi")
     outbound, store = skill(tmp_path, FakeLLMClient(payload))
     outbound.handle("给123发hi", context())
 

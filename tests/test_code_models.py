@@ -2,7 +2,7 @@ import pytest
 from litellm.exceptions import Timeout as LiteLLMTimeout
 
 from gugabobo.config import Settings
-from gugabobo.infra.code_models import CodeModelRouter, OpenAIResponsesCodeClient
+from gugabobo.infra.code_models import CodeModelRouter, PydanticCodeAgent
 
 
 class FakeCodeModel:
@@ -14,7 +14,7 @@ class FakeCodeModel:
         self.result = result
         self.calls = 0
 
-    def complete(self, messages, temperature=0.0):
+    def complete(self, messages, temperature=0.0, output_type=str):
         self.calls += 1
         if isinstance(self.result, Exception):
             raise self.result
@@ -77,32 +77,16 @@ def test_code_model_treats_gateway_timeout_status_as_timeout():
     assert result.provider == "openai"
 
 
-def test_openai_code_model_uses_responses_api(monkeypatch):
-    captured = {}
-
-    def responses(**kwargs):
-        captured.update(kwargs)
-        return {
-            "output": [
-                {"content": [{"type": "output_text", "text": "review result"}]}
-            ]
-        }
-
-    monkeypatch.setattr("gugabobo.infra.litellm_client.litellm.responses", responses)
-    client = OpenAIResponsesCodeClient(
+def test_openai_code_model_is_a_pydantic_ai_agent():
+    client = PydanticCodeAgent(
+        Settings(_env_file=None, code_model_timeout_seconds=12),
         "openai",
         "openai",
         "secret",
         "GUGABOBO_OPENAI_API_KEY",
         "https://api.openai.com/v1",
         "gpt-code",
-        12,
     )
 
-    result = client.complete([{"role": "user", "content": "review"}])
-
-    assert result == "review result"
-    assert captured["model"] == "openai/gpt-code"
-    assert captured["base_url"] == "https://api.openai.com/v1"
-    assert captured["timeout"] == 12
-    assert captured["input"] == [{"role": "user", "content": "review"}]
+    assert client.routed_model == "openai/gpt-code"
+    assert client.request_timeout == 12

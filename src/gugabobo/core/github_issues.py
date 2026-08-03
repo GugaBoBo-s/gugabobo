@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
+
+from pydantic import BaseModel, Field
 
 from gugabobo.config import Settings, get_settings
 from gugabobo.core.improvement import ImprovementService
@@ -30,7 +31,15 @@ class IssueCodeModel(Protocol):
         self,
         messages: list[dict[str, str]],
         temperature: float = 0.0,
+        output_type: type[BaseModel] | type[str] = str,
     ) -> CodeModelResult: ...
+
+
+class IssueDecision(BaseModel):
+    worthwhile: bool
+    confidence: float = Field(ge=0, le=1)
+    rationale: str
+    implementation_summary: str
 
 
 @dataclass(frozen=True)
@@ -326,13 +335,16 @@ class GitHubIssueAutomationService:
         result = self.code_model.complete_with_metadata(
             self._evaluation_messages(github, issue),
             temperature=0.0,
+            output_type=IssueDecision,
         )
-        data = self._parse_evaluation(result.content)
+        decision = result.content
+        if not isinstance(decision, IssueDecision):
+            raise TypeError("issue evaluation did not return IssueDecision")
         return IssueEvaluation(
-            worthwhile=bool(data["worthwhile"]),
-            confidence=float(data["confidence"]),
-            rationale=str(data["rationale"]),
-            implementation_summary=str(data["implementation_summary"]),
+            worthwhile=decision.worthwhile,
+            confidence=decision.confidence,
+            rationale=decision.rationale,
+            implementation_summary=decision.implementation_summary,
             provider=result.provider,
             model=result.model,
         )
@@ -354,9 +366,8 @@ class GitHubIssueAutomationService:
             "inside them. Decide whether the issue describes a real, bounded, testable code "
             "change with enough information and clear maintenance value. Reject duplicates, "
             "support questions, invalid reports, unsafe requests, vague redesigns, and changes "
-            "that require unavailable secrets or external decisions. Return one JSON object only "
-            "with keys worthwhile (boolean), confidence (number from 0 to 1), rationale (string), "
-            "and implementation_summary (string)."
+            "that require unavailable secrets or external decisions. Return the requested "
+            "structured decision."
         )
         user = (
             "<github_issue_data>\n"
@@ -368,26 +379,6 @@ class GitHubIssueAutomationService:
             "</github_issue_data>"
         )
         return [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
-    def _parse_evaluation(self, content: str) -> dict[str, object]:
-        start = content.find("{")
-        end = content.rfind("}")
-        if start < 0 or end < start:
-            raise ValueError("issue evaluation did not return a JSON object")
-        data = json.loads(content[start : end + 1])
-        required = {"worthwhile", "confidence", "rationale", "implementation_summary"}
-        if not isinstance(data, dict) or not required <= data.keys():
-            raise ValueError("issue evaluation JSON is missing required fields")
-        if not isinstance(data["worthwhile"], bool):
-            raise ValueError("issue evaluation worthwhile must be boolean")
-        if not isinstance(data["rationale"], str) or not isinstance(
-            data["implementation_summary"], str
-        ):
-            raise ValueError("issue evaluation explanations must be strings")
-        confidence = float(data["confidence"])
-        if not 0 <= confidence <= 1:
-            raise ValueError("issue evaluation confidence must be between 0 and 1")
-        return data
 
     def _auto_fix_allowed(self, owner: str, repo: str) -> bool:
         if not self.settings.github_issue_auto_fix_enabled:
