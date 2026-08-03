@@ -1,102 +1,114 @@
-from gugabobo.config import Settings
-from gugabobo.infra.llm import DeepSeekClient, MoonshotClient
 from litellm.types.utils import ModelResponse
 
+from gugabobo.config import Settings
+from gugabobo.infra.llm import DeepSeekAgentRuntime, MoonshotAgentRuntime
 
-def test_litellm_chat_completion_preserves_tools(monkeypatch):
+
+def _response(content, *, tool_calls=None, model="provider-model"):
+    return ModelResponse(
+        model=model,
+        usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        choices=[
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": tool_calls,
+                }
+            }
+        ],
+    )
+
+
+def test_pydantic_ai_routes_chat_through_litellm(monkeypatch):
     captured = {}
+
+    async def completion(**kwargs):
+        captured.update(kwargs)
+        return _response("真实对象响应", model="kimi-k2.6")
+
+    monkeypatch.setattr("pydantic_ai_litellm.litellm_model.acompletion", completion)
+    runtime = MoonshotAgentRuntime(
+        Settings(
+            _env_file=None,
+            moonshot_api_key="secret",
+            moonshot_base_url="https://moonshot.example/v1",
+            moonshot_model="kimi-test",
+            llm_timeout_seconds=17,
+        )
+    )
+
+    result = runtime.run("你好", instructions=["你是测试助手"], temperature=0.7)
+
+    assert result.output == "真实对象响应"
+    assert result.model == "kimi-k2.6"
+    assert captured["model"] == "openai/kimi-test"
+    assert captured["api_base"] == "https://moonshot.example/v1"
+    assert captured["api_key"] == "secret"
+    assert captured["timeout"] == 17
+
+
+def test_pydantic_ai_preserves_multimodal_image_content(monkeypatch):
+    captured = {}
+
+    async def completion(**kwargs):
+        captured.update(kwargs)
+        return _response("看到了")
+
+    monkeypatch.setattr("pydantic_ai_litellm.litellm_model.acompletion", completion)
+    runtime = MoonshotAgentRuntime(Settings(_env_file=None, moonshot_api_key="secret"))
+
+    runtime.run("看图", images=["data:image/png;base64,Zm9v"])
+
+    user = next(item for item in captured["messages"] if item["role"] == "user")
+    assert user["content"] == [
+        {"type": "text", "text": "看图"},
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,Zm9v"},
+        },
+    ]
+
+
+def test_pydantic_ai_executes_authorized_tool_loop(monkeypatch):
+    calls = []
     tool_call = {
         "id": "call-1",
         "type": "function",
-        "function": {"name": "get_current_time", "arguments": "{}"},
+        "function": {
+            "name": "use_gugabobo_tool",
+            "arguments": '{"name":"get_current_time","arguments":{}}',
+        },
     }
 
-    def completion(**kwargs):
-        captured.update(kwargs)
-        return {
-            "model": "kimi-k2.6",
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [tool_call],
-                    }
-                }
-            ],
-        }
+    async def completion(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return _response(None, tool_calls=[tool_call])
+        return _response("现在是下午三点。")
 
-    monkeypatch.setattr("gugabobo.infra.litellm_client.litellm.completion", completion)
-    settings = Settings(
-        _env_file=None,
-        moonshot_api_key="secret",
-        moonshot_base_url="https://moonshot.example/v1",
-        moonshot_model="kimi-test",
-        llm_timeout_seconds=17,
-    )
-    client = MoonshotClient(settings)
-    tools = [{"type": "function", "function": {"name": "get_current_time"}}]
+    dispatched = []
+    monkeypatch.setattr("pydantic_ai_litellm.litellm_model.acompletion", completion)
+    runtime = MoonshotAgentRuntime(Settings(_env_file=None, moonshot_api_key="secret"))
 
-    result = client.complete_messages(
-        [{"role": "user", "content": "现在几点"}],
-        tools=tools,
+    result = runtime.run(
+        "现在几点",
+        tool_specs=[{"type": "function", "function": {"name": "get_current_time"}}],
+        dispatch=lambda name, arguments: dispatched.append((name, arguments)) or "15:00",
     )
 
-    assert captured["model"] == "openai/kimi-test"
-    assert captured["base_url"] == "https://moonshot.example/v1"
-    assert captured["api_key"] == "secret"
-    assert captured["timeout"] == 17
-    assert captured["tools"] == tools
-    assert result.model == "kimi-k2.6"
-    assert result.content == ""
-    assert result.tool_calls == [tool_call]
-    assert result.message == {
-        "role": "assistant",
-        "content": None,
-        "tool_calls": [tool_call],
-    }
+    assert result.output == "现在是下午三点。"
+    assert dispatched == [("get_current_time", "{}")]
+    assert len(calls) == 2
 
 
-def test_litellm_deepseek_completion_uses_native_provider_prefix(monkeypatch):
-    captured = {}
-
-    def completion(**kwargs):
-        captured.update(kwargs)
-        return {
-            "model": "deepseek-test",
-            "choices": [{"message": {"role": "assistant", "content": "完成"}}],
-        }
-
-    monkeypatch.setattr("gugabobo.infra.litellm_client.litellm.completion", completion)
-    client = DeepSeekClient(
+def test_deepseek_runtime_uses_native_provider_prefix():
+    runtime = DeepSeekAgentRuntime(
         Settings(
             _env_file=None,
             deepseek_api_key="secret",
-            deepseek_base_url="https://deepseek.example",
             deepseek_model="deepseek-test",
         )
     )
 
-    result = client.complete([{"role": "user", "content": "检查"}])
-
-    assert result == "完成"
-    assert captured["model"] == "deepseek/deepseek-test"
-    assert captured["base_url"] == "https://deepseek.example"
-
-
-def test_litellm_model_response_is_normalized(monkeypatch):
-    response = ModelResponse(
-        model="provider-model",
-        choices=[{"message": {"role": "assistant", "content": "真实对象响应"}}],
-    )
-    monkeypatch.setattr(
-        "gugabobo.infra.litellm_client.litellm.completion",
-        lambda **kwargs: response,
-    )
-    client = MoonshotClient(Settings(_env_file=None, moonshot_api_key="secret"))
-
-    result = client.chat("你好", persona=type("Persona", (), {"system_summary": lambda _: ""})())
-
-    assert result.content == "真实对象响应"
-    assert result.model == "provider-model"
-    assert result.message == {"content": "真实对象响应", "role": "assistant"}
+    assert runtime.routed_model == "deepseek/deepseek-test"

@@ -5,6 +5,7 @@ from gugabobo.core.agent import CoreAgent
 from gugabobo.core.channel import ChannelContext
 from gugabobo.core.identity import IdentityService
 from gugabobo.core.persona import Persona
+from gugabobo.infra.llm import AgentResult
 from gugabobo.memory.store import MemoryStore
 from gugabobo.skills.chat import ChatSkill
 
@@ -15,9 +16,9 @@ class HistoryCapturingLLMClient:
     def __init__(self):
         self.histories = []
 
-    def chat(self, text, persona, history=None, system_context=None, images=None):
-        self.histories.append(history or [])
-        return type("Result", (), {"content": f"reply: {text}", "model": "test-model"})()
+    def run(self, text, **kwargs):
+        self.histories.append(kwargs.get("history") or [])
+        return AgentResult(f"reply: {text}", "test-model")
 
 
 def private_context(platform: str, user_id: str, is_owner: bool = False) -> ChannelContext:

@@ -6,6 +6,7 @@ from gugabobo.core.tools import (
     ToolContext,
     ToolRegistry,
 )
+from gugabobo.infra.llm import AgentResult
 from gugabobo.memory.store import MemoryStore
 from gugabobo.skills.chat import ChatSkill
 
@@ -222,8 +223,12 @@ def test_registry_specs_available_to_user_role(tmp_path):
         "recall_messages",
         "search_memory",
         "web_search",
-        "read_url",
-    }
+            "read_url",
+            "remote_skill",
+            "read_x_posts",
+            "read_agent_guidance",
+            "steam_lookup",
+        }
 
 
 def test_registry_blocked_tool_denied_at_dispatch(tmp_path):
@@ -243,95 +248,29 @@ def test_registry_blocked_tool_denied_at_dispatch(tmp_path):
     assert "不能使用工具" in out
 
 
-# ── full tool-calling loop through ChatSkill with a scripted fake client ────
-class ScriptedToolClient:
-    """Fake LLM client that returns a scripted sequence of tool-call / content
-    responses so the loop can be tested without a real relay or token spend."""
-
-    configured = True
-
-    def __init__(self, script):
-        self._script = list(script)
-        self.calls = 0
-        self.dispatched = []
-
-    def build_messages(self, text, persona, history, system_context, images):
-        return [{"role": "user", "content": text}]
-
-    def complete_messages(self, messages, tools=None, temperature=0.7):
-        step = self._script[self.calls]
-        self.calls += 1
-        return step
-
-
-class _Result:
-    def __init__(self, content="", tool_calls=None, message=None):
-        self.content = content
-        self.tool_calls = tool_calls
-        self.message = message
-
-
-def test_chat_skill_runs_tool_loop_then_answers():
-    # round 1: model asks for get_current_time; round 2: model answers with text
-    tool_call = {"id": "call_1", "function": {"name": "get_current_time", "arguments": "{}"}}
-    script = [
-        _Result(tool_calls=[tool_call], message={"role": "assistant", "tool_calls": [tool_call]}),
-        _Result(content="现在是下午三点。"),
-    ]
-    client = ScriptedToolClient(script)
-    skill = ChatSkill(Persona(), llm_client=client)
-
-    dispatched = []
-
-    def dispatch(name, arguments):
-        dispatched.append((name, arguments))
-        return "2026-07-17 15:00:00 (北京时间, 周4)"
-
-    reply = skill.reply(
-        "现在几点",
-        tool_specs=[{"type": "function", "function": {"name": "get_current_time"}}],
-        dispatch=dispatch,
-    )
-
-    assert reply == "现在是下午三点。"
-    assert dispatched == [("get_current_time", "{}")]
-    assert client.calls == 2
-
-
-def test_chat_skill_tool_loop_hits_round_cap_and_forces_answer():
-    # model keeps asking for tools forever; loop must cap and force a final answer
-    tool_call = {"id": "c", "function": {"name": "get_current_time", "arguments": "{}"}}
-    looping = _Result(
-        tool_calls=[tool_call], message={"role": "assistant", "tool_calls": [tool_call]}
-    )
-    # 5 loop rounds + 1 forced final call (no tools) that finally returns content
-    script = [looping] * 5 + [_Result(content="兜底回答。")]
-    client = ScriptedToolClient(script)
-    skill = ChatSkill(Persona(), llm_client=client)
-
-    reply = skill.reply(
-        "现在几点",
-        tool_specs=[{"type": "function", "function": {"name": "get_current_time"}}],
-        dispatch=lambda name, args: "时间结果",
-    )
-
-    assert reply == "兜底回答。"
-    # 5 in-loop rounds + 1 final forced call
-    assert client.calls == 6
-
-
-def test_chat_skill_without_tools_uses_plain_path():
-    class PlainClient:
+def test_chat_skill_delegates_tools_to_pydantic_runtime():
+    class CapturingRuntime:
         configured = True
 
-        def chat(self, text, persona, history=None, system_context=None, images=None):
-            return type("R", (), {"content": f"plain: {text}"})()
+        def __init__(self):
+            self.kwargs = {}
 
-    skill = ChatSkill(Persona(), llm_client=PlainClient())
+        def run(self, text, **kwargs):
+            self.kwargs = kwargs
+            return AgentResult(f"reply: {text}", "test")
 
-    reply = skill.reply("你好")
+    runtime = CapturingRuntime()
+    skill = ChatSkill(Persona(), llm_client=runtime)
+    tools = [{"type": "function", "function": {"name": "get_current_time"}}]
 
-    assert reply == "plain: 你好"
+    def dispatch(name, args):
+        return "时间结果"
+
+    reply = skill.reply("现在几点", tool_specs=tools, dispatch=dispatch)
+
+    assert reply == "reply: 现在几点"
+    assert runtime.kwargs["tool_specs"] == tools
+    assert runtime.kwargs["dispatch"] is dispatch
 
 
 # ── owner tools: send_qq_message / github_read / list_conversations ─────────
@@ -489,10 +428,134 @@ def test_owner_tools_hidden_from_user_and_trusted(tmp_path):
     trusted_names = {s["function"]["name"] for s in registry.specs_for("trusted")}
     owner_names = {s["function"]["name"] for s in registry.specs_for("owner")}
 
-    for tool in ("send_qq_message", "github_read", "list_conversations"):
+    for tool in (
+        "send_qq_message",
+        "github_read",
+        "list_conversations",
+        "send_file_with_glitter",
+        "edit_agent_guidance",
+    ):
         assert tool not in user_names
         assert tool not in trusted_names
         assert tool in owner_names
+
+
+def test_glitter_tool_uses_owner_scoped_sender_and_audits(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    calls = []
+    ctx = ToolContext(
+        store=store,
+        conversation_id="c",
+        access_role="owner",
+        source="telegram_private",
+        user_id="owner",
+        glitter_send=lambda peer, path: calls.append((peer, path)) or "发送完成",
+    )
+
+    out = ToolRegistry().dispatch(
+        "send_file_with_glitter",
+        '{"peer":"laptop","path":"report.txt"}',
+        ctx,
+    )
+
+    assert out == "发送完成"
+    assert calls == [("laptop", "report.txt")]
+    assert any(log["action"] == "tool.glitter.send" for log in store.list_audit_logs())
+
+
+def test_remote_skill_tool_uses_fixed_reader(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    calls = []
+    ctx = ToolContext(
+        store=store,
+        conversation_id="c",
+        access_role="user",
+        remote_skills=lambda action, skill, resource: calls.append(
+            (action, skill, resource)
+        )
+        or "skill content",
+    )
+
+    out = ToolRegistry().dispatch(
+        "remote_skill",
+        '{"action":"read","skill":"ux-writing"}',
+        ctx,
+    )
+
+    assert out == "skill content"
+    assert calls == [("read", "ux-writing", "SKILL.md")]
+
+
+def test_x_reader_tool_uses_allowlisted_account(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    calls = []
+    ctx = ToolContext(
+        store=store,
+        conversation_id="c",
+        access_role="user",
+        x_read=lambda account: calls.append(account) or "posts",
+    )
+
+    out = ToolRegistry().dispatch(
+        "read_x_posts",
+        '{"account":"ScarletKc_"}',
+        ctx,
+    )
+
+    assert out == "posts"
+    assert calls == ["ScarletKc_"]
+
+
+def test_owner_can_edit_fixed_prompt_guidance_document(tmp_path):
+    store = MemoryStore(tmp_path / "t.db")
+    calls = []
+    ctx = ToolContext(
+        store=store,
+        conversation_id="c",
+        access_role="owner",
+        source="telegram_private",
+        user_id="owner",
+        prompt_guidance=lambda action, name, content: calls.append(
+            (action, name, content)
+        )
+        or "updated",
+    )
+
+    out = ToolRegistry().dispatch(
+        "edit_agent_guidance",
+        '{"name":"soul.md","content":"new soul"}',
+        ctx,
+    )
+
+    assert out == "updated"
+    assert calls == [("replace", "soul.md", "new soul")]
+    assert any(
+        log["action"] == "tool.prompt_guidance.replace" for log in store.list_audit_logs()
+    )
+
+
+def test_steam_lookup_is_read_only_and_available_to_every_role(tmp_path):
+    registry = ToolRegistry()
+    for role in ("user", "trusted", "owner"):
+        names = {item["function"]["name"] for item in registry.specs_for(role)}
+        assert "steam_lookup" in names
+
+    calls = []
+    ctx = ToolContext(
+        store=MemoryStore(tmp_path / "steam.db"),
+        conversation_id="c",
+        access_role="user",
+        steam_lookup=lambda action, query, app_id: calls.append((action, query, app_id))
+        or "Steam result",
+    )
+    out = registry.dispatch(
+        "steam_lookup",
+        '{"action":"details","app_id":570}',
+        ctx,
+    )
+
+    assert out == "Steam result"
+    assert calls == [("details", "", 570)]
 
 
 # ── web_search tool ─────────────────────────────────────────────────────────
