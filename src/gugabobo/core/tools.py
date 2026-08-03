@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
+from uuid import uuid4
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Callable
 
+from gugabobo.config import get_settings
 from gugabobo.core.access import role_can_use_skill
 from gugabobo.memory.store import MemoryStore
 
@@ -236,6 +239,41 @@ def _tool_send_qq_message(context: ToolContext, args: dict[str, object]) -> str:
     return f"已发送给 {label}（QQ {recipient_id}）：{content}"
 
 
+_TELEGRAM_TARGET_PATTERN = re.compile(r"^(?:-?\d+|@[A-Za-z0-9_]{5,32})$")
+
+
+def _tool_send_telegram_message(context: ToolContext, args: dict[str, object]) -> str:
+    target = str(args.get("target", "") or "").strip()
+    content = str(args.get("content", "") or "").strip()
+    if not target or not content:
+        return "错误：target 和 content 都不能为空。"
+    if not _TELEGRAM_TARGET_PATTERN.fullmatch(target) or target == "0":
+        return "错误：Telegram target 必须是数字 chat/user ID、负数群组 ID 或 @channel_username。"
+    if not get_settings().telegram_bot_token:
+        return "错误：Telegram Bot Token 未配置，无法加入发送队列。"
+
+    notification_id = context.store.queue_owner_notification(
+        dedupe_key=f"agent-telegram:{uuid4().hex}",
+        event_type="agent_telegram_message",
+        platform="telegram",
+        recipient_id=target,
+        content=content,
+    )
+    context.store.add_audit_log(
+        actor_source=context.source,
+        actor_user_id=context.user_id,
+        action="tool.send_telegram_message",
+        target=f"telegram:{target}",
+        status="queued",
+        risk_level="high",
+        detail=f"notification:{notification_id}",
+    )
+    return (
+        f"已加入 Telegram 发送队列 #{notification_id}，目标 {target}。"
+        "发送结果会记录在通知队列中。"
+    )
+
+
 def _tool_github_read(context: ToolContext, args: dict[str, object]) -> str:
     action = str(args.get("action", "") or "").strip()
     client = _get_github(context)
@@ -441,6 +479,34 @@ def default_tools() -> list[Tool]:
                 "required": ["target", "content"],
             },
             handler=_tool_send_qq_message,
+            min_skill="owner_action",
+        ),
+        Tool(
+            name="send_telegram_message",
+            description=(
+                "主动通过 Telegram Bot 给指定用户、群组或频道发送消息。"
+                "仅在已认证主人明确要求发送、转告或通知时使用。"
+                "target 必须是数字 chat/user ID、负数群组 ID 或 @channel_username；"
+                "Bot 必须已经能访问目标，内容里不要带敏感信息。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": (
+                            "Telegram 目标：数字 chat/user ID、负数群组 ID "
+                            "或 @channel_username。"
+                        ),
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "要发送的消息正文。",
+                    },
+                },
+                "required": ["target", "content"],
+            },
+            handler=_tool_send_telegram_message,
             min_skill="owner_action",
         ),
         Tool(

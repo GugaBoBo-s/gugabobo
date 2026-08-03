@@ -19,6 +19,7 @@ _INTENT_SYSTEM_PROMPT = (
     'JSON 格式：{"action": "send" 或 "none", "target": "收件人名字或QQ号", "content": "要发送的正文"}。'
     "如果用户只是普通聊天、提问、闲聊，或没有明确指明发给谁，action 返回 none。"
     "target 是联系人的名字、备注或纯数字QQ号；content 是要替用户发送的原话正文。"
+    "如果用户明确要求通过 Telegram 发送，action 必须返回 none，由 Telegram 工具处理。"
     "例子：用户说『用QQ给kc说 哈喽 你在干嘛』-> "
     '{"action":"send","target":"kc","content":"哈喽 你在干嘛"}。'
     "例子：用户说『今天天气怎么样』-> "

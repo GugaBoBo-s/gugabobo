@@ -2485,18 +2485,25 @@ class MemoryStore:
         limit: int = 50,
         retryable_only: bool = False,
         lease_seconds: int = 300,
+        platform: str | None = None,
     ) -> list[dict[str, Any]]:
         query = (
             "SELECT id, dedupe_key, event_type, platform, recipient_id, content, status, "
             "attempts, last_error, sent_at, created_at, updated_at FROM owner_notifications"
         )
+        conditions: list[str] = []
         values: list[Any] = []
         if retryable_only:
-            query += (
-                " WHERE status IN ('pending', 'failed') OR "
-                "(status = 'sending' AND updated_at < datetime('now', ?))"
+            conditions.append(
+                "(status IN ('pending', 'failed') OR "
+                "(status = 'sending' AND updated_at < datetime('now', ?)))"
             )
             values.append(f"-{max(1, lease_seconds)} seconds")
+        if platform:
+            conditions.append("platform = ?")
+            values.append(platform)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY id ASC LIMIT ?"
         values.append(limit)
         with self.connect() as conn:

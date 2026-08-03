@@ -1,10 +1,11 @@
+import asyncio
 import time
 from pathlib import Path
 
 import typer
 import uvicorn
 
-from gugabobo.adapters.telegram_runtime import handle_telegram_update
+from gugabobo.adapters.telegram_runtime import run_telegram_polling
 from gugabobo.config import get_settings
 from gugabobo.core.channel import ChannelContext
 from gugabobo.core.code_review import OrganizationCodeReviewService
@@ -193,63 +194,22 @@ def telegram_poll(
     effective_send = send or settings.telegram_reply_enabled
     agent = build_agent()
     agent.background_summarize = True
-    offset_file = settings.data_dir / "telegram_offset"
-    offset = _load_telegram_offset(offset_file)
     typer.echo(
         "telegram polling started "
         f"(send={effective_send}, timeout={timeout}, "
-        f"bot={settings.telegram_bot_username or 'unknown'}, offset={offset})"
+        f"bot={settings.telegram_bot_username or 'unknown'})"
     )
-    error_backoff = 1
-    try:
-        while True:
-            try:
-                updates = client.get_updates(offset=offset, timeout=timeout)
-            except Exception as exc:
-                get_logger().warning("telegram get_updates failed: %s", exc)
-                time.sleep(min(error_backoff, 60))
-                error_backoff = min(error_backoff * 2, 60)
-                continue
-            batch_failed = False
-            for update in updates:
-                update_id = int(update.get("update_id", 0))
-                try:
-                    result = handle_telegram_update(
-                        update,
-                        agent=agent,
-                        settings=settings,
-                        send_reply=effective_send,
-                        client=client,
-                    )
-                    typer.echo(f"telegram update {update_id}: {result}")
-                except Exception as exc:
-                    get_logger().warning("telegram update %d failed: %s", update_id, exc)
-                    time.sleep(min(error_backoff, 60))
-                    error_backoff = min(error_backoff * 2, 60)
-                    batch_failed = True
-                    break
-                offset = update_id + 1
-                _save_telegram_offset(offset_file, offset)
-            if not batch_failed:
-                error_backoff = 1
-    finally:
-        client.close()
-
-
-def _load_telegram_offset(path: Path) -> int | None:
-    if not path.exists():
-        return None
-    try:
-        return int(path.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        return None
-
-
-def _save_telegram_offset(path: Path, offset: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(str(offset), encoding="utf-8")
-    temp_path.replace(path)
+    asyncio.run(
+        run_telegram_polling(
+            agent=agent,
+            settings=settings,
+            send_reply=effective_send,
+            timeout=timeout,
+            on_result=lambda update_id, result: typer.echo(
+                f"telegram update {update_id}: {result}"
+            ),
+        )
+    )
 
 
 @tasks_app.command("list")

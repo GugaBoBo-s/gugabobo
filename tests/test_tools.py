@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from gugabobo.config import get_settings
 from gugabobo.core.persona import Persona
 from gugabobo.core.tools import (
     Tool,
@@ -334,7 +335,7 @@ def test_chat_skill_without_tools_uses_plain_path():
     assert reply == "plain: 你好"
 
 
-# ── owner tools: send_qq_message / github_read / list_conversations ─────────
+# ── owner tools: outbound messaging / github_read / list_conversations ──────
 class FakeNapCat:
     def __init__(self, friends=None, fail=False):
         self._friends = friends or []
@@ -437,6 +438,50 @@ def test_send_qq_message_denied_for_non_owner(tmp_path):
     assert napcat.sent == []
 
 
+def test_send_telegram_message_queues_async_delivery(tmp_path, monkeypatch):
+    monkeypatch.setenv("GUGABOBO_TELEGRAM_BOT_TOKEN", "1234567890:" + "A" * 35)
+    get_settings.cache_clear()
+    store = MemoryStore(tmp_path / "t.db")
+    registry = ToolRegistry()
+
+    out = registry.dispatch(
+        "send_telegram_message",
+        '{"target": "-100123456", "content": "部署完成"}',
+        _owner_ctx(store),
+    )
+
+    notification = store.list_owner_notifications()[0]
+    assert "已加入 Telegram 发送队列" in out
+    assert notification["event_type"] == "agent_telegram_message"
+    assert notification["platform"] == "telegram"
+    assert notification["recipient_id"] == "-100123456"
+    assert notification["content"] == "部署完成"
+    assert notification["status"] == "pending"
+    audit = store.list_audit_logs(limit=1)[0]
+    assert audit["action"] == "tool.send_telegram_message"
+    assert audit["status"] == "queued"
+
+
+def test_send_telegram_message_validates_target_and_configuration(tmp_path, monkeypatch):
+    store = MemoryStore(tmp_path / "t.db")
+    registry = ToolRegistry()
+
+    missing_token = registry.dispatch(
+        "send_telegram_message",
+        '{"target": "@valid_channel", "content": "hello"}',
+        _owner_ctx(store),
+    )
+    invalid_target = registry.dispatch(
+        "send_telegram_message",
+        '{"target": "not a chat", "content": "hello"}',
+        _owner_ctx(store),
+    )
+
+    assert "Token 未配置" in missing_token
+    assert "target 必须" in invalid_target
+    assert store.list_owner_notifications() == []
+
+
 def test_github_read_get_pull_request(tmp_path):
     store = MemoryStore(tmp_path / "t.db")
     registry = ToolRegistry()
@@ -489,7 +534,12 @@ def test_owner_tools_hidden_from_user_and_trusted(tmp_path):
     trusted_names = {s["function"]["name"] for s in registry.specs_for("trusted")}
     owner_names = {s["function"]["name"] for s in registry.specs_for("owner")}
 
-    for tool in ("send_qq_message", "github_read", "list_conversations"):
+    for tool in (
+        "send_qq_message",
+        "send_telegram_message",
+        "github_read",
+        "list_conversations",
+    ):
         assert tool not in user_names
         assert tool not in trusted_names
         assert tool in owner_names

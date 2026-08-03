@@ -1,13 +1,16 @@
+import asyncio
 import hmac
+from contextlib import asynccontextmanager, suppress
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
+from aiogram.types import Update
 
 from gugabobo.adapters.onebot import OneBotMessageEvent
-from gugabobo.adapters.telegram import TelegramMessageEvent
-from gugabobo.adapters.telegram_runtime import handle_telegram_update
+from gugabobo.adapters.telegram import TelegramIncomingMessage
+from gugabobo.adapters.telegram_runtime import TelegramNotificationWorker, TelegramService
 from gugabobo.api.dashboard import dashboard_html
 from gugabobo.config import get_settings
 from gugabobo.core.access import context_with_access_role, evaluate_access, role_can_use_skill
@@ -33,7 +36,29 @@ class Utf8JSONResponse(JSONResponse):
     media_type = "application/json; charset=utf-8"
 
 
-app = FastAPI(title="gugabobo API", version="0.1.0", default_response_class=Utf8JSONResponse)
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    settings = get_settings()
+    notification_task = None
+    if settings.telegram_bot_token:
+        worker = TelegramNotificationWorker(build_agent().store)
+        notification_task = asyncio.create_task(worker.run())
+    try:
+        yield
+    finally:
+        if notification_task is not None:
+            notification_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await notification_task
+
+
+app = FastAPI(
+    title="gugabobo API",
+    version="0.1.0",
+    default_response_class=Utf8JSONResponse,
+    lifespan=lifespan,
+)
 ListLimit = Annotated[int, Query(ge=1, le=500)]
 
 
@@ -303,6 +328,22 @@ def dashboard_control_config(_: None = Depends(require_admin_token)) -> dict[str
             "GUGABOBO_TELEGRAM_REPLY_ENABLED": settings.telegram_reply_enabled,
             "GUGABOBO_TELEGRAM_GROUP_WAKE_WORDS": settings.telegram_group_wake_words,
             "GUGABOBO_TELEGRAM_PROXY": settings.telegram_proxy,
+            "GUGABOBO_TELEGRAM_COMMUNITY_GROUP_URL": settings.telegram_community_group_url,
+            "GUGABOBO_TELEGRAM_COMPANION_BOT_URL": settings.telegram_companion_bot_url,
+            "GUGABOBO_TELEGRAM_ANNOUNCEMENT_CHANNEL_URL": (
+                settings.telegram_announcement_channel_url
+            ),
+            "GUGABOBO_TELEGRAM_SUMMARY_BOT_URL": settings.telegram_summary_bot_url,
+            "GUGABOBO_TELEGRAM_DEVELOPER_GUGABOBO_URL": (
+                settings.telegram_developer_gugabobo_url
+            ),
+            "GUGABOBO_TELEGRAM_DEVELOPER_SCARLETKC_URL": (
+                settings.telegram_developer_scarletkc_url
+            ),
+            "GUGABOBO_TELEGRAM_GITHUB_SCARLETKC_URL": settings.telegram_github_scarletkc_url,
+            "GUGABOBO_TELEGRAM_GITHUB_FOGMOE_URL": settings.telegram_github_fogmoe_url,
+            "GUGABOBO_TELEGRAM_GITHUB_GEYUGONG_URL": settings.telegram_github_geyugong_url,
+            "GUGABOBO_TELEGRAM_GITHUB_GUGABOBO_URL": settings.telegram_github_gugabobo_url,
             "GUGABOBO_GITHUB_OWNER": settings.github_owner,
             "GUGABOBO_GITHUB_REPO": settings.github_repo,
             "GUGABOBO_GITHUB_API_URL": settings.github_api_url,
@@ -1058,19 +1099,28 @@ def dashboard_control_onebot_test(
 def dashboard_control_telegram_test(
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
-    event = TelegramMessageEvent.from_payload(
+    update = Update.model_validate(
         {
-            "update_id": "dashboard-diagnostic",
+            "update_id": 1,
             "message": {
-                "message_id": "dashboard-diagnostic",
-                "from": {"id": "dashboard-diagnostic", "username": "dashboard_test"},
-                "chat": {"id": "dashboard-diagnostic", "type": "private"},
+                "message_id": 1,
+                "date": 1,
+                "from": {
+                    "id": 1,
+                    "is_bot": False,
+                    "first_name": "dashboard",
+                    "username": "dashboard_test",
+                },
+                "chat": {"id": 1, "type": "private"},
                 "text": "ping",
             },
         }
     )
+    incoming = TelegramIncomingMessage.from_update(update)
+    if incoming is None:
+        raise HTTPException(status_code=500, detail="Telegram diagnostic update is invalid")
     settings = get_settings()
-    context = event.to_channel_context(
+    context = incoming.to_channel_context(
         owner_ids=settings.owner_telegram_id_set,
         group_wake_words=settings.telegram_group_wake_word_list,
         bot_username=settings.telegram_bot_username,
@@ -1087,10 +1137,10 @@ def dashboard_control_telegram_test(
 
 
 @app.post("/dashboard-control/diagnostics/telegram-getme")
-def dashboard_control_telegram_get_me(
+async def dashboard_control_telegram_get_me(
     _: None = Depends(require_admin_token),
 ) -> dict[str, object]:
-    result = RuntimeManager().telegram_get_me()
+    result = await RuntimeManager().telegram_get_me()
     add_dashboard_audit(
         "diagnostic.telegram_getme",
         status=str(result.get("status", "ok")),
@@ -1169,7 +1219,7 @@ def onebot_event(payload: dict[str, object]) -> dict[str, object]:
 
 
 @app.post("/telegram/events")
-def telegram_event(
+async def telegram_event(
     payload: dict[str, object],
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
 ) -> dict[str, object]:
@@ -1177,9 +1227,9 @@ def telegram_event(
     if settings.telegram_webhook_secret:
         if x_telegram_bot_api_secret_token != settings.telegram_webhook_secret:
             raise HTTPException(status_code=401, detail="Invalid Telegram webhook secret")
-    return handle_telegram_update(
-        payload,
+    async with TelegramService(
         agent=build_agent(),
         settings=settings,
-        send_reply=settings.telegram_reply_enabled,
-    )
+        send_replies=settings.telegram_reply_enabled,
+    ) as service:
+        return await service.process_raw_update(payload)
