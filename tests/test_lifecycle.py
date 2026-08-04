@@ -30,9 +30,18 @@ class FakeGitHub:
         self.merged_numbers: list[int] = []
         self.merged_shas: list[str] = []
         self.closed_numbers: list[int] = []
+        self.remotes: dict[int, dict[str, object]] = {}
+        self.closed_listing: list[dict[str, object]] = []
+        self.detail_requests: list[int] = []
 
     def get_pull_request(self, number: int) -> dict[str, object]:
+        self.detail_requests.append(number)
+        if number in self.remotes:
+            return self.remotes[number]
         return self.remote
+
+    def list_recently_closed_pull_requests(self, limit: int = 20) -> list[dict[str, object]]:
+        return self.closed_listing[:limit]
 
     def get_checks_status(self, ref: str, required_name: str = "") -> str:
         assert required_name == "test"
@@ -92,7 +101,11 @@ class FakeNotifier:
         self.head_changes.append((number, url, previous_head_sha, current_head_sha))
         return []
 
-def build_service(tmp_path, checks_status: str = "success"):
+def build_service(
+    tmp_path,
+    checks_status: str = "success",
+    owner_github_logins: str = "",
+):
     store = MemoryStore(tmp_path / "lifecycle.db")
     task_id = store.add_task(title="Improve lifecycle")
     improvement_id = store.add_improvement_task(task_id=task_id, repo="GugaBoBo-s/gugabobo")
@@ -113,6 +126,7 @@ def build_service(tmp_path, checks_status: str = "success"):
         github_repo="gugabobo",
         owner_qq_ids="",
         owner_telegram_ids="",
+        owner_github_logins=owner_github_logins,
     )
     github = FakeGitHub(checks_status)
     notifier = FakeNotifier()
@@ -443,3 +457,97 @@ def test_repository_lookup_is_case_insensitive(tmp_path) -> None:
 
     assert duplicate_id == pr_id
     assert store.get_pull_request_by_number(15, "gugabobo-s", "GUGABOBO")["id"] == pr_id
+
+
+def _closed_listing_entry(number: int, base_ref: str = "main") -> dict[str, object]:
+    return {
+        "number": number,
+        "merged_at": "2026-08-04T00:00:00Z",
+        "base": {"ref": base_ref, "repo": {"full_name": "GugaBoBo-s/gugabobo"}},
+    }
+
+
+def _merged_remote(number: int, login: str, base_ref: str = "main") -> dict[str, object]:
+    return {
+        "state": "closed",
+        "merged": True,
+        "merged_at": "2026-08-04T00:00:00Z",
+        "merge_commit_sha": f"sha-{number}",
+        "html_url": f"https://github.com/GugaBoBo-s/gugabobo/pull/{number}",
+        "head": {"sha": f"head-{number}", "ref": f"branch-{number}"},
+        "base": {"ref": base_ref, "repo": {"full_name": "GugaBoBo-s/gugabobo"}},
+        "merged_by": {"login": login},
+    }
+
+
+def test_tick_imports_owner_merged_pull_request_for_deployment(tmp_path) -> None:
+    store, pr_id, github, notifier, service = build_service(
+        tmp_path, owner_github_logins="GeYugong"
+    )
+    github.closed_listing = [_closed_listing_entry(21)]
+    github.remotes[21] = _merged_remote(21, "geyugong")
+
+    result = service.tick()
+
+    assert result["imported"] == 1
+    assert result["errors"] == 0
+    imported = store.get_pull_request_by_number(21, "GugaBoBo-s", "gugabobo")
+    assert imported["status"] == "merged"
+    revisions = {record["target_revision"] for record in store.list_deployment_records()}
+    assert "sha-21" in revisions
+
+
+def test_tick_records_non_owner_merge_without_deployment(tmp_path) -> None:
+    store, pr_id, github, notifier, service = build_service(
+        tmp_path, owner_github_logins="GeYugong"
+    )
+    github.closed_listing = [_closed_listing_entry(22)]
+    github.remotes[22] = _merged_remote(22, "scarletkc")
+
+    result = service.tick()
+
+    assert result["imported"] == 0
+    assert result["errors"] == 0
+    assert store.get_pull_request_by_number(22, "GugaBoBo-s", "gugabobo") is not None
+    assert store.list_deployment_records() == []
+
+
+def test_tick_skips_discovery_without_configured_owner_logins(tmp_path) -> None:
+    store, pr_id, github, notifier, service = build_service(tmp_path)
+    github.closed_listing = [_closed_listing_entry(23)]
+    github.remotes[23] = _merged_remote(23, "geyugong")
+
+    result = service.tick()
+
+    assert result["imported"] == 0
+    assert store.get_pull_request_by_number(23, "GugaBoBo-s", "gugabobo") is None
+
+
+def test_tick_discovery_ignores_other_base_branches(tmp_path) -> None:
+    store, pr_id, github, notifier, service = build_service(
+        tmp_path, owner_github_logins="GeYugong"
+    )
+    github.closed_listing = [_closed_listing_entry(24, base_ref="release")]
+    github.remotes[24] = _merged_remote(24, "geyugong", base_ref="release")
+
+    result = service.tick()
+
+    assert result["imported"] == 0
+    assert result["errors"] == 0
+    assert store.get_pull_request_by_number(24, "GugaBoBo-s", "gugabobo") is None
+    assert 24 not in github.detail_requests
+
+
+def test_tick_discovery_does_not_refetch_known_pull_requests(tmp_path) -> None:
+    store, pr_id, github, notifier, service = build_service(
+        tmp_path, owner_github_logins="GeYugong"
+    )
+    github.closed_listing = [_closed_listing_entry(21)]
+    github.remotes[21] = _merged_remote(21, "geyugong")
+
+    service.tick()
+    github.detail_requests.clear()
+    second = service.tick()
+
+    assert second["imported"] == 0
+    assert 21 not in github.detail_requests

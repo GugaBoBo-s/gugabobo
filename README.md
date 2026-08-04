@@ -540,7 +540,13 @@ GUGABOBO_GITHUB_REPO=gugabobo
 GUGABOBO_GITHUB_API_URL=https://api.github.com
 GUGABOBO_GIT_AUTHOR_NAME=GuGabobo
 GUGABOBO_GIT_AUTHOR_EMAIL=263493647+GuGabobo@users.noreply.github.com
+GUGABOBO_OWNER_GITHUB_LOGINS=
+GUGABOBO_GITHUB_MERGE_DISCOVERY_LIMIT=20
 ```
+
+`GUGABOBO_OWNER_GITHUB_LOGINS` is a comma-separated list of GitHub logins whose direct
+merges count as owner authorization. It is deliberately not editable from the Dashboard,
+because it decides which merges may reach production.
 
 gugabobo has its own GitHub account, [GuGabobo](https://github.com/GuGabobo).
 Sandbox self-improvement commits are authored as `GUGABOBO_GIT_AUTHOR_NAME` /
@@ -782,6 +788,12 @@ Current behavior:
 - externally created PRs targeting a managed repository's default branch are imported
   when an owner explicitly addresses them, so they enter the same authorization,
   reflection, notification, and deployment lifecycle
+- the lifecycle tick also discovers PRs merged directly on GitHub. A merge counts as
+  owner-authorized only when `merged_by.login` is listed in
+  `GUGABOBO_OWNER_GITHUB_LOGINS`; those PRs receive a reflection and a pending
+  deployment record. Merges by anyone else are recorded so they are not re-fetched,
+  but never produce a deployment record, so they cannot trigger production deployment.
+  Leaving the setting empty disables discovery entirely
 - repository-qualified commands such as `同意合并 GugaBoBo-s/test07#15` disambiguate
   same-number PRs; notification identities include owner, repository, and PR number
 - every approval is bound to the exact PR head SHA and the SHA is sent with the
