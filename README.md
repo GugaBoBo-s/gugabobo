@@ -145,6 +145,10 @@ Current behavior:
 - `/github` links ScarletKC, FogMoe, GeYugong, and GugaBoBo-s on GitHub
 - Telegram-specific code stays in the adapter layer, not in the core agent
 
+`GUGABOBO_TELEGRAM_PROXY` accepts `http://`, `socks5://`, and `socks4://`. The `socks5h://` and
+`socks4a://` aliases are normalized to their plain form because the polling transport rejects them;
+SOCKS5 already resolves hostnames through the proxy, so this changes nothing about DNS.
+
 ### Link QQ and Telegram accounts
 
 Account linking requires proof of control over both private chats. In either QQ or Telegram
@@ -261,6 +265,11 @@ documents remain subordinate to application security, access control, and explic
 All users may ask the Agent to read them through `read_agent_guidance`; only an authenticated owner
 may replace one through `edit_agent_guidance`. Edits are restricted to those two filenames, use an
 atomic replacement, enter the audit log, and affect the next AI message.
+
+On a deployment, point `GUGABOBO_PROMPT_GUIDANCE_DIR` at a directory outside the Git working tree,
+such as `/opt/gugabobo/data/guidance`. The default `.` resolves to the repository root, where both
+documents are Git-tracked; the deploy rollback path runs `git reset --hard`, which would discard
+owner edits made through `edit_agent_guidance`.
 
 ```env
 GUGABOBO_PROMPT_GUIDANCE_DIR=.
