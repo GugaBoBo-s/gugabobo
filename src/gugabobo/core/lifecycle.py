@@ -471,9 +471,10 @@ class PullRequestLifecycleService:
                 "errors": 0,
                 "notifications_sent": notification_result["sent"],
             }
+        discovery = self._import_owner_merged_pull_requests()
         processed = 0
         merged = 0
-        errors = 0
+        errors = discovery["errors"]
         for record in self.store.list_pull_requests(limit=limit):
             if str(record["status"]) != "open":
                 continue
@@ -499,8 +500,97 @@ class PullRequestLifecycleService:
             "processed": processed,
             "merged": merged,
             "errors": errors,
+            "imported": discovery["imported"],
             "notifications_sent": notification_result["sent"],
         }
+
+    def _import_owner_merged_pull_requests(self) -> dict[str, int]:
+        """Import pull requests merged directly on GitHub and return the counts."""
+        owner_logins = self.settings.owner_github_login_set
+        if not owner_logins:
+            return {"imported": 0, "errors": 0}
+        github_owner = self.settings.github_owner
+        github_repo = self.settings.github_repo
+        try:
+            default_branch = self.github.get_default_branch()
+            candidates = self.github.list_recently_closed_pull_requests(
+                limit=self.settings.github_merge_discovery_limit
+            )
+        except Exception as error:
+            self.store.add_audit_log(
+                actor_source="daemon",
+                actor_user_id="gugabobo",
+                action="pull_request.discover",
+                target=f"pull_request:{github_owner}/{github_repo}",
+                status="failed",
+                risk_level="high",
+                detail=self._safe_error(error)[:1000],
+            )
+            return {"imported": 0, "errors": 1}
+        imported = 0
+        errors = 0
+        for candidate in candidates:
+            if not str(candidate.get("merged_at") or ""):
+                continue
+            number = int(candidate.get("number") or 0)
+            if not number:
+                continue
+            base = candidate.get("base")
+            base_ref = str(base.get("ref", "")) if isinstance(base, dict) else ""
+            if base_ref != default_branch:
+                continue
+            if self.store.get_pull_request_by_number(number, github_owner, github_repo):
+                continue
+            try:
+                record = self._import_pull_request(github_owner, github_repo, number)
+                remote = self.github.get_pull_request(number)
+            except LifecycleError as error:
+                errors += 1
+                self._record_discovery_failure(github_owner, github_repo, number, str(error))
+                continue
+            except Exception as error:
+                errors += 1
+                self._record_discovery_failure(
+                    github_owner, github_repo, number, self._safe_error(error)
+                )
+                continue
+            merged_by = remote.get("merged_by")
+            login = str(merged_by.get("login", "")) if isinstance(merged_by, dict) else ""
+            if login.casefold() not in owner_logins:
+                continue
+            try:
+                self.process(int(record["id"]))
+            except LifecycleError as error:
+                errors += 1
+                self._record_discovery_failure(github_owner, github_repo, number, str(error))
+                continue
+            imported += 1
+            self.store.add_audit_log(
+                actor_source="github",
+                actor_user_id=login,
+                action="pull_request.owner_merge_imported",
+                target=f"pull_request:{github_owner}/{github_repo}#{number}",
+                risk_level="high",
+                detail=f"merged_by:{login}",
+            )
+        return {"imported": imported, "errors": errors}
+
+    def _record_discovery_failure(
+        self,
+        github_owner: str,
+        github_repo: str,
+        number: int,
+        detail: str,
+    ) -> None:
+        self.store.add_audit_log(
+            actor_source="daemon",
+            actor_user_id="gugabobo",
+            action="pull_request.discover",
+            target=f"pull_request:{github_owner}/{github_repo}#{number}",
+            status="failed",
+            risk_level="high",
+            detail=detail[:1000],
+        )
 
     def _record_by_repository_number(
         self,

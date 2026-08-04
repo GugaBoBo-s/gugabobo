@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     admin_token: str = Field(default="change-me", repr=False)
     owner_qq_ids: str = ""
     owner_telegram_ids: str = ""
+    owner_github_logins: str = ""
     napcat_dir: Path = Path("D:/0code/处理程序/NapCat.44498.Shell")
     napcat_api_url: str = "http://127.0.0.1:3000"
     napcat_access_token: str = Field(default="", repr=False)
@@ -55,6 +56,7 @@ class Settings(BaseSettings):
     github_issue_min_confidence: float = Field(default=0.75, ge=0, le=1)
     github_issue_auto_fix_enabled: bool = True
     github_issue_auto_fix_repositories: str = ""
+    github_merge_discovery_limit: int = Field(default=20, ge=0, le=100)
     auto_deploy_enabled: bool = True
     git_author_name: str = "GuGabobo"
     git_author_email: str = "263493647+GuGabobo@users.noreply.github.com"
@@ -141,6 +143,14 @@ class Settings(BaseSettings):
     @property
     def owner_telegram_id_set(self) -> set[str]:
         return {item.strip() for item in self.owner_telegram_ids.split(",") if item.strip()}
+
+    @property
+    def owner_github_login_set(self) -> set[str]:
+        return {
+            item.strip().casefold()
+            for item in self.owner_github_logins.split(",")
+            if item.strip()
+        }
 
     @property
     def qq_group_wake_word_list(self) -> list[str]:
