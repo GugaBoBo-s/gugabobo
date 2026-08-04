@@ -1,4 +1,6 @@
 import hmac
+import time
+import uuid
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
@@ -25,6 +27,8 @@ from gugabobo.infra.container_runtime import ContainerRuntime
 from gugabobo.infra.env_file import EnvFile
 from gugabobo.infra.images import urls_to_data_uris
 from gugabobo.infra.logs import get_logger, read_log_lines
+from gugabobo.infra.llm import build_llm_client
+from gugabobo.infra.local_workspace import LocalWorkspace
 from gugabobo.infra.napcat_client import NapCatClient
 from gugabobo.infra.runtime import RuntimeManager, build_agent
 
@@ -100,6 +104,20 @@ class ImprovementCreateRequest(BaseModel):
     risk_level: str = "normal"
 
 
+class OpenAIChatCompletionRequest(BaseModel):
+    model: str = "gugabobo"
+    messages: list[dict[str, object]]
+    temperature: float = 0.7
+    max_tokens: int | None = None
+
+
+class OpenAIResponsesRequest(BaseModel):
+    model: str = "gugabobo"
+    input: str | list[dict[str, object]]
+    temperature: float = 0.7
+    max_output_tokens: int | None = None
+
+
 def dashboard_owner_context() -> ChannelContext:
     return ChannelContext(
         platform="web",
@@ -151,6 +169,62 @@ def require_admin_token(x_gugabobo_admin_token: str | None = Header(default=None
         configured_token,
     ):
         raise HTTPException(status_code=401, detail="Invalid admin token")
+
+
+def require_tabhere_token(authorization: str | None = Header(default=None)) -> None:
+    settings = get_settings()
+    configured_token = settings.tabhere_api_key.strip()
+    if not settings.tabhere_enabled or not configured_token:
+        raise HTTPException(status_code=503, detail="TabHere 接口未启用或没有配置 API key。")
+    prefix = "Bearer "
+    presented = authorization[len(prefix) :] if authorization and authorization.startswith(prefix) else ""
+    if not presented or not hmac.compare_digest(presented, configured_token):
+        raise HTTPException(status_code=401, detail="TabHere API key 无效。")
+
+
+def _message_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content or "")
+    parts: list[str] = []
+    for part in content:
+        if isinstance(part, dict):
+            text = part.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    return "\n".join(parts)
+
+
+def _normalized_openai_messages(messages: list[dict[str, object]]) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    for message in messages:
+        role = str(message.get("role", "user") or "user")
+        if role not in {"system", "user", "assistant"}:
+            continue
+        normalized.append({"role": role, "content": _message_text(message.get("content"))})
+    return LocalWorkspace().expand_file_references(normalized)
+
+
+def _run_tabhere_completion(
+    messages: list[dict[str, object]],
+    temperature: float,
+    max_tokens: int | None,
+) -> tuple[str, str]:
+    client = build_llm_client()
+    if not client.configured:
+        raise HTTPException(status_code=503, detail="对话模型尚未配置，TabHere 无法生成补全。")
+    try:
+        result = client.complete_messages(
+            _normalized_openai_messages(messages),
+            tools=None,
+            temperature=max(0.0, min(temperature, 2.0)),
+            max_tokens=max_tokens,
+        )
+    except Exception as error:
+        get_logger().warning("TabHere completion failed: %s", error)
+        raise HTTPException(status_code=502, detail="上游模型补全失败，请检查模型配置和日志。") from error
+    return result.content, result.model or client.model
 
 
 @app.get("/")
@@ -386,6 +460,70 @@ def chat(request: ChatRequest) -> dict[str, str]:
                 conversation_id=request.conversation_id,
             ),
         )
+    }
+
+
+@app.get("/v1/models")
+def openai_models(_: None = Depends(require_tabhere_token)) -> dict[str, object]:
+    model = build_llm_client().model
+    return {"object": "list", "data": [{"id": model, "object": "model", "owned_by": "gugabobo"}]}
+
+
+@app.post("/v1/chat/completions")
+def openai_chat_completions(
+    request: OpenAIChatCompletionRequest,
+    _: None = Depends(require_tabhere_token),
+) -> dict[str, object]:
+    content, model = _run_tabhere_completion(
+        request.messages, request.temperature, request.max_tokens
+    )
+    created = int(time.time())
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex}",
+        "object": "chat.completion",
+        "created": created,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+@app.post("/v1/responses")
+def openai_responses(
+    request: OpenAIResponsesRequest,
+    _: None = Depends(require_tabhere_token),
+) -> dict[str, object]:
+    if isinstance(request.input, str):
+        messages = [{"role": "user", "content": request.input}]
+    else:
+        messages = request.input
+    content, model = _run_tabhere_completion(
+        messages, request.temperature, request.max_output_tokens
+    )
+    response_id = f"resp_{uuid.uuid4().hex}"
+    return {
+        "id": response_id,
+        "object": "response",
+        "created_at": int(time.time()),
+        "status": "completed",
+        "model": model,
+        "output_text": content,
+        "output": [
+            {
+                "id": f"msg_{uuid.uuid4().hex}",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": content, "annotations": []}],
+            }
+        ],
+        "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
     }
 
 

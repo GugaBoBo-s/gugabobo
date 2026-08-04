@@ -110,6 +110,7 @@ class OpenAICompatibleClient:
         messages: list[dict[str, object]],
         tools: list[dict[str, object]] | None = None,
         temperature: float = 0.7,
+        max_tokens: int | None = None,
     ) -> LLMResult:
         # Low-level chat-completions call over a full message list. Supports the
         # OpenAI `tools` param so callers can run a tool-calling loop; when the
@@ -129,6 +130,8 @@ class OpenAICompatibleClient:
         }
         if tools:
             payload["tools"] = tools
+        if max_tokens is not None:
+            payload["max_tokens"] = max(1, max_tokens)
         with httpx.Client(timeout=self.settings.llm_timeout_seconds) as client:
             response = client.post(url, headers=headers, json=payload)
             response.raise_for_status()

@@ -20,8 +20,17 @@ def build_agent(background_summarize: bool = True) -> CoreAgent:
     agent = CoreAgent(store)
     agent.background_summarize = background_summarize
     agent.enable_tools = True
+    _register_local_tools(agent, settings)
     _register_mcp_tools(agent, settings)
     return agent
+
+
+def _register_local_tools(agent: CoreAgent, settings) -> None:
+    if not settings.local_tools_enabled:
+        return
+    from gugabobo.core.tools import local_delegation_tool
+
+    agent.tool_registry.register([local_delegation_tool()])
 
 
 def _register_mcp_tools(agent: CoreAgent, settings) -> None:
@@ -118,6 +127,21 @@ class RuntimeManager:
                         "runner_model": self.settings.code_deepseek_runner_model,
                     },
                 },
+            },
+            "local_tools": {
+                "enabled": self.settings.local_tools_enabled,
+                "bash_enabled": self.settings.local_bash_enabled,
+                "commands": sorted(self.settings.local_command_allowlist_set),
+                "subagent_max_rounds": self.settings.local_subagent_max_rounds,
+            },
+            "tabhere": {
+                "enabled": self.settings.tabhere_enabled,
+                "api_key_configured": bool(self.settings.tabhere_api_key),
+                "base_url": (
+                    f"http://{self.settings.api_host}:{self.settings.api_port}/v1"
+                ),
+                "file_context_enabled": self.settings.tabhere_file_context_enabled,
+                "file_allowlist": self.settings.tabhere_file_allowlist_items,
             },
         }
 
