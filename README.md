@@ -303,6 +303,62 @@ Set `LITELLM_LOCAL_MODEL_COST_MAP=false` in the process environment to restore t
 LLM context is scoped by conversation. Linked QQ and Telegram private accounts share one
 person conversation; CLI/API users, unlinked people, and groups remain isolated.
 
+## Local workspace tools and TabHere
+
+Local tools are an explicit owner-only capability. When enabled, the main agent can only delegate
+a complete task to a dedicated local operator subagent. That subagent alone can read and write
+UTF-8 files under one configured workspace, execute allowlisted CLI programs, and download a skill
+repository from GitHub for later inspection. It uses the code-model policy: Claude first, then GPT
+and DeepSeek only after consecutive timeouts. The `python` command always
+resolves to the interpreter running gugabobo, so starting gugabobo from `.venv` keeps local Python
+execution in that virtual environment. Bash is available through `bash -lc`; on Windows, gugabobo
+prefers Git Bash over the WindowsApps/WSL launcher. `.git`, runtime data, common credential files,
+private keys, and file-tool paths outside the workspace are rejected. Every command, write, and
+skill download is audited.
+
+```env
+GUGABOBO_LOCAL_TOOLS_ENABLED=true
+GUGABOBO_LOCAL_WORKSPACE_DIR=C:/path/to/workspace
+GUGABOBO_LOCAL_SKILL_DIR=.gugabobo/local-skills
+GUGABOBO_LOCAL_COMMAND_ALLOWLIST=python,python.exe,bash,bash.exe,git,git.exe,rg,rg.exe
+GUGABOBO_LOCAL_BASH_ENABLED=true
+GUGABOBO_LOCAL_BASH_BIN=
+GUGABOBO_LOCAL_ENVIRONMENT_ALLOWLIST=PATH,PATHEXT,SYSTEMROOT,WINDIR,COMSPEC,TEMP,TMP,LANG,LC_ALL
+GUGABOBO_LOCAL_COMMAND_TIMEOUT_SECONDS=30
+GUGABOBO_LOCAL_OUTPUT_MAX_CHARS=12000
+GUGABOBO_LOCAL_SUBAGENT_MAX_ROUNDS=6
+```
+
+`*` enables every executable visible to the gugabobo process. Use it only when unrestricted owner
+execution is intentional. Bash commands are real host processes: the configured working directory
+is not a filesystem sandbox, and Bash can access anything permitted to the gugabobo service account.
+It additionally requires `GUGABOBO_LOCAL_BASH_ENABLED=true`. Set `GUGABOBO_LOCAL_BASH_BIN` when
+Bash is not discoverable or a specific executable is required.
+Child processes inherit only variables named by `GUGABOBO_LOCAL_ENVIRONMENT_ALLOWLIST`; model and
+service credentials are excluded by default.
+Remote skill download accepts only full public GitHub HTTPS repository
+URLs, requires `SKILL.md` at the repository root, and never executes downloaded content
+automatically.
+
+[TabHere](https://github.com/scarletkc/TabHere) can use gugabobo as its OpenAI-compatible endpoint.
+Configure a separate key that starts with `sk-`, start `gugabobo api`, then set TabHere's Base URL
+to `http://127.0.0.1:8765/v1`, API key to the configured value, and model to any non-empty name.
+Both Responses API and Chat Completions are supported. These endpoints call the configured chat
+model without exposing local tools, so webpage content cannot invoke CLI or file writes.
+
+```env
+GUGABOBO_TABHERE_ENABLED=true
+GUGABOBO_TABHERE_API_KEY=sk-replace-with-a-long-random-secret
+GUGABOBO_TABHERE_FILE_CONTEXT_ENABLED=false
+GUGABOBO_TABHERE_FILE_ALLOWLIST=README.md,docs/**
+GUGABOBO_TABHERE_MAX_FILE_CONTEXT_CHARS=12000
+```
+
+Optional file context uses explicit `@file:relative/path` references. It is disabled by default;
+when enabled, only paths matching `GUGABOBO_TABHERE_FILE_ALLOWLIST` are injected, and sensitive or
+out-of-workspace paths remain blocked. Keep the allowlist narrow because TabHere prompts include
+webpage content. Bind the API to loopback unless a separately authenticated transport is in place.
+
 Context inputs:
 
 - recent raw messages from the same conversation

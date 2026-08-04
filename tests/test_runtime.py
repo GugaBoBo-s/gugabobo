@@ -1,6 +1,6 @@
 from gugabobo.config import get_settings
 from gugabobo.infra.container_runtime import ContainerRuntime
-from gugabobo.infra.runtime import RuntimeManager
+from gugabobo.infra.runtime import RuntimeManager, build_agent
 
 
 def test_status_detects_externally_managed_telegram(monkeypatch):
@@ -66,6 +66,22 @@ def test_status_reports_claude_gateway_without_exposing_token(monkeypatch):
     assert status["code_models"]["order"] == ["claude", "openai", "deepseek"]
     assert status["code_models"]["claude"]["configured"] is True
     assert "runner-secret" not in str(status)
+    get_settings.cache_clear()
+
+
+def test_build_agent_registers_local_tools_only_when_enabled(monkeypatch):
+    monkeypatch.setenv("GUGABOBO_LOCAL_TOOLS_ENABLED", "true")
+    get_settings.cache_clear()
+
+    agent = build_agent(background_summarize=False)
+    owner_tools = {spec["function"]["name"] for spec in agent.tool_registry.specs_for("owner")}
+    user_tools = {spec["function"]["name"] for spec in agent.tool_registry.specs_for("user")}
+
+    assert "delegate_local_agent" in owner_tools
+    assert "workspace_files" not in owner_tools
+    assert "run_local" not in owner_tools
+    assert "local_skills" not in owner_tools
+    assert "delegate_local_agent" not in user_tools
     get_settings.cache_clear()
 
 
