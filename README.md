@@ -11,6 +11,13 @@
 - Long-running daemon loop
 - QQ via NapCat and Telegram via webhook or polling
 - Token-budgeted context, rolling summaries, and explicit long-term memory
+- Pydantic AI orchestration over LiteLLM for chat, tools, structured output, and code analysis
+- Optional Vexor semantic retrieval over conversation memories
+- Owner-only encrypted LAN file transfer through Glitter
+- Read-only remote skills from `FogMoe/agents`
+- Read-only public X profiles for `@ScarletKc_` and `@woshigugabobo`
+- Read-only Steam game search, store details, and current-player lookup
+- Editable `soul.md` and `rules.md` prompt guidance with owner-only writes
 - Dashboard administration and diagnostics
 - Isolated code-runner changes with CI-gated pull requests
 - Organization-wide automated GitHub pull request reviews
@@ -92,6 +99,10 @@ An owner request to message another QQ user creates a ten-minute draft. NapCat s
 ## Telegram Bot
 
 Telegram uses the same `CoreAgent`, persona, memory store, LLM provider, dashboard, and permission model as QQ.
+Authenticated owners can ask the AI to send a Telegram message to a numeric user/chat ID, a
+negative group ID, or an `@channel_username`. The owner-only tool writes the message to the
+durable notification queue; the aiogram worker sends it asynchronously and records retries and
+the final delivery state. The Bot must already be able to access the target.
 
 Local webhook endpoint:
 
@@ -109,6 +120,16 @@ GUGABOBO_TELEGRAM_WEBHOOK_SECRET=
 GUGABOBO_TELEGRAM_REPLY_ENABLED=false
 GUGABOBO_TELEGRAM_GROUP_WAKE_WORDS=gugabobo,咕嘎BoBo
 GUGABOBO_TELEGRAM_PROXY=
+GUGABOBO_TELEGRAM_COMMUNITY_GROUP_URL=https://t.me/ScarletKc_Group
+GUGABOBO_TELEGRAM_COMPANION_BOT_URL=https://t.me/FogMoeBot
+GUGABOBO_TELEGRAM_ANNOUNCEMENT_CHANNEL_URL=https://t.me/FOG_MOE
+GUGABOBO_TELEGRAM_SUMMARY_BOT_URL=https://t.me/rigerubot?startgroup=true
+GUGABOBO_TELEGRAM_DEVELOPER_GUGABOBO_URL=https://t.me/woshigugabobo
+GUGABOBO_TELEGRAM_DEVELOPER_SCARLETKC_URL=https://t.me/scarletkc
+GUGABOBO_TELEGRAM_GITHUB_SCARLETKC_URL=https://github.com/scarletkc
+GUGABOBO_TELEGRAM_GITHUB_FOGMOE_URL=https://github.com/FogMoe
+GUGABOBO_TELEGRAM_GITHUB_GEYUGONG_URL=https://github.com/orgs/FogMoe/people/GeYugong
+GUGABOBO_TELEGRAM_GITHUB_GUGABOBO_URL=https://github.com/GugaBoBo-s
 ```
 
 Current behavior:
@@ -118,6 +139,10 @@ Current behavior:
 - unlinked users and every group keep separate conversation context
 - verified QQ and Telegram accounts belonging to one person share private context
 - risky owner-only operations require explicit owner confirmation
+- `/community` and `/fogmoe` show buttons for the 詩音閣 group, 雾萌 bot, FOGMOE channel, and `@rigerubot` group summary bot
+- `/summary` directs group administrators to add `@rigerubot` for group summaries
+- `/developers` shows the project developer accounts `@woshigugabobo` and `@scarletkc`
+- `/github` links ScarletKC, FogMoe, GeYugong, and GugaBoBo-s on GitHub
 - Telegram-specific code stays in the adapter layer, not in the core agent
 
 ### Link QQ and Telegram accounts
@@ -152,7 +177,10 @@ Without `--send`, polling processes updates but only reports that replies are av
 
 ## LLM providers
 
-`gugabobo` supports OpenAI-compatible providers. Set `GUGABOBO_LLM_PROVIDER` to choose one.
+`gugabobo` uses Pydantic AI for agent runs, message history, tool calls, usage limits, and
+structured outputs. Pydantic AI sends provider requests through LiteLLM and supports Moonshot,
+DeepSeek, and OpenAI-compatible endpoints. Set `GUGABOBO_LLM_PROVIDER` to choose the ordinary
+chat provider.
 
 ```env
 GUGABOBO_LLM_PROVIDER=moonshot
@@ -174,6 +202,94 @@ GUGABOBO_LLM_SUMMARY_KEEP_RECENT_TOKENS=8000
 ```
 
 If the API key is missing or the provider call fails, chat falls back to the local placeholder reply.
+
+### Semantic memory with Vexor
+
+[Vexor](https://github.com/scarletkc/vexor) can rank the current conversation's long-term memories
+against each new user message before context is sent to the Agent. SQLite remains the only durable
+memory store: gugabobo writes the selected memory candidates to a temporary directory, asks Vexor
+to build an in-memory index with disk caches disabled, and removes the temporary files after the
+search. The deterministic recent-memory order is used when Vexor is disabled, unconfigured, or
+unavailable.
+
+```env
+GUGABOBO_VEXOR_MEMORY_ENABLED=false
+GUGABOBO_VEXOR_PROVIDER=openai
+GUGABOBO_VEXOR_MODEL=text-embedding-3-small
+GUGABOBO_VEXOR_API_KEY=
+GUGABOBO_VEXOR_BASE_URL=https://api.openai.com/v1
+GUGABOBO_VEXOR_MEMORY_CANDIDATES=200
+```
+
+### Agent tools: Glitter and remote skills
+
+The owner-only `send_file_with_glitter` tool calls
+[Glitter](https://github.com/scarletkc/glitter) from the same project virtual environment. It can
+send only files or directories below `GUGABOBO_GLITTER_SEND_ROOT`; absolute paths and `..` escapes
+are rejected after path resolution. The receiver still applies Glitter's normal peer trust and
+transfer confirmation behavior.
+
+```env
+GUGABOBO_GLITTER_SEND_ROOT=.gugabobo/glitter-send
+GUGABOBO_GLITTER_TIMEOUT_SECONDS=300
+```
+
+The `remote_skill` tool lists and reads skills under
+[`FogMoe/agents/skills`](https://github.com/FogMoe/agents/tree/main/skills). The repository, branch,
+and root directory are fixed. Skill content is returned as untrusted reference text: gugabobo does
+not execute commands from it, and remote instructions cannot override system prompts, permissions,
+or safety policy.
+
+```env
+GUGABOBO_REMOTE_SKILL_TIMEOUT_SECONDS=20
+GUGABOBO_REMOTE_SKILL_MAX_CHARS=50000
+```
+
+The `read_x_posts` tool reads only the public pages for
+[`@ScarletKc_`](https://x.com/ScarletKc_) and
+[`@woshigugabobo`](https://x.com/woshigugabobo). If the public X page cannot be fetched without a
+login, the tool returns both fixed profile links and states that no post content was retrieved.
+It never invents unavailable posts.
+
+```env
+GUGABOBO_X_READER_TIMEOUT_SECONDS=20
+GUGABOBO_X_READER_MAX_CHARS=12000
+```
+
+Every ordinary chat Agent reloads `soul.md` and `rules.md` as project-level system guidance. Both
+documents remain subordinate to application security, access control, and explicit authorization.
+All users may ask the Agent to read them through `read_agent_guidance`; only an authenticated owner
+may replace one through `edit_agent_guidance`. Edits are restricted to those two filenames, use an
+atomic replacement, enter the audit log, and affect the next AI message.
+
+```env
+GUGABOBO_PROMPT_GUIDANCE_DIR=.
+GUGABOBO_PROMPT_GUIDANCE_MAX_CHARS=50000
+```
+
+### Steam lookup
+
+The read-only `steam_lookup` tool is available to `user`, `trusted`, and `owner`. Name search uses
+Steam's Store Search endpoint; App ID lookup combines the Store App Details endpoint with Steam's
+official current-player Web API. Results include the Steam store page and corresponding SteamDB
+page. External fields are marked as untrusted and never become system instructions.
+
+SteamDB does not provide a stable public structured API for the requested historical-price and
+update fields, so core lookup does not scrape SteamDB page structure or invent those values. If an
+official request fails, the tool returns a clear error plus direct Steam and SteamDB links.
+
+```env
+GUGABOBO_STEAM_TIMEOUT_SECONDS=15
+GUGABOBO_STEAM_MAX_RESPONSE_CHARS=100000
+GUGABOBO_STEAM_RETRY_COUNT=1
+GUGABOBO_STEAM_COUNTRY_CODE=CN
+GUGABOBO_STEAM_LANGUAGE=schinese
+```
+
+LiteLLM normally downloads its model pricing table from GitHub the first time it is imported, which
+blocks startup for up to five seconds on restricted networks. `gugabobo` sets
+`LITELLM_LOCAL_MODEL_COST_MAP=true` before that import so the bundled offline table is used instead.
+Set `LITELLM_LOCAL_MODEL_COST_MAP=false` in the process environment to restore the network fetch.
 
 LLM context is scoped by conversation. Linked QQ and Telegram private accounts share one
 person conversation; CLI/API users, unlinked people, and groups remain isolated.
@@ -621,12 +737,13 @@ gugabobo pr list
 
 ### Code runner chain (P5)
 
-gugabobo does not implement its own coding agent. Code review, issue evaluation, and code editing
-always start with the latest configured Claude Opus model. A timeout, and only a timeout, advances
-to the latest configured flagship GPT model; a second timeout advances to DeepSeek. Authentication,
-validation, rate-limit, format, and execution errors stop the chain so fallback cannot conceal a
-broken provider or an unsafe result. Ordinary chat continues to use `GUGABOBO_LLM_PROVIDER`
-independently.
+gugabobo does not implement its own coding agent. Code review and issue evaluation use Pydantic AI
+with LiteLLM provider routing, while code editing runs the configured coding CLI inside Docker. Both
+paths always start with the latest configured Claude Opus model. A timeout, and only a timeout,
+advances to the latest configured flagship GPT model; a second timeout advances to DeepSeek.
+Authentication, validation, rate-limit, format, and execution errors stop the chain so fallback
+cannot conceal a broken provider or an unsafe result. Ordinary chat continues to use
+`GUGABOBO_LLM_PROVIDER` independently.
 
 ```env
 GUGABOBO_SANDBOX_DIR=.gugabobo/sandbox

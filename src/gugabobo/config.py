@@ -30,6 +30,16 @@ class Settings(BaseSettings):
     telegram_reply_enabled: bool = False
     telegram_group_wake_words: str = "gugabobo,咕嘎BoBo"
     telegram_proxy: str = ""
+    telegram_community_group_url: str = "https://t.me/ScarletKc_Group"
+    telegram_companion_bot_url: str = "https://t.me/FogMoeBot"
+    telegram_announcement_channel_url: str = "https://t.me/FOG_MOE"
+    telegram_summary_bot_url: str = "https://t.me/rigerubot?startgroup=true"
+    telegram_developer_gugabobo_url: str = "https://t.me/woshigugabobo"
+    telegram_developer_scarletkc_url: str = "https://t.me/scarletkc"
+    telegram_github_scarletkc_url: str = "https://github.com/scarletkc"
+    telegram_github_fogmoe_url: str = "https://github.com/FogMoe"
+    telegram_github_geyugong_url: str = "https://github.com/orgs/FogMoe/people/GeYugong"
+    telegram_github_gugabobo_url: str = "https://github.com/GugaBoBo-s"
     github_token: str = Field(default="", repr=False)
     github_owner: str = "GugaBoBo-s"
     github_repo: str = "gugabobo"
@@ -116,12 +126,32 @@ class Settings(BaseSettings):
     llm_history_token_budget: int = Field(default=24000, ge=1)
     llm_summary_trigger_tokens: int = Field(default=24000, ge=1)
     llm_summary_keep_recent_tokens: int = Field(default=8000, ge=0)
+    vexor_memory_enabled: bool = False
+    vexor_provider: str = "openai"
+    vexor_model: str = "text-embedding-3-small"
+    vexor_api_key: str = Field(default="", repr=False)
+    vexor_base_url: str = "https://api.openai.com/v1"
+    vexor_memory_candidates: int = Field(default=200, ge=1, le=2000)
+    glitter_send_root: Path = Path(".gugabobo/glitter-send")
+    glitter_timeout_seconds: int = Field(default=300, ge=1, le=3600)
+    remote_skill_timeout_seconds: int = Field(default=20, ge=1, le=120)
+    remote_skill_max_chars: int = Field(default=50000, ge=1000, le=200000)
+    prompt_guidance_dir: Path = Path(".")
+    prompt_guidance_max_chars: int = Field(default=50000, ge=1000, le=200000)
+    x_reader_timeout_seconds: int = Field(default=20, ge=1, le=120)
+    x_reader_max_chars: int = Field(default=12000, ge=1000, le=50000)
+    steam_timeout_seconds: int = Field(default=15, ge=1, le=120)
+    steam_max_response_chars: int = Field(default=100000, ge=1000, le=1000000)
+    steam_retry_count: int = Field(default=1, ge=0, le=3)
+    steam_country_code: str = "CN"
+    steam_language: str = "schinese"
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.runner_home_dir.mkdir(parents=True, exist_ok=True)
+        self.glitter_send_root.mkdir(parents=True, exist_ok=True)
 
     @property
     def owner_qq_id_set(self) -> set[str]:

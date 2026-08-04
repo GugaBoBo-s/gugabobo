@@ -1,7 +1,10 @@
-from fastapi.testclient import TestClient
+import asyncio
 
-from gugabobo.adapters.telegram import TelegramMessageEvent
-from gugabobo.adapters.telegram_runtime import handle_telegram_update
+from fastapi.testclient import TestClient
+from aiogram.types import Update
+
+from gugabobo.adapters.telegram import TelegramIncomingMessage
+from gugabobo.adapters.telegram_runtime import TelegramService
 from gugabobo.api.server import app
 from gugabobo.config import get_settings
 from gugabobo.infra.runtime import build_agent
@@ -9,11 +12,19 @@ from gugabobo.infra.logs import get_logger
 
 
 class FakeTelegramClient:
+    configured = False
+
     def __init__(self):
         self.sent_messages = []
+        self.bot = object()
 
-    def send_message(self, chat_id: str, text: str) -> None:
-        self.sent_messages.append({"chat_id": chat_id, "text": text})
+    async def send_message(self, chat_id: str, text: str, reply_markup=None) -> None:
+        self.sent_messages.append(
+            {"chat_id": chat_id, "text": text, "reply_markup": reply_markup}
+        )
+
+    async def close(self) -> None:
+        return None
 
 
 class FlakyTelegramClient(FakeTelegramClient):
@@ -23,11 +34,11 @@ class FlakyTelegramClient(FakeTelegramClient):
         super().__init__()
         self.attempts = 0
 
-    def send_message(self, chat_id: str, text: str) -> None:
+    async def send_message(self, chat_id: str, text: str, reply_markup=None) -> None:
         self.attempts += 1
         if self.attempts == 1:
             raise RuntimeError("temporary send failure")
-        super().send_message(chat_id, text)
+        await super().send_message(chat_id, text, reply_markup)
 
 
 def configure_test_env(tmp_path, monkeypatch):
@@ -44,12 +55,28 @@ def configure_test_env(tmp_path, monkeypatch):
     get_logger.cache_clear()
 
 
+def process_payload(payload, agent, settings, send_reply, client):
+    service = TelegramService(
+        agent=agent,
+        settings=settings,
+        send_replies=send_reply,
+        client=client,
+    )
+    return asyncio.run(service.process_update(Update.model_validate(payload)))
+
+
 def private_payload(text: str = "你好") -> dict[str, object]:
     return {
         "update_id": 1,
         "message": {
             "message_id": 10,
-            "from": {"id": 10001, "username": "owner"},
+            "date": 1,
+            "from": {
+                "id": 10001,
+                "is_bot": False,
+                "first_name": "owner",
+                "username": "owner",
+            },
             "chat": {"id": 10001, "type": "private"},
             "text": text,
         },
@@ -61,7 +88,13 @@ def group_payload(text: str = "你好") -> dict[str, object]:
         "update_id": 2,
         "message": {
             "message_id": 20,
-            "from": {"id": 10001, "username": "member"},
+            "date": 1,
+            "from": {
+                "id": 10001,
+                "is_bot": False,
+                "first_name": "member",
+                "username": "member",
+            },
             "chat": {"id": -100123, "type": "supergroup", "title": "test"},
             "text": text,
         },
@@ -69,9 +102,14 @@ def group_payload(text: str = "你好") -> dict[str, object]:
 
 
 def test_private_message_event_builds_channel_context():
-    event = TelegramMessageEvent.from_payload(private_payload())
+    event = TelegramIncomingMessage.from_update(Update.model_validate(private_payload()))
+    assert event is not None
 
-    context = event.to_channel_context(owner_ids={"10001"}, group_wake_words=["咕嘎BoBo"])
+    context = event.to_channel_context(
+        owner_ids={"10001"},
+        group_wake_words=["咕嘎BoBo"],
+        bot_username="",
+    )
 
     assert context.platform == "telegram"
     assert context.channel_type == "private"
@@ -84,9 +122,16 @@ def test_private_message_event_builds_channel_context():
 
 
 def test_group_message_event_builds_channel_context():
-    event = TelegramMessageEvent.from_payload(group_payload("咕嘎BoBo 你好"))
+    event = TelegramIncomingMessage.from_update(
+        Update.model_validate(group_payload("咕嘎BoBo 你好"))
+    )
+    assert event is not None
 
-    context = event.to_channel_context(owner_ids=set(), group_wake_words=["咕嘎BoBo"])
+    context = event.to_channel_context(
+        owner_ids=set(),
+        group_wake_words=["咕嘎BoBo"],
+        bot_username="",
+    )
 
     assert context.platform == "telegram"
     assert context.channel_type == "group"
@@ -108,6 +153,138 @@ def test_telegram_private_webhook_handles_message(tmp_path, monkeypatch):
     assert response.json()["status"] == "ok"
     assert response.json()["sent"] is False
     assert response.json()["reply_available"] is True
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
+def test_community_command_returns_configured_links(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    settings = get_settings()
+
+    result = process_payload(
+        private_payload("/community"),
+        agent=build_agent(),
+        settings=settings,
+        send_reply=False,
+        client=FakeTelegramClient(),
+    )
+
+    assert result["community_links"] == {
+        "group": "https://t.me/ScarletKc_Group",
+        "bot": "https://t.me/FogMoeBot",
+        "channel": "https://t.me/FOG_MOE",
+        "summary_bot": "https://t.me/rigerubot?startgroup=true",
+        "developer_gugabobo": "https://t.me/woshigugabobo",
+        "developer_scarletkc": "https://t.me/scarletkc",
+        "github_scarletkc": "https://github.com/scarletkc",
+        "github_fogmoe": "https://github.com/FogMoe",
+        "github_geyugong": "https://github.com/orgs/FogMoe/people/GeYugong",
+        "github_gugabobo": "https://github.com/GugaBoBo-s",
+    }
+    assert result["sent"] is False
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
+def test_fogmoe_command_sends_inline_keyboard(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    settings = get_settings()
+    client = FakeTelegramClient()
+
+    result = process_payload(
+        private_payload("/fogmoe"),
+        agent=build_agent(),
+        settings=settings,
+        send_reply=True,
+        client=client,
+    )
+
+    keyboard = client.sent_messages[0]["reply_markup"]
+    urls = [row[0].url for row in keyboard.inline_keyboard]
+    assert urls == [
+        "https://t.me/ScarletKc_Group",
+        "https://t.me/FogMoeBot",
+        "https://t.me/FOG_MOE",
+        "https://t.me/rigerubot?startgroup=true",
+        "https://t.me/woshigugabobo",
+        "https://t.me/scarletkc",
+        "https://github.com/scarletkc",
+        "https://github.com/FogMoe",
+        "https://github.com/orgs/FogMoe/people/GeYugong",
+        "https://github.com/GugaBoBo-s",
+    ]
+    assert result["sent"] is True
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
+def test_summary_command_mentions_rigerubot(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    settings = get_settings()
+    client = FakeTelegramClient()
+
+    result = process_payload(
+        group_payload("/summary@GugaBoBoBot 100"),
+        agent=build_agent(),
+        settings=settings,
+        send_reply=True,
+        client=client,
+    )
+
+    message = client.sent_messages[0]
+    assert "@rigerubot" in message["text"]
+    assert message["reply_markup"].inline_keyboard[0][0].url == (
+        "https://t.me/rigerubot?startgroup=true"
+    )
+    assert result["summary_bot"] == "@rigerubot"
+    assert result["sent"] is True
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
+def test_developers_command_returns_both_accounts(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    settings = get_settings()
+    client = FakeTelegramClient()
+
+    result = process_payload(
+        private_payload("/developers"),
+        agent=build_agent(),
+        settings=settings,
+        send_reply=True,
+        client=client,
+    )
+
+    assert result["developers"] == {
+        "@woshigugabobo": "https://t.me/woshigugabobo",
+        "@scarletkc": "https://t.me/scarletkc",
+    }
+    assert "@woshigugabobo" in client.sent_messages[0]["text"]
+    assert "@scarletkc" in client.sent_messages[0]["text"]
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
+def test_github_command_returns_all_related_accounts(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    settings = get_settings()
+    client = FakeTelegramClient()
+
+    result = process_payload(
+        private_payload("/github"),
+        agent=build_agent(),
+        settings=settings,
+        send_reply=True,
+        client=client,
+    )
+
+    assert result["github_links"] == {
+        "ScarletKC": "https://github.com/scarletkc",
+        "FogMoe": "https://github.com/FogMoe",
+        "GeYugong": "https://github.com/orgs/FogMoe/people/GeYugong",
+        "GugaBoBo-s": "https://github.com/GugaBoBo-s",
+    }
+    assert len(client.sent_messages[0]["reply_markup"].inline_keyboard) == 4
     get_settings.cache_clear()
     get_logger.cache_clear()
 
@@ -264,7 +441,7 @@ def test_telegram_runtime_can_send_reply(tmp_path, monkeypatch):
     settings = get_settings()
     client = FakeTelegramClient()
 
-    result = handle_telegram_update(
+    result = process_payload(
         private_payload(),
         agent=build_agent(),
         settings=settings,
@@ -287,7 +464,7 @@ def test_telegram_retry_reuses_reply_without_reprocessing(tmp_path, monkeypatch)
     client = FlakyTelegramClient()
 
     try:
-        handle_telegram_update(
+        process_payload(
             private_payload(),
             agent=agent,
             settings=settings,
@@ -300,14 +477,14 @@ def test_telegram_retry_reuses_reply_without_reprocessing(tmp_path, monkeypatch)
     assert agent.store.count_messages() == 2
     assert agent.store.get_inbound_event("telegram", "1")["status"] == "reply_ready"
 
-    retry = handle_telegram_update(
+    retry = process_payload(
         private_payload(),
         agent=agent,
         settings=settings,
         send_reply=True,
         client=client,
     )
-    duplicate = handle_telegram_update(
+    duplicate = process_payload(
         private_payload(),
         agent=agent,
         settings=settings,
@@ -326,11 +503,27 @@ def test_telegram_retry_reuses_reply_without_reprocessing(tmp_path, monkeypatch)
 def photo_private_payload(caption: str | None = None) -> dict[str, object]:
     message: dict[str, object] = {
         "message_id": 30,
-        "from": {"id": 10001, "username": "owner"},
+        "date": 1,
+        "from": {
+            "id": 10001,
+            "is_bot": False,
+            "first_name": "owner",
+            "username": "owner",
+        },
         "chat": {"id": 10001, "type": "private"},
         "photo": [
-            {"file_id": "small_id", "width": 90, "height": 90},
-            {"file_id": "large_id", "width": 800, "height": 800},
+            {
+                "file_id": "small_id",
+                "file_unique_id": "small_unique_id",
+                "width": 90,
+                "height": 90,
+            },
+            {
+                "file_id": "large_id",
+                "file_unique_id": "large_unique_id",
+                "width": 800,
+                "height": 800,
+            },
         ],
     }
     if caption is not None:
@@ -345,32 +538,46 @@ class ImageCapableFakeClient:
         self.sent_messages = []
         self.downloaded_ids = []
 
-    def send_message(self, chat_id: str, text: str) -> None:
+    async def send_message(self, chat_id: str, text: str, reply_markup=None) -> None:
         self.sent_messages.append({"chat_id": chat_id, "text": text})
 
-    def file_ids_to_data_uris(self, file_ids, timeout: float = 20.0):
+    async def file_ids_to_data_uris(self, file_ids, timeout: float = 20.0):
         self.downloaded_ids.extend(file_ids)
         return [f"data:image/jpeg;base64,fake-{fid}" for fid in file_ids]
 
 
 def test_photo_event_extracts_largest_file_id():
-    event = TelegramMessageEvent.from_payload(photo_private_payload())
+    event = TelegramIncomingMessage.from_update(
+        Update.model_validate(photo_private_payload())
+    )
+    assert event is not None
 
     assert event.photo_file_ids == ("large_id",)
     assert event.has_content() is True
 
 
 def test_photo_caption_becomes_text():
-    event = TelegramMessageEvent.from_payload(photo_private_payload(caption="这是什么"))
+    event = TelegramIncomingMessage.from_update(
+        Update.model_validate(photo_private_payload(caption="这是什么"))
+    )
+    assert event is not None
 
     assert event.text == "这是什么"
     assert event.photo_file_ids == ("large_id",)
 
 
 def test_photo_only_private_message_triggers_reply():
-    event = TelegramMessageEvent.from_payload(photo_private_payload())
+    event = TelegramIncomingMessage.from_update(
+        Update.model_validate(photo_private_payload())
+    )
+    assert event is not None
 
-    assert event.should_reply(group_wake_words=[], bot_username="") is True
+    context = event.to_channel_context(
+        owner_ids=set(),
+        group_wake_words=[],
+        bot_username="",
+    )
+    assert context.is_wake_triggered is True
 
 
 def test_telegram_runtime_downloads_and_passes_images(tmp_path, monkeypatch):
@@ -378,7 +585,7 @@ def test_telegram_runtime_downloads_and_passes_images(tmp_path, monkeypatch):
     settings = get_settings()
     client = ImageCapableFakeClient()
 
-    result = handle_telegram_update(
+    result = process_payload(
         photo_private_payload(caption="看看这个"),
         agent=build_agent(),
         settings=settings,

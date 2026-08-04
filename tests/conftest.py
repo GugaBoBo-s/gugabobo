@@ -25,6 +25,18 @@ def isolate_runtime_settings(tmp_path, monkeypatch):
         "GUGABOBO_TELEGRAM_WEBHOOK_SECRET": "",
         "GUGABOBO_TELEGRAM_REPLY_ENABLED": "false",
         "GUGABOBO_TELEGRAM_PROXY": "",
+        "GUGABOBO_TELEGRAM_COMMUNITY_GROUP_URL": "https://t.me/ScarletKc_Group",
+        "GUGABOBO_TELEGRAM_COMPANION_BOT_URL": "https://t.me/FogMoeBot",
+        "GUGABOBO_TELEGRAM_ANNOUNCEMENT_CHANNEL_URL": "https://t.me/FOG_MOE",
+        "GUGABOBO_TELEGRAM_SUMMARY_BOT_URL": "https://t.me/rigerubot?startgroup=true",
+        "GUGABOBO_TELEGRAM_DEVELOPER_GUGABOBO_URL": "https://t.me/woshigugabobo",
+        "GUGABOBO_TELEGRAM_DEVELOPER_SCARLETKC_URL": "https://t.me/scarletkc",
+        "GUGABOBO_TELEGRAM_GITHUB_SCARLETKC_URL": "https://github.com/scarletkc",
+        "GUGABOBO_TELEGRAM_GITHUB_FOGMOE_URL": "https://github.com/FogMoe",
+        "GUGABOBO_TELEGRAM_GITHUB_GEYUGONG_URL": (
+            "https://github.com/orgs/FogMoe/people/GeYugong"
+        ),
+        "GUGABOBO_TELEGRAM_GITHUB_GUGABOBO_URL": "https://github.com/GugaBoBo-s",
         "GUGABOBO_GITHUB_TOKEN": "",
         "GUGABOBO_GITHUB_REVIEW_ENABLED": "false",
         "GUGABOBO_GITHUB_ISSUE_ENABLED": "false",

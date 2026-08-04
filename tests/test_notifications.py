@@ -1,3 +1,6 @@
+import asyncio
+
+from gugabobo.adapters.telegram_runtime import TelegramNotificationWorker
 from gugabobo.config import Settings
 from gugabobo.core.notifications import OwnerNotifier
 from gugabobo.memory.store import MemoryStore
@@ -22,6 +25,14 @@ class FakeTelegram:
         self.messages.append((chat_id, text))
 
 
+class AsyncFakeTelegram:
+    def __init__(self) -> None:
+        self.messages: list[tuple[str, str]] = []
+
+    async def send_message(self, chat_id: str, text: str) -> None:
+        self.messages.append((chat_id, text))
+
+
 def test_owner_notification_sends_both_channels_and_deduplicates(tmp_path) -> None:
     store = MemoryStore(tmp_path / "notifications.db")
     settings = Settings(
@@ -43,6 +54,70 @@ def test_owner_notification_sends_both_channels_and_deduplicates(tmp_path) -> No
     records = store.list_owner_notifications()
     assert len(records) == 2
     assert {record["status"] for record in records} == {"sent"}
+
+
+def test_async_worker_delivers_queued_telegram_notification(tmp_path) -> None:
+    store = MemoryStore(tmp_path / "async-notifications.db")
+    settings = Settings(
+        data_dir=tmp_path,
+        db_path=tmp_path / "async-notifications.db",
+        owner_telegram_ids="20001",
+    )
+    notifier = OwnerNotifier(store, settings, FakeNapCat())
+    telegram = AsyncFakeTelegram()
+
+    notifier.notify_pr_opened(15, "https://example/pull/15", "Update docs")
+    result = asyncio.run(TelegramNotificationWorker(store, telegram).deliver_pending())
+
+    assert result == {"attempted": 1, "sent": 1}
+    assert telegram.messages[0][0] == "20001"
+    assert "GugaBoBo-s/gugabobo PR #15" in telegram.messages[0][1]
+    assert "https://example/pull/15" in telegram.messages[0][1]
+    assert store.list_owner_notifications()[0]["status"] == "sent"
+
+
+def test_async_worker_delivers_agent_generated_telegram_message(tmp_path) -> None:
+    store = MemoryStore(tmp_path / "agent-outbound.db")
+    notification_id = store.queue_owner_notification(
+        dedupe_key="agent-telegram:test",
+        event_type="agent_telegram_message",
+        platform="telegram",
+        recipient_id="@release_channel",
+        content="新版本已经发布。",
+    )
+    telegram = AsyncFakeTelegram()
+
+    result = asyncio.run(TelegramNotificationWorker(store, telegram).deliver_pending())
+
+    assert result == {"attempted": 1, "sent": 1}
+    assert telegram.messages == [("@release_channel", "新版本已经发布。")]
+    assert store.list_owner_notifications()[0]["id"] == notification_id
+    assert store.list_owner_notifications()[0]["status"] == "sent"
+
+
+def test_async_worker_is_not_starved_by_qq_notifications(tmp_path) -> None:
+    store = MemoryStore(tmp_path / "platform-filter.db")
+    for index in range(3):
+        store.queue_owner_notification(
+            dedupe_key=f"qq:{index}",
+            event_type="test",
+            platform="qq",
+            recipient_id=str(index),
+            content="qq",
+        )
+    store.queue_owner_notification(
+        dedupe_key="telegram:target",
+        event_type="agent_telegram_message",
+        platform="telegram",
+        recipient_id="12345",
+        content="telegram",
+    )
+    telegram = AsyncFakeTelegram()
+
+    result = asyncio.run(TelegramNotificationWorker(store, telegram).deliver_pending(limit=1))
+
+    assert result == {"attempted": 1, "sent": 1}
+    assert telegram.messages == [("12345", "telegram")]
 
 
 def test_same_pull_request_number_in_different_repositories_does_not_collide(tmp_path) -> None:

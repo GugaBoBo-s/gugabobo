@@ -1,8 +1,7 @@
-import json
 from pathlib import Path
 
 from gugabobo.config import Settings
-from gugabobo.core.github_issues import GitHubIssueAutomationService
+from gugabobo.core.github_issues import GitHubIssueAutomationService, IssueDecision
 from gugabobo.core.improvement import ImprovementCreated, RunOutcome
 from gugabobo.infra.code_models import CodeModelResult
 from gugabobo.memory.store import MemoryStore
@@ -48,16 +47,14 @@ class FakeCodeModel:
         self.confidence = confidence
         self.calls = []
 
-    def complete_with_metadata(self, messages, temperature=0.0):
+    def complete_with_metadata(self, messages, temperature=0.0, output_type=str):
         self.calls.append(messages)
         return CodeModelResult(
-            json.dumps(
-                {
-                    "worthwhile": self.worthwhile,
-                    "confidence": self.confidence,
-                    "rationale": "bounded bug with a reproducible failure",
-                    "implementation_summary": "fix the parser and add a regression test",
-                }
+            IssueDecision(
+                worthwhile=self.worthwhile,
+                confidence=self.confidence,
+                rationale="bounded bug with a reproducible failure",
+                implementation_summary="fix the parser and add a regression test",
             ),
             "claude",
             "claude-code",

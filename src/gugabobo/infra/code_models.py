@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Generic, Protocol, TypeVar
 
-import httpx
+from litellm.exceptions import Timeout as LiteLLMTimeout
 
 from gugabobo.config import Settings, get_settings
+from gugabobo.infra.llm import AgentRuntime
+
+
+OutputT = TypeVar("OutputT")
 
 
 @dataclass(frozen=True)
-class CodeModelResult:
-    content: str
+class CodeModelResult(Generic[OutputT]):
+    content: OutputT
     provider: str
     model: str
 
@@ -22,122 +26,66 @@ class CodeModelClient(Protocol):
     @property
     def configured(self) -> bool: ...
 
-    def complete(self, messages: list[dict[str, str]], temperature: float = 0.0) -> str: ...
+    def complete(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.0,
+        output_type: type[OutputT] | type[str] = str,
+    ) -> OutputT | str: ...
 
 
-class AnthropicCodeClient:
-    provider_name = "claude"
-
-    def __init__(self, settings: Settings | None = None) -> None:
-        self.settings = settings or get_settings()
+class PydanticCodeAgent(AgentRuntime):
+    def __init__(
+        self,
+        settings: Settings,
+        provider_name: str,
+        litellm_provider: str,
+        api_key: str,
+        api_key_setting: str,
+        base_url: str,
+        model: str,
+        max_tokens: int | None = None,
+    ) -> None:
+        super().__init__(settings)
+        self.provider_name = provider_name
+        self.litellm_provider = litellm_provider
+        self.api_key_setting = api_key_setting
+        self._api_key = api_key
+        self._base_url = base_url
+        self._model_name = model
+        self._max_tokens = max_tokens
 
     @property
-    def configured(self) -> bool:
-        return bool(self.settings.claude_auth_token)
+    def api_key(self) -> str:
+        return self._api_key
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
 
     @property
     def model(self) -> str:
-        return self.settings.code_claude_model
-
-    def complete(self, messages: list[dict[str, str]], temperature: float = 0.0) -> str:
-        if not self.configured:
-            raise RuntimeError("Claude code model is not configured")
-        system_parts = [item["content"] for item in messages if item["role"] == "system"]
-        conversation = [item for item in messages if item["role"] != "system"]
-        base_url = self.settings.claude_base_url or "https://api.anthropic.com"
-        base_url = base_url.rstrip("/")
-        url = f"{base_url}/messages" if base_url.endswith("/v1") else f"{base_url}/v1/messages"
-        headers = {
-            "Authorization": f"Bearer {self.settings.claude_auth_token}",
-            "x-api-key": self.settings.claude_auth_token,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        }
-        payload: dict[str, object] = {
-            "model": self.model,
-            "max_tokens": 8192,
-            "messages": conversation,
-            "temperature": temperature,
-        }
-        if system_parts:
-            payload["system"] = "\n\n".join(system_parts)
-        with httpx.Client(timeout=self.settings.code_model_timeout_seconds) as client:
-            response = client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-        blocks = data.get("content", [])
-        return "\n".join(
-            str(block.get("text", ""))
-            for block in blocks
-            if isinstance(block, dict) and block.get("type") == "text"
-        ).strip()
-
-
-class OpenAICompatibleCodeClient:
-    def __init__(
-        self,
-        provider_name: str,
-        api_key: str,
-        base_url: str,
-        model: str,
-        timeout: int,
-    ) -> None:
-        self.provider_name = provider_name
-        self.api_key = api_key
-        self.base_url = base_url
-        self.model = model
-        self.timeout = timeout
+        return self._model_name
 
     @property
-    def configured(self) -> bool:
-        return bool(self.api_key)
+    def request_timeout(self) -> int:
+        return self.settings.code_model_timeout_seconds
 
-    def complete(self, messages: list[dict[str, str]], temperature: float = 0.0) -> str:
-        if not self.configured:
-            raise RuntimeError(f"{self.provider_name} code model is not configured")
-        url = f"{self.base_url.rstrip('/')}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-        }
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-        return str(data["choices"][0]["message"]["content"]).strip()
+    @property
+    def max_tokens(self) -> int | None:
+        return self._max_tokens
 
-
-class OpenAIResponsesCodeClient(OpenAICompatibleCodeClient):
-    def complete(self, messages: list[dict[str, str]], temperature: float = 0.0) -> str:
-        if not self.configured:
-            raise RuntimeError("openai code model is not configured")
-        url = f"{self.base_url.rstrip('/')}/responses"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {"model": self.model, "input": messages}
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-        if data.get("output_text"):
-            return str(data["output_text"]).strip()
-        parts: list[str] = []
-        for output in data.get("output", []):
-            if not isinstance(output, dict):
-                continue
-            for content in output.get("content", []):
-                if isinstance(content, dict) and content.get("type") == "output_text":
-                    parts.append(str(content.get("text", "")))
-        if not parts:
-            raise ValueError("OpenAI response did not contain output text")
-        return "\n".join(parts).strip()
+    def complete(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.0,
+        output_type: type[OutputT] | type[str] = str,
+    ) -> OutputT | str:
+        return self.run_messages(
+            messages,
+            output_type=output_type,
+            temperature=temperature,
+        ).output
 
 
 class CodeModelRouter:
@@ -151,18 +99,23 @@ class CodeModelRouter:
         return self.clients[0].configured
 
     def complete(self, messages: list[dict[str, str]], temperature: float = 0.0) -> str:
-        return self.complete_with_metadata(messages, temperature).content
+        result = self.complete_with_metadata(messages, temperature)
+        return str(result.content)
 
     def complete_with_metadata(
         self,
         messages: list[dict[str, str]],
         temperature: float = 0.0,
-    ) -> CodeModelResult:
+        output_type: type[OutputT] | type[str] = str,
+    ) -> CodeModelResult[OutputT | str]:
         for index, client in enumerate(self.clients):
             if not client.configured:
-                raise RuntimeError(f"{client.provider_name} code model is not configured")
+                setting = getattr(client, "api_key_setting", "its configured API key")
+                raise RuntimeError(
+                    f"{client.provider_name} code model is not configured; set {setting}"
+                )
             try:
-                content = client.complete(messages, temperature)
+                content = client.complete(messages, temperature, output_type)
                 return CodeModelResult(content, client.provider_name, client.model)
             except Exception as error:
                 if not _is_timeout(error) or index == len(self.clients) - 1:
@@ -171,33 +124,48 @@ class CodeModelRouter:
 
 
 def _is_timeout(error: Exception) -> bool:
-    if isinstance(error, (httpx.TimeoutException, TimeoutError)):
+    if isinstance(error, (LiteLLMTimeout, TimeoutError)):
         return True
-    return isinstance(error, httpx.HTTPStatusError) and error.response.status_code in {
-        408,
-        504,
-        524,
-    }
+    status_code = getattr(error, "status_code", None)
+    if status_code is None:
+        status_code = getattr(getattr(error, "response", None), "status_code", None)
+    return status_code in {408, 504, 524}
 
 
 def build_code_model_router(settings: Settings | None = None) -> CodeModelRouter:
     resolved = settings or get_settings()
+    claude_base_url = (resolved.claude_base_url or "https://api.anthropic.com").rstrip("/")
+    if claude_base_url.endswith("/v1"):
+        claude_base_url = claude_base_url[:-3]
     return CodeModelRouter(
         [
-            AnthropicCodeClient(resolved),
-            OpenAIResponsesCodeClient(
+            PydanticCodeAgent(
+                resolved,
+                "claude",
+                "anthropic",
+                resolved.claude_auth_token,
+                "GUGABOBO_CLAUDE_AUTH_TOKEN",
+                claude_base_url,
+                resolved.code_claude_model,
+                max_tokens=8192,
+            ),
+            PydanticCodeAgent(
+                resolved,
+                "openai",
                 "openai",
                 resolved.openai_api_key,
+                "GUGABOBO_OPENAI_API_KEY",
                 resolved.openai_base_url,
                 resolved.code_openai_model,
-                resolved.code_model_timeout_seconds,
             ),
-            OpenAICompatibleCodeClient(
+            PydanticCodeAgent(
+                resolved,
+                "deepseek",
                 "deepseek",
                 resolved.deepseek_api_key,
+                "GUGABOBO_DEEPSEEK_API_KEY",
                 resolved.deepseek_base_url,
                 resolved.code_deepseek_model,
-                resolved.code_model_timeout_seconds,
             ),
         ]
     )

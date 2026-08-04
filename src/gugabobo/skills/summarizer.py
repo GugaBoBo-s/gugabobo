@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from gugabobo.infra.llm import OpenAICompatibleClient
+from gugabobo.infra.llm import AgentRuntime
 from gugabobo.infra.logs import get_logger
 
 _SUMMARY_SYSTEM_PROMPT = (
@@ -13,15 +13,15 @@ _SUMMARY_SYSTEM_PROMPT = (
 
 
 class SummarizerSkill:
-    def __init__(self, llm_client: OpenAICompatibleClient) -> None:
-        self.llm_client = llm_client
+    def __init__(self, runtime: AgentRuntime) -> None:
+        self.runtime = runtime
 
     def summarize(
         self,
         messages: list[dict[str, str]],
         previous_summary: str = "",
     ) -> str | None:
-        if not self.llm_client.configured or not messages:
+        if not self.runtime.configured or not messages:
             return None
         transcript = "\n".join(
             f"{'用户' if item['role'] == 'user' else '咕嘎BoBo'}: {item['content']}"
@@ -33,7 +33,7 @@ class SummarizerSkill:
         parts.append(f"新增对话：\n{transcript}")
         user_content = "\n\n".join(parts)
         try:
-            summary = self.llm_client.complete(
+            result = self.runtime.run_messages(
                 [
                     {"role": "system", "content": _SUMMARY_SYSTEM_PROMPT},
                     {"role": "user", "content": user_content},
@@ -42,5 +42,5 @@ class SummarizerSkill:
         except Exception as exc:
             get_logger().warning("summary generation failed: %s", exc)
             return None
-        summary = summary.strip()
+        summary = str(result.output).strip()
         return summary or None

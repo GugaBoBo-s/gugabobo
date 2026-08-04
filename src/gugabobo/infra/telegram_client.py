@@ -1,117 +1,112 @@
 from __future__ import annotations
 
-import httpx
+from io import BytesIO
+
+from aiogram import Bot
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.types import BotCommand, InlineKeyboardMarkup
 
 from gugabobo.config import get_settings
 from gugabobo.infra.images import bytes_to_data_uri
 from gugabobo.infra.logs import get_logger
 from gugabobo.infra.redaction import redact_sensitive
 
-
 class TelegramClient:
     def __init__(self) -> None:
         self.settings = get_settings()
-        self._client: httpx.Client | None = None
+        self._bot: Bot | None = None
 
     @property
     def configured(self) -> bool:
         return bool(self.settings.telegram_bot_token)
 
     @property
-    def base_url(self) -> str:
+    def bot(self) -> Bot:
         if not self.configured:
             raise RuntimeError("Telegram bot token is not configured")
-        return f"https://api.telegram.org/bot{self.settings.telegram_bot_token}"
+        if self._bot is None:
+            session = AiohttpSession(proxy=self.settings.telegram_proxy or None)
+            self._bot = Bot(token=self.settings.telegram_bot_token, session=session)
+        return self._bot
 
-    @property
-    def _proxy(self) -> str | None:
-        return self.settings.telegram_proxy or None
+    async def close(self) -> None:
+        if self._bot is not None:
+            await self._bot.session.close()
+            self._bot = None
 
-    @property
-    def client(self) -> httpx.Client:
-        if self._client is None:
-            self._client = httpx.Client(proxy=self._proxy, follow_redirects=True)
-        return self._client
-
-    def close(self) -> None:
-        if self._client is not None:
-            self._client.close()
-            self._client = None
-
-    def call(
-        self,
-        method: str,
-        payload: dict[str, object] | None = None,
-        timeout: float = 35.0,
-    ) -> dict[str, object]:
-        url = f"{self.base_url}/{method}"
+    async def get_me(self) -> dict[str, object]:
         try:
-            response = self.client.post(url, json=payload or {}, timeout=timeout)
-            response.raise_for_status()
-            data = response.json()
+            result = await self.bot.get_me()
+            return result.model_dump(mode="json", exclude_none=True)
         except Exception as error:
-            detail = redact_sensitive(error, (self.settings.telegram_bot_token,))
-            raise RuntimeError(f"Telegram API {method} failed: {detail}") from None
-        if not data.get("ok"):
-            detail = redact_sensitive(data, (self.settings.telegram_bot_token,))
-            raise RuntimeError(f"Telegram API {method} failed: {detail}")
-        return dict(data)
+            self._raise_api_error("getMe", error)
 
-    def get_updates(
+    async def send_message(
         self,
-        offset: int | None = None,
-        timeout: int = 30,
-        limit: int = 100,
-    ) -> list[dict[str, object]]:
-        payload: dict[str, object] = {
-            "timeout": timeout,
-            "limit": limit,
-            "allowed_updates": ["message", "edited_message"],
-        }
-        if offset is not None:
-            payload["offset"] = offset
-        data = self.call("getUpdates", payload, timeout=timeout + 15)
-        result = data.get("result", [])
-        if not isinstance(result, list):
-            return []
-        return [dict(item) for item in result if isinstance(item, dict)]
-
-    def get_me(self) -> dict[str, object]:
-        data = self.call("getMe")
-        result = data.get("result", {})
-        return dict(result) if isinstance(result, dict) else {}
-
-    def send_message(self, chat_id: str, text: str) -> None:
-        chunks = _split_message(text)
-        for chunk in chunks:
-            self.call("sendMessage", {"chat_id": chat_id, "text": chunk})
-
-    def _download_file(self, file_id: str, timeout: float = 20.0) -> bytes | None:
+        chat_id: str,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> None:
         try:
-            data = self.call("getFile", {"file_id": file_id})
-            file_path = str(data.get("result", {}).get("file_path", ""))
-            if not file_path:
-                return None
-            token = self.settings.telegram_bot_token
-            url = f"https://api.telegram.org/file/bot{token}/{file_path}"
-            response = self.client.get(url, timeout=timeout)
-            response.raise_for_status()
-            return response.content
-        except Exception as exc:
-            detail = redact_sensitive(exc, (self.settings.telegram_bot_token,))
-            get_logger().warning("telegram file download failed file_id=%s error=%s", file_id, detail)
-            return None
+            for chunk in _split_message(text):
+                await self.bot.send_message(
+                    chat_id=chat_id,
+                    text=chunk,
+                    reply_markup=reply_markup,
+                )
+                reply_markup = None
+        except Exception as error:
+            self._raise_api_error("sendMessage", error)
 
-    def file_ids_to_data_uris(self, file_ids: list[str], timeout: float = 20.0) -> list[str]:
+    async def set_commands(self) -> None:
+        try:
+            await self.bot.set_my_commands(
+                [
+                    BotCommand(command="community", description="查看 Telegram 社区入口"),
+                    BotCommand(command="fogmoe", description="打开雾萌与 FOGMOE 入口"),
+                    BotCommand(command="summary", description="使用群组总结机器人"),
+                    BotCommand(command="developers", description="查看项目开发者账号"),
+                    BotCommand(command="github", description="查看关联 GitHub 账号"),
+                ]
+            )
+        except Exception as error:
+            self._raise_api_error("setMyCommands", error)
+
+    async def file_ids_to_data_uris(
+        self,
+        file_ids: list[str],
+        timeout: float = 20.0,
+    ) -> list[str]:
         data_uris: list[str] = []
         for file_id in file_ids:
-            content = self._download_file(file_id, timeout=timeout)
-            if not content:
-                continue
-            data_uri = bytes_to_data_uri(content)
-            if data_uri:
-                data_uris.append(data_uri)
+            try:
+                destination = await self.bot.download(file_id, timeout=int(timeout))
+                content = _read_download(destination)
+                data_uri = bytes_to_data_uri(content) if content else None
+                if data_uri:
+                    data_uris.append(data_uri)
+            except Exception as error:
+                detail = redact_sensitive(error, (self.settings.telegram_bot_token,))
+                get_logger().warning(
+                    "telegram file download failed file_id=%s error=%s",
+                    file_id,
+                    detail,
+                )
         return data_uris
+
+    def _raise_api_error(self, method: str, error: Exception) -> None:
+        detail = redact_sensitive(error, (self.settings.telegram_bot_token,))
+        raise RuntimeError(f"Telegram API {method} failed: {detail}") from None
+
+
+def _read_download(destination: object) -> bytes | None:
+    if isinstance(destination, BytesIO):
+        return destination.getvalue()
+    read = getattr(destination, "read", None)
+    if not callable(read):
+        return None
+    content = read()
+    return content if isinstance(content, bytes) else None
 
 
 def _split_message(text: str, limit: int = 4000) -> list[str]:

@@ -224,13 +224,16 @@ class RuntimeManager:
             ],
         }
 
-    def telegram_get_me(self) -> dict[str, object]:
+    async def telegram_get_me(self) -> dict[str, object]:
         if not self.settings.telegram_bot_token:
             return {"status": "not_configured", "ok": False}
+        client = TelegramClient()
         try:
-            me = TelegramClient().get_me()
+            me = await client.get_me()
         except Exception as error:
             return {"status": "error", "ok": False, "error": str(error)}
+        finally:
+            await client.close()
         return {"status": "ok", "ok": True, "bot": me}
 
     def start_napcat(self) -> dict[str, object]:
