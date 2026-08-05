@@ -259,13 +259,29 @@ class GitHubClient:
     def list_pull_requests(self, state: str = "open") -> list[dict]:
         return self._paginate(self._url("/pulls"), {"state": state})
 
-    def list_recently_closed_pull_requests(self, limit: int = 20) -> list[dict]:
+    def list_recently_closed_pull_requests(
+        self,
+        limit: int = 20,
+        page: int = 1,
+    ) -> list[dict]:
         """Return the most recently updated closed pull requests, newest first."""
-        return self._paginate(
-            self._url("/pulls"),
-            {"state": "closed", "sort": "updated", "direction": "desc"},
-            limit=max(limit, 0),
+        page_size = max(0, min(limit, 100))
+        if page_size == 0:
+            return []
+        data = self._request(
+            "GET",
+            "/pulls",
+            params={
+                "state": "closed",
+                "sort": "updated",
+                "direction": "desc",
+                "per_page": page_size,
+                "page": max(page, 1),
+            },
         )
+        if not isinstance(data, list):
+            return []
+        return [dict(item) for item in data if isinstance(item, dict)]
 
     def list_issues(self, state: str = "open", limit: int | None = None) -> list[dict]:
         page = 1

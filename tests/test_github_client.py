@@ -173,6 +173,26 @@ def test_push_url_does_not_embed_token(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_recently_closed_pull_requests_support_explicit_pages(monkeypatch):
+    configure_token(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/pulls")
+        assert request.url.params["state"] == "closed"
+        assert request.url.params["sort"] == "updated"
+        assert request.url.params["direction"] == "desc"
+        assert request.url.params["per_page"] == "25"
+        assert request.url.params["page"] == "3"
+        return httpx.Response(200, json=[{"number": 42}])
+
+    install_mock(monkeypatch, handler)
+
+    result = GitHubClient().list_recently_closed_pull_requests(limit=25, page=3)
+
+    assert result == [{"number": 42}]
+    get_settings.cache_clear()
+
+
 def test_merge_and_close_pull_request(monkeypatch):
     configure_token(monkeypatch)
 

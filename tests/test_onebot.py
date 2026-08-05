@@ -13,10 +13,21 @@ def configure_test_env(tmp_path, monkeypatch):
     monkeypatch.setenv("GUGABOBO_NAPCAT_REPLY_ENABLED", "false")
     monkeypatch.setenv("GUGABOBO_NAPCAT_PASSIVE_REPLY_ENABLED", "false")
     monkeypatch.setenv("GUGABOBO_ADMIN_TOKEN", "test-admin")
+    monkeypatch.setenv("GUGABOBO_NAPCAT_ACCESS_TOKEN", "test-napcat")
     monkeypatch.setenv("GUGABOBO_MOONSHOT_API_KEY", "")
     monkeypatch.setenv("GUGABOBO_DEEPSEEK_API_KEY", "")
     get_settings.cache_clear()
     get_logger.cache_clear()
+
+
+def onebot_client() -> TestClient:
+    return TestClient(
+        app,
+        headers={
+            "Authorization": "Bearer test-napcat",
+            "X-Gugabobo-Admin-Token": "test-admin",
+        },
+    )
 
 
 def test_private_message_event_allows_reply():
@@ -133,7 +144,7 @@ def test_group_message_event_builds_channel_context():
 
 def test_onebot_private_webhook_handles_message(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
-    client = TestClient(app)
+    client = onebot_client()
 
     response = client.post(
         "/onebot/v11/events",
@@ -155,11 +166,41 @@ def test_onebot_private_webhook_handles_message(tmp_path, monkeypatch):
     get_logger.cache_clear()
 
 
+def test_onebot_webhook_rejects_missing_or_invalid_token(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    missing = client.post("/onebot/v11/events", json={})
+    invalid = client.post(
+        "/onebot/v11/events",
+        json={},
+        headers={"Authorization": "Bearer wrong-token"},
+    )
+
+    assert missing.status_code == 401
+    assert invalid.status_code == 401
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
+def test_onebot_webhook_rejects_unconfigured_token(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("GUGABOBO_NAPCAT_ACCESS_TOKEN", "")
+    get_settings.cache_clear()
+    client = TestClient(app)
+
+    response = client.post("/onebot/v11/events", json={})
+
+    assert response.status_code == 503
+    get_settings.cache_clear()
+    get_logger.cache_clear()
+
+
 def test_onebot_owner_merge_command_bypasses_group_wake_word(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     monkeypatch.setenv("GUGABOBO_OWNER_QQ_IDS", "10001")
     get_settings.cache_clear()
-    client = TestClient(app)
+    client = onebot_client()
 
     response = client.post(
         "/onebot/v11/events",
@@ -186,7 +227,7 @@ def test_onebot_private_webhook_can_return_passive_reply(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     monkeypatch.setenv("GUGABOBO_NAPCAT_PASSIVE_REPLY_ENABLED", "true")
     get_settings.cache_clear()
-    client = TestClient(app)
+    client = onebot_client()
 
     response = client.post(
         "/onebot/v11/events",
@@ -209,7 +250,7 @@ def test_onebot_private_webhook_can_return_passive_reply(tmp_path, monkeypatch):
 
 def test_onebot_blocked_user_is_ignored(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
-    client = TestClient(app)
+    client = onebot_client()
     client.post(
         "/dashboard-control/access-rules",
         json={"platform": "qq", "user_id": "10001", "role": "blocked"},
@@ -236,7 +277,7 @@ def test_onebot_blocked_user_is_ignored(tmp_path, monkeypatch):
 
 def test_onebot_group_feedback_records_without_reply(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
-    client = TestClient(app)
+    client = onebot_client()
     client.post(
         "/dashboard-control/access-rules",
         json={"platform": "qq", "user_id": "10001", "role": "trusted"},
@@ -266,7 +307,7 @@ def test_onebot_group_feedback_records_without_reply(tmp_path, monkeypatch):
 
 def test_onebot_user_role_cannot_record_group_feedback(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
-    client = TestClient(app)
+    client = onebot_client()
 
     response = client.post(
         "/onebot/v11/events",
@@ -292,7 +333,7 @@ def test_onebot_user_role_cannot_record_group_feedback(tmp_path, monkeypatch):
 
 def test_onebot_trusted_role_can_write_memory(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
-    client = TestClient(app)
+    client = onebot_client()
     client.post(
         "/dashboard-control/access-rules",
         json={"platform": "qq", "user_id": "10001", "role": "trusted"},
@@ -322,7 +363,7 @@ def test_onebot_user_role_cannot_write_memory(tmp_path, monkeypatch):
     configure_test_env(tmp_path, monkeypatch)
     monkeypatch.setenv("GUGABOBO_NAPCAT_PASSIVE_REPLY_ENABLED", "true")
     get_settings.cache_clear()
-    client = TestClient(app)
+    client = onebot_client()
 
     response = client.post(
         "/onebot/v11/events",
@@ -401,7 +442,7 @@ def test_onebot_image_only_message_is_not_ignored(tmp_path, monkeypatch):
         lambda urls: ["data:image/png;base64,Zm9v"],
     )
     get_settings.cache_clear()
-    client = TestClient(app)
+    client = onebot_client()
 
     response = client.post(
         "/onebot/v11/events",

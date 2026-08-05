@@ -84,6 +84,11 @@ Configure NapCat event reporting to:
 http://127.0.0.1:8765/onebot/v11/events
 ```
 
+Set NapCat's HTTP client access token to the same value as
+`GUGABOBO_NAPCAT_ACCESS_TOKEN`. NapCat must send the event request with
+`Authorization: Bearer <token>`. The webhook rejects requests when the token is
+missing, invalid, or not configured in gugabobo.
+
 If you want gugabobo to send replies back through NapCat, enable NapCat's HTTP server and set:
 
 ```env
@@ -91,6 +96,13 @@ GUGABOBO_NAPCAT_API_URL=http://127.0.0.1:3000
 GUGABOBO_NAPCAT_REPLY_ENABLED=true
 GUGABOBO_NAPCAT_ACCESS_TOKEN=
 ```
+
+The same access token protects inbound OneBot events and authenticates outbound
+NapCat API calls.
+
+API endpoints that expose messages, memories, feedback, tasks, GitHub lifecycle
+records, audit records, or logs require `X-Gugabobo-Admin-Token`. Set its value
+to `GUGABOBO_ADMIN_TOKEN`; the Dashboard sends it after login.
 
 Group chats only reply when the bot is mentioned or the message starts with a configured wake word.
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -513,9 +514,7 @@ class PullRequestLifecycleService:
         github_repo = self.settings.github_repo
         try:
             default_branch = self.github.get_default_branch()
-            candidates = self.github.list_recently_closed_pull_requests(
-                limit=self.settings.github_merge_discovery_limit
-            )
+            candidates, newest_cursor = self._owner_merge_candidates(github_owner, github_repo)
         except Exception as error:
             self.store.add_audit_log(
                 actor_source="daemon",
@@ -573,7 +572,57 @@ class PullRequestLifecycleService:
                 risk_level="high",
                 detail=f"merged_by:{login}",
             )
+        if not errors and newest_cursor:
+            self.store.set_automation_cursor(
+                self._owner_merge_cursor_name(github_owner, github_repo),
+                newest_cursor,
+            )
         return {"imported": imported, "errors": errors}
+
+    def _owner_merge_candidates(
+        self,
+        github_owner: str,
+        github_repo: str,
+    ) -> tuple[list[dict[str, object]], str]:
+        """Return unscanned closed pull requests and the newest cursor."""
+        page_size = self.settings.github_merge_discovery_limit
+        if page_size <= 0:
+            return [], ""
+        cursor_name = self._owner_merge_cursor_name(github_owner, github_repo)
+        previous_cursor = self.store.get_automation_cursor(cursor_name)
+        candidates: list[dict[str, object]] = []
+        newest_cursor = ""
+        page = 1
+        while True:
+            rows = self.github.list_recently_closed_pull_requests(limit=page_size, page=page)
+            if not rows:
+                break
+            if not newest_cursor:
+                newest_cursor = self._owner_merge_candidate_cursor(rows[0])
+            reached_previous = False
+            for row in rows:
+                if previous_cursor and self._owner_merge_candidate_cursor(row) == previous_cursor:
+                    reached_previous = True
+                    break
+                candidates.append(row)
+            if reached_previous or not previous_cursor or len(rows) < page_size:
+                break
+            page += 1
+        return candidates, newest_cursor
+
+    def _owner_merge_cursor_name(self, github_owner: str, github_repo: str) -> str:
+        return f"github_owner_merge:{github_owner}/{github_repo}".casefold()
+
+    def _owner_merge_candidate_cursor(self, candidate: dict[str, object]) -> str:
+        return json.dumps(
+            {
+                "number": int(candidate.get("number") or 0),
+                "updated_at": str(candidate.get("updated_at") or ""),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
     def _record_discovery_failure(
         self,

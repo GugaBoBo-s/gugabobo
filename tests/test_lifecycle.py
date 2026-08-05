@@ -33,6 +33,7 @@ class FakeGitHub:
         self.remotes: dict[int, dict[str, object]] = {}
         self.closed_listing: list[dict[str, object]] = []
         self.detail_requests: list[int] = []
+        self.closed_listing_requests: list[tuple[int, int]] = []
 
     def get_pull_request(self, number: int) -> dict[str, object]:
         self.detail_requests.append(number)
@@ -40,8 +41,14 @@ class FakeGitHub:
             return self.remotes[number]
         return self.remote
 
-    def list_recently_closed_pull_requests(self, limit: int = 20) -> list[dict[str, object]]:
-        return self.closed_listing[:limit]
+    def list_recently_closed_pull_requests(
+        self,
+        limit: int = 20,
+        page: int = 1,
+    ) -> list[dict[str, object]]:
+        self.closed_listing_requests.append((limit, page))
+        start = (page - 1) * limit
+        return self.closed_listing[start : start + limit]
 
     def get_checks_status(self, ref: str, required_name: str = "") -> str:
         assert required_name == "test"
@@ -105,6 +112,7 @@ def build_service(
     tmp_path,
     checks_status: str = "success",
     owner_github_logins: str = "",
+    merge_discovery_limit: int = 20,
 ):
     store = MemoryStore(tmp_path / "lifecycle.db")
     task_id = store.add_task(title="Improve lifecycle")
@@ -127,6 +135,7 @@ def build_service(
         owner_qq_ids="",
         owner_telegram_ids="",
         owner_github_logins=owner_github_logins,
+        github_merge_discovery_limit=merge_discovery_limit,
     )
     github = FakeGitHub(checks_status)
     notifier = FakeNotifier()
@@ -463,6 +472,7 @@ def _closed_listing_entry(number: int, base_ref: str = "main") -> dict[str, obje
     return {
         "number": number,
         "merged_at": "2026-08-04T00:00:00Z",
+        "updated_at": f"2026-08-04T00:00:{number:02d}Z",
         "base": {"ref": base_ref, "repo": {"full_name": "GugaBoBo-s/gugabobo"}},
     }
 
@@ -551,3 +561,31 @@ def test_tick_discovery_does_not_refetch_known_pull_requests(tmp_path) -> None:
 
     assert second["imported"] == 0
     assert 21 not in github.detail_requests
+
+
+def test_tick_discovery_paginates_until_persisted_cursor(tmp_path) -> None:
+    store, pr_id, github, notifier, service = build_service(
+        tmp_path,
+        owner_github_logins="GeYugong",
+        merge_discovery_limit=2,
+    )
+    github.closed_listing = [_closed_listing_entry(21)]
+    github.remotes[21] = _merged_remote(21, "geyugong")
+    service.tick()
+
+    new_numbers = [30, 29, 28, 27, 26]
+    github.closed_listing = [
+        *[_closed_listing_entry(number) for number in new_numbers],
+        _closed_listing_entry(21),
+    ]
+    github.remotes.update(
+        {number: _merged_remote(number, "geyugong") for number in new_numbers}
+    )
+    github.closed_listing_requests.clear()
+
+    result = service.tick()
+
+    assert result["imported"] == 5
+    assert github.closed_listing_requests == [(2, 1), (2, 2), (2, 3)]
+    revisions = {record["target_revision"] for record in store.list_deployment_records()}
+    assert {f"sha-{number}" for number in new_numbers} <= revisions

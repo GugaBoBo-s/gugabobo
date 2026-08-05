@@ -58,8 +58,38 @@ def test_list_endpoints_reject_out_of_range_limits(tmp_path, monkeypatch):
 
     for endpoint in endpoints:
         for limit in (-1, 0, 501):
-            response = client.get(endpoint, params={"limit": limit})
+            response = client.get(endpoint, params={"limit": limit}, headers=admin_headers())
             assert response.status_code == 422, (endpoint, limit, response.text)
+
+    get_settings.cache_clear()
+
+
+def test_sensitive_read_endpoints_require_admin_token(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    client = TestClient(app)
+    endpoints = (
+        "/logs",
+        "/messages",
+        "/messages/1",
+        "/feedbacks",
+        "/memories",
+        "/access-rules",
+        "/audit-logs",
+        "/tasks",
+        "/tasks/1",
+        "/improvements",
+        "/prs",
+        "/prs/1",
+        "/code-reviews",
+        "/github-issues",
+        "/merge-authorizations",
+        "/improvement-reflections",
+        "/deployments",
+        "/owner-notifications",
+    )
+
+    for endpoint in endpoints:
+        assert client.get(endpoint).status_code == 401, endpoint
 
     get_settings.cache_clear()
 
@@ -369,7 +399,10 @@ def test_dashboard_onebot_diagnostic_has_no_message_side_effect(tmp_path, monkey
         "/dashboard-control/diagnostics/onebot-test",
         headers=admin_headers(),
     )
-    messages_response = client.get("/messages?conversation_id=qq:user:dashboard-diagnostic")
+    messages_response = client.get(
+        "/messages?conversation_id=qq:user:dashboard-diagnostic",
+        headers=admin_headers(),
+    )
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
@@ -387,7 +420,10 @@ def test_dashboard_telegram_diagnostic_has_no_message_side_effect(tmp_path, monk
         "/dashboard-control/diagnostics/telegram-test",
         headers=admin_headers(),
     )
-    messages_response = client.get("/messages?conversation_id=telegram:user:dashboard-diagnostic")
+    messages_response = client.get(
+        "/messages?conversation_id=telegram:user:dashboard-diagnostic",
+        headers=admin_headers(),
+    )
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
@@ -538,7 +574,7 @@ def test_code_review_scan_requires_admin_and_returns_result(tmp_path, monkeypatc
 
     unauthorized = client.post("/code-reviews/scan")
     response = client.post("/code-reviews/scan", headers=admin_headers())
-    audits = client.get("/audit-logs").json()
+    audits = client.get("/audit-logs", headers=admin_headers()).json()
 
     assert unauthorized.status_code == 401
     assert response.status_code == 200
@@ -576,7 +612,7 @@ def test_github_issue_scan_requires_admin_and_returns_result(tmp_path, monkeypat
 
     unauthorized = client.post("/github-issues/scan")
     response = client.post("/github-issues/scan", headers=admin_headers())
-    audits = client.get("/audit-logs").json()
+    audits = client.get("/audit-logs", headers=admin_headers()).json()
 
     assert unauthorized.status_code == 401
     assert response.status_code == 200
@@ -612,7 +648,7 @@ def test_dashboard_control_chat_records_message(tmp_path, monkeypatch):
         json={"message": "你好", "conversation_id": "dashboard:test"},
         headers=admin_headers(),
     )
-    messages_response = client.get("/messages")
+    messages_response = client.get("/messages", headers=admin_headers())
 
     assert response.status_code == 200
     assert "已收到" in response.json()["reply"]
@@ -659,7 +695,7 @@ def test_dashboard_control_writes_audit_logs(tmp_path, monkeypatch):
         json={"subject": "global", "content": "审计测试"},
         headers=admin_headers(),
     )
-    logs_response = client.get("/audit-logs")
+    logs_response = client.get("/audit-logs", headers=admin_headers())
 
     assert response.status_code == 200
     logs = logs_response.json()
@@ -685,7 +721,7 @@ def test_memory_endpoint_filters_by_subject(tmp_path, monkeypatch):
         headers=admin_headers(),
     )
 
-    response = client.get("/memories?subject=telegram:user:1")
+    response = client.get("/memories?subject=telegram:user:1", headers=admin_headers())
 
     contents = [item["content"] for item in response.json()]
     assert "TG 用户喜欢短回复" in contents
@@ -712,7 +748,10 @@ def test_dashboard_control_updates_and_deletes_memory(tmp_path, monkeypatch):
         },
         headers=admin_headers(),
     )
-    filtered_response = client.get("/memories?subject=telegram:user:1")
+    filtered_response = client.get(
+        "/memories?subject=telegram:user:1",
+        headers=admin_headers(),
+    )
     missing_confirmation_response = client.request(
         "DELETE",
         f"/dashboard-control/memories/{memory_id}",
@@ -724,8 +763,11 @@ def test_dashboard_control_updates_and_deletes_memory(tmp_path, monkeypatch):
         json={"confirm_text": "DELETE"},
         headers=admin_headers(),
     )
-    after_delete_response = client.get("/memories?subject=telegram:user:1")
-    audit_response = client.get("/audit-logs")
+    after_delete_response = client.get(
+        "/memories?subject=telegram:user:1",
+        headers=admin_headers(),
+    )
+    audit_response = client.get("/audit-logs", headers=admin_headers())
 
     assert update_response.status_code == 200
     assert filtered_response.json()[0]["content"] == "新内容"
@@ -743,8 +785,8 @@ def test_message_endpoints(tmp_path, monkeypatch):
     client = TestClient(app)
 
     client.post("/chat", json={"message": "你好", "user_id": "u1"})
-    messages_response = client.get("/messages")
-    message_response = client.get("/messages/1")
+    messages_response = client.get("/messages", headers=admin_headers())
+    message_response = client.get("/messages/1", headers=admin_headers())
 
     assert messages_response.status_code == 200
     assert len(messages_response.json()) == 2
@@ -759,7 +801,7 @@ def test_message_endpoint_filters_by_conversation(tmp_path, monkeypatch):
 
     client.post("/chat", json={"message": "A", "user_id": "u1", "conversation_id": "api:a"})
     client.post("/chat", json={"message": "B", "user_id": "u2", "conversation_id": "api:b"})
-    response = client.get("/messages?conversation_id=api:a")
+    response = client.get("/messages?conversation_id=api:a", headers=admin_headers())
 
     contents = [item["content"] for item in response.json()]
     assert "A" in contents
@@ -790,7 +832,10 @@ def test_dashboard_control_clears_conversation_messages_and_deletes_summary(
         json={"confirm_text": "CLEAR"},
         headers=admin_headers(),
     )
-    messages_response = client.get("/messages?conversation_id=dashboard:test")
+    messages_response = client.get(
+        "/messages?conversation_id=dashboard:test",
+        headers=admin_headers(),
+    )
     delete_summary_response = client.request(
         "DELETE",
         "/dashboard-control/summaries/dashboard:test",
@@ -819,7 +864,7 @@ def test_dashboard_control_manages_access_rules(tmp_path, monkeypatch):
         },
         headers=admin_headers(),
     )
-    rules_response = client.get("/access-rules")
+    rules_response = client.get("/access-rules", headers=admin_headers())
     delete_response = client.request(
         "DELETE",
         f"/dashboard-control/access-rules/{create_response.json()['id']}",
@@ -930,8 +975,8 @@ def test_improvement_create_approve_and_open_pr(tmp_path, monkeypatch):
         json={"confirm_text": "OPEN"},
         headers=admin_headers(),
     )
-    prs_response = client.get("/prs")
-    audit_response = client.get("/audit-logs")
+    prs_response = client.get("/prs", headers=admin_headers())
+    audit_response = client.get("/audit-logs", headers=admin_headers())
 
     assert create_response.status_code == 200
     assert approve_response.json()["approval_status"] == "approved"
@@ -964,7 +1009,7 @@ def test_sync_pull_request_endpoint(tmp_path, monkeypatch):
         json={"confirm_text": "OPEN"},
         headers=admin_headers(),
     )
-    pr_id = client.get("/prs").json()[0]["id"]
+    pr_id = client.get("/prs", headers=admin_headers()).json()[0]["id"]
 
     unauth = client.post(f"/prs/{pr_id}/sync")
     sync_response = client.post(f"/prs/{pr_id}/sync", headers=admin_headers())
@@ -973,7 +1018,7 @@ def test_sync_pull_request_endpoint(tmp_path, monkeypatch):
     assert sync_response.status_code == 200
     assert sync_response.json()["status"] == "merged"
     assert sync_response.json()["checks_status"] == "success"
-    assert client.get(f"/prs/{pr_id}").json()["status"] == "merged"
+    assert client.get(f"/prs/{pr_id}", headers=admin_headers()).json()["status"] == "merged"
     get_settings.cache_clear()
 
 
@@ -1000,7 +1045,7 @@ def test_dashboard_can_authorize_ci_gated_merge(tmp_path, monkeypatch):
         json={"confirm_text": "OPEN"},
         headers=admin_headers(),
     )
-    pr_id = client.get("/prs").json()[0]["id"]
+    pr_id = client.get("/prs", headers=admin_headers()).json()[0]["id"]
 
     unauthenticated = client.post(
         f"/prs/{pr_id}/approve-merge",
@@ -1020,9 +1065,15 @@ def test_dashboard_can_authorize_ci_gated_merge(tmp_path, monkeypatch):
     assert missing_confirmation.status_code == 400
     assert approved.status_code == 200
     assert approved.json()["status"] == "merged"
-    assert client.get("/merge-authorizations").json()[0]["status"] == "merged"
-    assert client.get("/improvement-reflections").json()[0]["outcome"] == "merged"
-    assert client.get("/deployments").json()[0]["target_revision"] == "merge-sha"
+    assert client.get("/merge-authorizations", headers=admin_headers()).json()[0][
+        "status"
+    ] == "merged"
+    assert client.get("/improvement-reflections", headers=admin_headers()).json()[0][
+        "outcome"
+    ] == "merged"
+    assert client.get("/deployments", headers=admin_headers()).json()[0][
+        "target_revision"
+    ] == "merge-sha"
     get_settings.cache_clear()
 
 
@@ -1053,8 +1104,12 @@ def test_feedback_status_endpoint(tmp_path, monkeypatch):
 
     create_response = client.post("/feedbacks", json={"content": "回复太长", "user_id": "u1"})
     feedback_id = create_response.json()["id"]
-    update_response = client.patch(f"/feedbacks/{feedback_id}", json={"status": "resolved"})
-    feedbacks_response = client.get("/feedbacks")
+    update_response = client.patch(
+        f"/feedbacks/{feedback_id}",
+        json={"status": "resolved"},
+        headers=admin_headers(),
+    )
+    feedbacks_response = client.get("/feedbacks", headers=admin_headers())
 
     assert update_response.status_code == 200
     assert update_response.json()["status"] == "resolved"

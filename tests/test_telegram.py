@@ -312,7 +312,9 @@ def test_telegram_owner_merge_command_bypasses_group_wake_word(tmp_path, monkeyp
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
-    messages = client.get("/messages").json()
+    messages = client.get(
+        "/messages", headers={"X-Gugabobo-Admin-Token": "test-admin"}
+    ).json()
     assert messages[0]["content"].startswith("PR 操作失败：")
     get_settings.cache_clear()
     get_logger.cache_clear()
@@ -323,7 +325,9 @@ def test_telegram_user_role_cannot_record_group_feedback(tmp_path, monkeypatch):
     client = TestClient(app)
 
     response = client.post("/telegram/events", json=group_payload("建议回复短一点"))
-    feedbacks_response = client.get("/feedbacks")
+    feedbacks_response = client.get(
+        "/feedbacks", headers={"X-Gugabobo-Admin-Token": "test-admin"}
+    )
 
     assert response.status_code == 200
     assert response.json()["status"] == "ignored"
@@ -343,7 +347,9 @@ def test_telegram_trusted_role_can_record_group_feedback(tmp_path, monkeypatch):
     )
 
     response = client.post("/telegram/events", json=group_payload("建议回复短一点"))
-    feedbacks_response = client.get("/feedbacks")
+    feedbacks_response = client.get(
+        "/feedbacks", headers={"X-Gugabobo-Admin-Token": "test-admin"}
+    )
 
     assert response.status_code == 200
     assert response.json()["status"] == "recorded"
@@ -357,7 +363,9 @@ def test_telegram_group_wake_word_handles_message(tmp_path, monkeypatch):
     client = TestClient(app)
 
     response = client.post("/telegram/events", json=group_payload("咕嘎BoBo 你好"))
-    messages_response = client.get("/messages")
+    messages_response = client.get(
+        "/messages", headers={"X-Gugabobo-Admin-Token": "test-admin"}
+    )
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
@@ -371,7 +379,10 @@ def test_telegram_user_role_cannot_write_memory(tmp_path, monkeypatch):
     client = TestClient(app)
 
     response = client.post("/telegram/events", json=private_payload("记住我喜欢蓝色"))
-    memories_response = client.get("/memories?subject=telegram:user:10001")
+    memories_response = client.get(
+        "/memories?subject=telegram:user:10001",
+        headers={"X-Gugabobo-Admin-Token": "test-admin"},
+    )
 
     assert response.status_code == 200
     assert response.json()["reply_available"] is True
@@ -390,7 +401,10 @@ def test_telegram_trusted_role_can_write_memory(tmp_path, monkeypatch):
     )
 
     response = client.post("/telegram/events", json=private_payload("记住我喜欢蓝色"))
-    memories_response = client.get("/memories?subject=telegram:user:10001")
+    memories_response = client.get(
+        "/memories?subject=telegram:user:10001",
+        headers={"X-Gugabobo-Admin-Token": "test-admin"},
+    )
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"

@@ -202,9 +202,24 @@ def require_tabhere_token(authorization: str | None = Header(default=None)) -> N
     if not settings.tabhere_enabled or not configured_token:
         raise HTTPException(status_code=503, detail="TabHere 接口未启用或没有配置 API key。")
     prefix = "Bearer "
-    presented = authorization[len(prefix) :] if authorization and authorization.startswith(prefix) else ""
+    presented = (
+        authorization[len(prefix) :]
+        if authorization and authorization.startswith(prefix)
+        else ""
+    )
     if not presented or not hmac.compare_digest(presented, configured_token):
         raise HTTPException(status_code=401, detail="TabHere API key 无效。")
+
+
+def require_onebot_token(authorization: str | None = Header(default=None)) -> None:
+    settings = get_settings()
+    configured_token = settings.napcat_access_token.strip()
+    if not configured_token:
+        raise HTTPException(status_code=503, detail="NapCat access token is not configured")
+    prefix = "Bearer "
+    presented = authorization[len(prefix) :] if authorization and authorization.startswith(prefix) else ""
+    if not presented or not hmac.compare_digest(presented, configured_token):
+        raise HTTPException(status_code=401, detail="Invalid OneBot access token")
 
 
 def _message_text(content: object) -> str:
@@ -354,7 +369,10 @@ def dashboard_data(
 
 
 @app.get("/logs")
-def logs(limit: ListLimit = 100) -> dict[str, object]:
+def logs(
+    limit: ListLimit = 100,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
     return {"lines": read_log_lines(limit=limit)}
 
 
@@ -571,6 +589,7 @@ def openai_responses(
 def messages(
     limit: ListLimit = 20,
     conversation_id: str | None = None,
+    _: None = Depends(require_admin_token),
 ) -> list[dict[str, object]]:
     agent = build_agent()
     if conversation_id:
@@ -579,7 +598,10 @@ def messages(
 
 
 @app.get("/messages/{message_id}")
-def message(message_id: int) -> dict[str, object]:
+def message(
+    message_id: int,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
     agent = build_agent()
     result = agent.store.get_message(message_id)
     if not result:
@@ -588,33 +610,52 @@ def message(message_id: int) -> dict[str, object]:
 
 
 @app.get("/feedbacks")
-def feedbacks(limit: ListLimit = 20) -> list[dict[str, object]]:
+def feedbacks(
+    limit: ListLimit = 20,
+    _: None = Depends(require_admin_token),
+) -> list[dict[str, object]]:
     agent = build_agent()
     return agent.store.list_feedbacks(limit=limit)
 
 
 @app.get("/memories")
-def memories(subject: str | None = None, limit: ListLimit = 20) -> list[dict[str, object]]:
+def memories(
+    subject: str | None = None,
+    limit: ListLimit = 20,
+    _: None = Depends(require_admin_token),
+) -> list[dict[str, object]]:
     return build_agent().store.list_memory_items(subject=subject, limit=limit)
 
 
 @app.get("/access-rules")
-def access_rules(limit: ListLimit = 50) -> list[dict[str, object]]:
+def access_rules(
+    limit: ListLimit = 50,
+    _: None = Depends(require_admin_token),
+) -> list[dict[str, object]]:
     return build_agent().store.list_access_rules(limit=limit)
 
 
 @app.get("/audit-logs")
-def audit_logs(limit: ListLimit = 50) -> list[dict[str, object]]:
+def audit_logs(
+    limit: ListLimit = 50,
+    _: None = Depends(require_admin_token),
+) -> list[dict[str, object]]:
     return build_agent().store.list_audit_logs(limit=limit)
 
 
 @app.get("/tasks")
-def tasks(limit: ListLimit = 50) -> list[dict[str, object]]:
+def tasks(
+    limit: ListLimit = 50,
+    _: None = Depends(require_admin_token),
+) -> list[dict[str, object]]:
     return build_agent().store.list_tasks(limit=limit)
 
 
 @app.get("/tasks/{task_id}")
-def task(task_id: int) -> dict[str, object]:
+def task(
+    task_id: int,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
     result = build_agent().store.get_task(task_id)
     if not result:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -622,17 +663,26 @@ def task(task_id: int) -> dict[str, object]:
 
 
 @app.get("/improvements")
-def improvements(limit: ListLimit = 50) -> list[dict[str, object]]:
+def improvements(
+    limit: ListLimit = 50,
+    _: None = Depends(require_admin_token),
+) -> list[dict[str, object]]:
     return build_agent().store.list_improvement_tasks(limit=limit)
 
 
 @app.get("/prs")
-def pull_requests(limit: ListLimit = 50) -> list[dict[str, object]]:
+def pull_requests(
+    limit: ListLimit = 50,
+    _: None = Depends(require_admin_token),
+) -> list[dict[str, object]]:
     return build_agent().store.list_pull_requests(limit=limit)
 
 
 @app.get("/code-reviews")
-def code_reviews(limit: ListLimit = 50) -> list[dict[str, object]]:
+def code_reviews(
+    limit: ListLimit = 50,
+    _: None = Depends(require_admin_token),
+) -> list[dict[str, object]]:
     return build_agent().store.list_code_reviews(limit=limit)
 
 
@@ -654,7 +704,10 @@ def scan_code_reviews(
 
 
 @app.get("/github-issues")
-def github_issue_runs(limit: ListLimit = 50) -> list[dict[str, object]]:
+def github_issue_runs(
+    limit: ListLimit = 50,
+    _: None = Depends(require_admin_token),
+) -> list[dict[str, object]]:
     return build_agent().store.list_github_issue_runs(limit=limit)
 
 
@@ -730,7 +783,10 @@ def retry_execution(
 
 
 @app.get("/prs/{pr_id}")
-def pull_request(pr_id: int) -> dict[str, object]:
+def pull_request(
+    pr_id: int,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
     result = build_agent().store.get_pull_request(pr_id)
     if not result:
         raise HTTPException(status_code=404, detail="Pull request not found")
@@ -738,22 +794,34 @@ def pull_request(pr_id: int) -> dict[str, object]:
 
 
 @app.get("/merge-authorizations")
-def merge_authorizations(limit: ListLimit = 50) -> list[dict[str, object]]:
+def merge_authorizations(
+    limit: ListLimit = 50,
+    _: None = Depends(require_admin_token),
+) -> list[dict[str, object]]:
     return build_agent().store.list_merge_authorizations(limit=limit)
 
 
 @app.get("/improvement-reflections")
-def improvement_reflections(limit: ListLimit = 50) -> list[dict[str, object]]:
+def improvement_reflections(
+    limit: ListLimit = 50,
+    _: None = Depends(require_admin_token),
+) -> list[dict[str, object]]:
     return build_agent().store.list_improvement_reflections(limit=limit)
 
 
 @app.get("/deployments")
-def deployments(limit: ListLimit = 50) -> list[dict[str, object]]:
+def deployments(
+    limit: ListLimit = 50,
+    _: None = Depends(require_admin_token),
+) -> list[dict[str, object]]:
     return build_agent().store.list_deployment_records(limit=limit)
 
 
 @app.get("/owner-notifications")
-def owner_notifications(limit: ListLimit = 50) -> list[dict[str, object]]:
+def owner_notifications(
+    limit: ListLimit = 50,
+    _: None = Depends(require_admin_token),
+) -> list[dict[str, object]]:
     return build_agent().store.list_owner_notifications(limit=limit)
 
 
@@ -994,7 +1062,11 @@ def create_feedback(request: FeedbackCreateRequest) -> dict[str, int]:
 
 
 @app.patch("/feedbacks/{feedback_id}")
-def update_feedback(feedback_id: int, request: FeedbackStatusRequest) -> dict[str, object]:
+def update_feedback(
+    feedback_id: int,
+    request: FeedbackStatusRequest,
+    _: None = Depends(require_admin_token),
+) -> dict[str, object]:
     allowed_statuses = {"new", "triaged", "resolved", "ignored"}
     if request.status not in allowed_statuses:
         raise HTTPException(status_code=400, detail="Invalid feedback status")
@@ -1298,7 +1370,10 @@ def dashboard_control_update_feedback(
 
 
 @app.post("/onebot/v11/events")
-def onebot_event(payload: dict[str, object]) -> dict[str, object]:
+def onebot_event(
+    payload: dict[str, object],
+    _: None = Depends(require_onebot_token),
+) -> dict[str, object]:
     settings = get_settings()
     logger = get_logger()
     event = OneBotMessageEvent.from_payload(payload)
