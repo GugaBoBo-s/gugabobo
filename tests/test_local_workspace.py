@@ -205,3 +205,94 @@ def test_main_agent_only_gets_delegation_tool(tmp_path):
     audit = store.list_audit_logs(limit=1)[0]
     assert audit["action"] == "tool.delegate_local_agent"
     assert '"provider": "claude"' in audit["detail"]
+
+
+def test_run_rejects_a_path_in_argv0(tmp_path) -> None:
+    workspace = make_workspace(tmp_path)
+
+    for candidate in (
+        "/tmp/evil/python",
+        "../../evil/python",
+        "C:/attacker/python.exe",
+        r"dir\python",
+    ):
+        with pytest.raises(ValueError, match="不能包含路径"):
+            workspace.run([candidate, "-V"])
+
+
+def test_run_still_accepts_a_bare_allowlisted_command(tmp_path) -> None:
+    workspace = make_workspace(tmp_path)
+
+    result = workspace.run(["python", "-V"])
+
+    assert result.returncode == 0
+    assert "Python" in result.stdout + result.stderr
+
+
+def test_tabhere_allowlist_rejects_parent_traversal(tmp_path) -> None:
+    workspace = make_workspace(
+        tmp_path,
+        tabhere_file_context_enabled=True,
+        tabhere_file_allowlist="README.md,docs/**",
+    )
+
+    assert workspace._tabhere_path_allowed("README.md") is True
+    assert workspace._tabhere_path_allowed("docs/guide.md") is True
+    assert workspace._tabhere_path_allowed("./docs/guide.md") is True
+    assert workspace._tabhere_path_allowed("docs/../.git-credentials") is False
+    assert workspace._tabhere_path_allowed("docs/../../secret") is False
+
+
+def test_sensitive_rejection_covers_env_backups_and_credentials(tmp_path) -> None:
+    workspace = make_workspace(tmp_path)
+
+    for name in (
+        ".env",
+        ".env.bak.20260804040049",
+        ".env.production",
+        ".git-credentials",
+        ".npmrc",
+        ".pypirc",
+        "secrets.yaml",
+        "service.pem",
+        "id_rsa",
+    ):
+        with pytest.raises(ValueError, match="敏感文件"):
+            workspace.read_text(name)
+
+    # Substring rules such as `*token*` would reject these, which would make any
+    # workspace holding tokenizer code unusable.
+    for name in (
+        "README.md",
+        "docs/guide.md",
+        "pyproject.toml",
+        "tokenizer.py",
+        "token_utils.py",
+        "src/tokenizer/model.py",
+        "credentials_guide.md",
+        "id_generator.py",
+    ):
+        workspace.write_text(name, "ok")
+        assert workspace.read_text(name) == "ok"
+
+
+def test_workspace_containing_own_source_is_refused(tmp_path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    workspace = LocalWorkspace(
+        Settings(
+            _env_file=None,
+            local_workspace_dir=repo_root,
+            local_skill_dir=tmp_path / "skills",
+            local_command_allowlist="python",
+        )
+    )
+
+    assert workspace.contains_own_source is True
+    for call in (
+        lambda: workspace.list_files("."),
+        lambda: workspace.read_text("README.md"),
+        lambda: workspace.write_text("scratch.txt", "x"),
+        lambda: workspace.run(["python", "-V"]),
+    ):
+        with pytest.raises(ValueError, match="自身源码"):
+            call()

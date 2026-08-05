@@ -104,7 +104,7 @@ class Settings(BaseSettings):
     mcd_mcp_timeout_seconds: int = Field(default=30, ge=1)
     mcd_mcp_proxy: str = ""
     local_tools_enabled: bool = False
-    local_workspace_dir: Path = Path(".")
+    local_workspace_dir: Path = Path(".gugabobo/workspace")
     local_skill_dir: Path = Path(".gugabobo/local-skills")
     local_command_allowlist: str = (
         "python,python.exe,python3,python3.exe,bash,bash.exe,git,git.exe,rg,rg.exe"

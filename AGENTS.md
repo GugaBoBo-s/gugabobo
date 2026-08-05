@@ -34,6 +34,8 @@ The current system includes:
 - organization-wide issue evaluation with allowlisted autonomous pull request creation
 - a Docker-only code runner with isolated checks and no host fallback
 - staged systemd auto deployment with rollback, health checks, and owner notifications
+- an owner-only local operator that runs host commands in a configured workspace,
+  separate from the self-improvement runner
 
 Current P6 work should prioritize:
 
@@ -82,6 +84,17 @@ container. Containers may receive only ephemeral relay credentials. Claude editi
 runs must not expose Bash, MCP, persistent credential homes, or paths outside the
 workspace. Codex fallback runs must use workspace sandboxing and an empty inherited
 tool environment.
+
+The Docker-only rule above governs the self-improvement code runner. The local
+operator is a separate, explicitly authorized capability: it executes host commands
+and must never be used to perform self-improvement. It stays disabled by default,
+is reachable only by an authenticated owner, and requires a workspace that does not
+contain gugabobo's own source, so code changes to gugabobo continue to go through
+the sandboxed pull request flow. Its command allowlist bounds which programs may
+start, not what they may do; `python` and `bash` are arbitrary execution by design,
+so treat the allowlist as scope control rather than a security boundary. Bash stays
+off unless separately enabled. Every delegation, command, write, and skill download
+is audited.
 
 ## Development Commands
 

@@ -24,7 +24,34 @@ _SENSITIVE_NAMES = {
     "id_ed25519",
     "credentials",
     "credentials.json",
+    ".git-credentials",
+    ".netrc",
+    "_netrc",
+    ".npmrc",
+    ".pypirc",
+    ".htpasswd",
 }
+# Patterns stay anchored to credential-shaped names. Substring rules such as
+# `*token*` would reject ordinary sources like `tokenizer.py`, and this filter is
+# a guard against accidental exposure, not a security boundary: an allowlisted
+# `python -c` can read anything the service account can.
+_SENSITIVE_PATTERNS = (
+    ".env",
+    ".env.*",
+    "*.env",
+    "secret.*",
+    "secrets.*",
+    "*.secret",
+    "*.secrets",
+    "credentials.*",
+    "*.credentials",
+    "*_rsa",
+    "*_dsa",
+    "*_ecdsa",
+    "*_ed25519",
+)
+_SENSITIVE_SUFFIXES = {".pem", ".key", ".p12", ".pfx", ".keystore", ".jks"}
+_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -39,6 +66,7 @@ class LocalWorkspace:
         self.settings = settings or get_settings()
         self.root = self.settings.local_workspace_dir.expanduser().resolve()
         self.skill_dir = self.settings.local_skill_dir.expanduser().resolve()
+        self.contains_own_source = _PACKAGE_ROOT.is_relative_to(self.root)
 
     def list_files(self, path: str = ".", limit: int = 200) -> list[str]:
         target = self.resolve(path)
@@ -75,7 +103,13 @@ class LocalWorkspace:
     def run(self, argv: list[str], cwd: str = ".", timeout: int | None = None) -> LocalCommandResult:
         if not argv or not all(isinstance(value, str) and value for value in argv):
             raise ValueError("argv 必须是非空字符串数组。")
-        executable = Path(argv[0]).name.casefold()
+        # The allowlist matches on the base name, so a caller-supplied path would
+        # otherwise satisfy it while executing an entirely different binary.
+        if argv[0] != Path(argv[0]).name or "\\" in argv[0]:
+            raise ValueError(
+                f"argv[0] 必须是允许列表中的命令名，不能包含路径：{argv[0]}。"
+            )
+        executable = argv[0].casefold()
         allowed = self.settings.local_command_allowlist_set
         if "*" not in allowed and executable not in allowed:
             choices = ", ".join(sorted(allowed)) or "无"
@@ -197,10 +231,20 @@ class LocalWorkspace:
         ]
 
     def resolve(self, path: str) -> Path:
+        self._reject_self_source_workspace()
         candidate = (self.root / path).resolve()
         if candidate != self.root and not candidate.is_relative_to(self.root):
             raise ValueError(f"路径超出本地工作区：{path}")
         return candidate
+
+    def _reject_self_source_workspace(self) -> None:
+        if not self.contains_own_source:
+            return
+        raise ValueError(
+            f"本地工作区 {self.root} 包含 gugabobo 自身源码，已拒绝操作。"
+            "自我改进必须走沙箱与 pull request 流程，且部署回滚会用 git reset --hard "
+            "丢弃直接改动。请把 GUGABOBO_LOCAL_WORKSPACE_DIR 指向仓库以外的目录。"
+        )
 
     def _bash_executable(self) -> str:
         if not self.settings.local_bash_enabled:
@@ -234,7 +278,13 @@ class LocalWorkspace:
         return {key: value for key, value in os.environ.items() if key.casefold() in allowed}
 
     def _tabhere_path_allowed(self, path: str) -> bool:
-        normalized = path.replace("\\", "/").lstrip("./")
+        candidate = path.replace("\\", "/")
+        # `**` matches across separators, so a surviving `..` segment would let
+        # `docs/../.git-credentials` satisfy a `docs/**` rule.
+        segments = [segment for segment in candidate.split("/") if segment not in {"", "."}]
+        if not segments or any(segment == ".." for segment in segments):
+            return False
+        normalized = "/".join(segments)
         return any(
             fnmatch.fnmatch(normalized, rule)
             for rule in self.settings.tabhere_file_allowlist_items
@@ -242,10 +292,15 @@ class LocalWorkspace:
 
     def _reject_sensitive(self, path: Path) -> None:
         names = {part.casefold() for part in path.parts}
-        if names & _SENSITIVE_NAMES or path.suffix.casefold() in {".pem", ".key"}:
-            raise ValueError(f"拒绝读取或写入敏感文件：{path.name}")
         if ".git" in names:
             raise ValueError("拒绝直接访问 .git 目录。")
+        for part in names:
+            if part in _SENSITIVE_NAMES:
+                raise ValueError(f"拒绝读取或写入敏感文件：{path.name}")
+            if any(fnmatch.fnmatch(part, rule) for rule in _SENSITIVE_PATTERNS):
+                raise ValueError(f"拒绝读取或写入敏感文件：{path.name}")
+        if path.suffix.casefold() in _SENSITIVE_SUFFIXES:
+            raise ValueError(f"拒绝读取或写入敏感文件：{path.name}")
 
     def _is_hidden_runtime_path(self, path: Path) -> bool:
         names = {part.casefold() for part in path.relative_to(self.root).parts}

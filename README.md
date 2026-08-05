@@ -316,6 +316,13 @@ prefers Git Bash over the WindowsApps/WSL launcher. `.git`, runtime data, common
 private keys, and file-tool paths outside the workspace are rejected. Every command, write, and
 skill download is audited.
 
+The workspace must not contain gugabobo's own source. Every file and command operation is refused
+when it does, because self-improvement has to go through the sandboxed pull request flow, and a
+deploy rollback runs `git reset --hard`, which would silently discard direct edits. Point
+`GUGABOBO_LOCAL_WORKSPACE_DIR` outside the source clone, such as `/opt/gugabobo/data/workspace`.
+`argv[0]` must be a bare command name from the allowlist; a path is rejected, because the allowlist
+matches on base name and a path would otherwise run a different binary under an allowed name.
+
 ```env
 GUGABOBO_LOCAL_TOOLS_ENABLED=true
 GUGABOBO_LOCAL_WORKSPACE_DIR=C:/path/to/workspace
@@ -356,8 +363,14 @@ GUGABOBO_TABHERE_MAX_FILE_CONTEXT_CHARS=12000
 
 Optional file context uses explicit `@file:relative/path` references. It is disabled by default;
 when enabled, only paths matching `GUGABOBO_TABHERE_FILE_ALLOWLIST` are injected, and sensitive or
-out-of-workspace paths remain blocked. Keep the allowlist narrow because TabHere prompts include
-webpage content. Bind the API to loopback unless a separately authenticated transport is in place.
+out-of-workspace paths remain blocked. A reference containing `..` is rejected before the allowlist
+is consulted, because `**` matches across separators and would otherwise let `docs/../<file>`
+satisfy a `docs/**` rule. Keep the allowlist narrow because TabHere prompts include webpage content.
+Bind the API to loopback unless a separately authenticated transport is in place.
+
+These endpoints accept caller-supplied `system` messages, are not audited, and are not rate
+limited. They are a model proxy guarded only by `GUGABOBO_TABHERE_API_KEY`, so treat that key as a
+spending credential and leave `GUGABOBO_TABHERE_ENABLED=false` unless the endpoint is in use.
 
 Context inputs:
 
