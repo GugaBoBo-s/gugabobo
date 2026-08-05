@@ -106,6 +106,7 @@ class AgentRuntime:
         dispatch: Callable[[str, str], str] | None = None,
         output_type: type[OutputT] | type[str] = str,
         temperature: float = 0.0,
+        max_tokens: int | None = None,
     ) -> AgentResult:
         self._ensure_configured()
         tools = self._agent_tools(tool_specs or [], dispatch)
@@ -122,8 +123,9 @@ class AgentRuntime:
             "temperature": temperature,
             "timeout": self.request_timeout,
         }
-        if self.max_tokens is not None:
-            model_settings["max_tokens"] = self.max_tokens
+        resolved_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+        if resolved_max_tokens is not None:
+            model_settings["max_tokens"] = max(1, resolved_max_tokens)
         result = agent.run_sync(
             prompt,
             message_history=_message_history(history or []),
@@ -140,6 +142,7 @@ class AgentRuntime:
         *,
         output_type: type[OutputT] | type[str] = str,
         temperature: float = 0.0,
+        max_tokens: int | None = None,
     ) -> AgentResult:
         system = [item["content"] for item in messages if item["role"] == "system"]
         conversational = [item for item in messages if item["role"] in {"user", "assistant"}]
@@ -157,6 +160,7 @@ class AgentRuntime:
             history=history,
             output_type=output_type,
             temperature=temperature,
+            max_tokens=max_tokens,
         )
 
     def _model(self) -> MultimodalLiteLLMModel:
@@ -195,8 +199,6 @@ class AgentRuntime:
                 ),
             )
         ]
-
-
 def _message_history(history: list[dict[str, str]]) -> list[ModelMessage]:
     result: list[ModelMessage] = []
     for item in history:

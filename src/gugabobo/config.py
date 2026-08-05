@@ -103,6 +103,25 @@ class Settings(BaseSettings):
     mcd_mcp_token: str = Field(default="", repr=False)
     mcd_mcp_timeout_seconds: int = Field(default=30, ge=1)
     mcd_mcp_proxy: str = ""
+    local_tools_enabled: bool = False
+    local_workspace_dir: Path = Path(".gugabobo/workspace")
+    local_skill_dir: Path = Path(".gugabobo/local-skills")
+    local_command_allowlist: str = (
+        "python,python.exe,python3,python3.exe,bash,bash.exe,git,git.exe,rg,rg.exe"
+    )
+    local_bash_enabled: bool = False
+    local_bash_bin: str = ""
+    local_environment_allowlist: str = (
+        "PATH,PATHEXT,SYSTEMROOT,WINDIR,COMSPEC,TEMP,TMP,LANG,LC_ALL"
+    )
+    local_command_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    local_output_max_chars: int = Field(default=12000, ge=1000, le=100000)
+    local_subagent_max_rounds: int = Field(default=6, ge=1, le=12)
+    tabhere_enabled: bool = False
+    tabhere_api_key: str = Field(default="", repr=False)
+    tabhere_file_context_enabled: bool = False
+    tabhere_file_allowlist: str = "README.md,docs/**"
+    tabhere_max_file_context_chars: int = Field(default=12000, ge=1000, le=100000)
     llm_timeout_seconds: int = Field(default=60, ge=1)
     llm_context_messages: int = Field(default=400, ge=1)
     llm_memory_items: int = Field(default=12, ge=0)
@@ -172,6 +191,26 @@ class Settings(BaseSettings):
             if item.strip()
         }
         return configured or {f"{self.github_owner}/{self.github_repo}".casefold()}
+
+    @property
+    def local_command_allowlist_set(self) -> set[str]:
+        return {
+            item.strip().casefold()
+            for item in self.local_command_allowlist.split(",")
+            if item.strip()
+        }
+
+    @property
+    def local_environment_allowlist_set(self) -> set[str]:
+        return {
+            item.strip().casefold()
+            for item in self.local_environment_allowlist.split(",")
+            if item.strip()
+        }
+
+    @property
+    def tabhere_file_allowlist_items(self) -> list[str]:
+        return [item.strip() for item in self.tabhere_file_allowlist.split(",") if item.strip()]
 
 
 @lru_cache

@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from uuid import uuid4
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone, timedelta
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
 
 from gugabobo.config import get_settings
 from gugabobo.core.access import role_can_use_skill
 from gugabobo.memory.store import MemoryStore
+
+if TYPE_CHECKING:
+    from gugabobo.core.local_operator import LocalOperatorAgent
+    from gugabobo.infra.local_workspace import LocalWorkspace
 
 
 # Beijing time — the bot's operators and users are China-based, so tool output
@@ -38,6 +43,9 @@ class ToolContext:
     # Optional injected read-url callable (url -> text) for tests; falls back
     # to the real WebReaderClient when absent.
     read_url: Callable[[str], str] | None = None
+    local_workspace: LocalWorkspace | None = None
+    local_operator: LocalOperatorAgent | None = None
+    delegation_id: str = ""
     glitter_send: Callable[[str, str], str] | None = None
     remote_skills: Callable[[str, str, str], str] | None = None
     prompt_guidance: Callable[[str, str, str], str] | None = None
@@ -486,6 +494,203 @@ def _tool_read_url(context: ToolContext, args: dict[str, object]) -> str:
     return run_read_url(url)
 
 
+def _get_local_workspace(context: ToolContext):
+    if context.local_workspace is not None:
+        return context.local_workspace
+    from gugabobo.infra.local_workspace import LocalWorkspace
+
+    return LocalWorkspace()
+
+
+def _tool_workspace_files(context: ToolContext, args: dict[str, object]) -> str:
+    action = str(args.get("action", "") or "").strip()
+    path = str(args.get("path", ".") or ".").strip()
+    workspace = _get_local_workspace(context)
+    try:
+        if action == "list":
+            rows = workspace.list_files(path, limit=_clamp_limit(args.get("limit"), 200, 1000))
+            output = "\n".join(rows) if rows else "目录为空。"
+        elif action == "read":
+            output = workspace.read_text(path)
+        elif action == "write":
+            content = str(args.get("content", ""))
+            target = workspace.write_text(path, content)
+            output = f"已写入 {target.relative_to(workspace.root).as_posix()}（{len(content)} 字符）。"
+        else:
+            return "错误：未知 action。支持 list、read、write。"
+    except (OSError, UnicodeError, ValueError) as error:
+        context.store.add_audit_log(
+            actor_source=context.source,
+            actor_user_id=context.user_id,
+            action=f"tool.workspace_files.{action or 'unknown'}",
+            target=path,
+            status="failed",
+            risk_level="high" if action == "write" else "normal",
+            detail=json.dumps(
+                {"error": str(error), "delegation_id": context.delegation_id},
+                ensure_ascii=False,
+            )[:1000],
+        )
+        return f"本地文件操作失败（{path}）：{error}"
+    context.store.add_audit_log(
+        actor_source=context.source,
+        actor_user_id=context.user_id,
+        action=f"tool.workspace_files.{action}",
+        target=path,
+        risk_level="high" if action == "write" else "normal",
+        detail=json.dumps(
+            {"action": action, "delegation_id": context.delegation_id}, ensure_ascii=False
+        ),
+    )
+    return output
+
+
+def _tool_run_local(context: ToolContext, args: dict[str, object]) -> str:
+    raw_argv = args.get("argv")
+    if not isinstance(raw_argv, list) or not all(isinstance(value, str) for value in raw_argv):
+        return "错误：argv 必须是字符串数组，例如 [\"python\", \"-V\"]。"
+    argv = raw_argv
+    cwd = str(args.get("cwd", ".") or ".")
+    try:
+        timeout = int(args.get("timeout_seconds", 0) or 0) or None
+    except (TypeError, ValueError):
+        return "错误：timeout_seconds 必须是整数。"
+    workspace = _get_local_workspace(context)
+    try:
+        result = workspace.run(argv, cwd=cwd, timeout=timeout)
+    except (OSError, ValueError) as error:
+        context.store.add_audit_log(
+            actor_source=context.source,
+            actor_user_id=context.user_id,
+            action="tool.run_local",
+            target=argv[0] if argv else "",
+            status="failed",
+            risk_level="high",
+            detail=json.dumps(
+                {"error": str(error), "delegation_id": context.delegation_id},
+                ensure_ascii=False,
+            )[:1000],
+        )
+        return f"本地命令执行失败（cwd={cwd}）：{error}"
+    context.store.add_audit_log(
+        actor_source=context.source,
+        actor_user_id=context.user_id,
+        action="tool.run_local",
+        target=argv[0] if argv else "",
+        status="ok" if result.returncode == 0 else "failed",
+        risk_level="high",
+        detail=json.dumps(
+            {"argv": argv, "cwd": cwd, "delegation_id": context.delegation_id},
+            ensure_ascii=False,
+        )[:1000],
+    )
+    return workspace.format_command_result(result)
+
+
+def _tool_local_skills(context: ToolContext, args: dict[str, object]) -> str:
+    action = str(args.get("action", "") or "").strip()
+    workspace = _get_local_workspace(context)
+    try:
+        if action == "list":
+            names = workspace.list_skills()
+            output = "\n".join(names) if names else "尚未下载本地 skill。"
+        elif action == "read":
+            name = str(args.get("name", "") or "").strip()
+            output = workspace.read_skill(name)
+        elif action == "install":
+            name = str(args.get("name", "") or "").strip()
+            url = str(args.get("repository_url", "") or "").strip()
+            target = workspace.install_skill(name, url)
+            output = f"已下载 skill {name} 到 {target}。请先审查 SKILL.md 和脚本，再执行其内容。"
+        else:
+            return "错误：未知 action。支持 list、read、install。"
+    except (OSError, UnicodeError, ValueError, subprocess.SubprocessError) as error:
+        context.store.add_audit_log(
+            actor_source=context.source,
+            actor_user_id=context.user_id,
+            action=f"tool.local_skills.{action or 'unknown'}",
+            target=str(args.get("name", "") or ""),
+            status="failed",
+            risk_level="high" if action == "install" else "normal",
+            detail=json.dumps(
+                {"error": str(error), "delegation_id": context.delegation_id},
+                ensure_ascii=False,
+            )[:1000],
+        )
+        return f"本地 skill 操作失败：{error}"
+    context.store.add_audit_log(
+        actor_source=context.source,
+        actor_user_id=context.user_id,
+        action=f"tool.local_skills.{action}",
+        target=str(args.get("name", "") or ""),
+        risk_level="high" if action == "install" else "normal",
+        detail=json.dumps(
+            {
+                "repository_url": str(args.get("repository_url", "") or ""),
+                "delegation_id": context.delegation_id,
+            },
+            ensure_ascii=False,
+        )[:1000],
+    )
+    return output
+
+
+def _tool_delegate_local_agent(context: ToolContext, args: dict[str, object]) -> str:
+    task = str(args.get("task", "") or "").strip()
+    if not task:
+        return "错误：task 不能为空；请说明要让本地操作 subagent 完成什么。"
+    if context.local_operator is not None:
+        operator = context.local_operator
+    else:
+        from gugabobo.core.local_operator import LocalOperatorAgent
+
+        operator = LocalOperatorAgent()
+    delegation_id = uuid4().hex
+    delegated_context = replace(context, delegation_id=delegation_id)
+    target = f"local-subagent:{delegation_id}"
+    context.store.add_audit_log(
+        actor_source=context.source,
+        actor_user_id=context.user_id,
+        action="tool.delegate_local_agent",
+        target=target,
+        status="started",
+        risk_level="high",
+        detail=task[:1000],
+    )
+    try:
+        result = operator.run(task, delegated_context)
+    except Exception as error:
+        context.store.add_audit_log(
+            actor_source=context.source,
+            actor_user_id=context.user_id,
+            action="tool.delegate_local_agent",
+            target=target,
+            status="failed",
+            risk_level="high",
+            detail=str(error)[:1000],
+        )
+        return f"本地操作 subagent 执行失败：{error}"
+    context.store.add_audit_log(
+        actor_source=context.source,
+        actor_user_id=context.user_id,
+        action="tool.delegate_local_agent",
+        target=target,
+        status="ok",
+        risk_level="high",
+        detail=json.dumps(
+            {
+                "provider": result.provider,
+                "model": result.model,
+                "rounds": result.rounds,
+                "delegation_id": delegation_id,
+                "task": task,
+            },
+            ensure_ascii=False,
+        )[:1000],
+    )
+    return result.answer
+
+
 def default_tools() -> list[Tool]:
     return [
         Tool(
@@ -836,6 +1041,97 @@ def default_tools() -> list[Tool]:
             min_skill="owner_action",
         ),
     ]
+
+
+def local_tools() -> list[Tool]:
+    return [
+        Tool(
+            name="workspace_files",
+            description=(
+                "在配置的本地工作区内列出、读取或写入 UTF-8 文本文件。"
+                "路径必须相对工作区，不能访问 .git、运行数据或密钥文件。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["list", "read", "write"]},
+                    "path": {"type": "string", "description": "相对工作区的路径。"},
+                    "content": {"type": "string", "description": "write 时写入的完整内容。"},
+                    "limit": {"type": "integer", "description": "list 最多返回多少项。"},
+                },
+                "required": ["action", "path"],
+            },
+            handler=_tool_workspace_files,
+            min_skill="owner_action",
+        ),
+        Tool(
+            name="run_local",
+            description=(
+                "直接在本地工作区执行允许列表中的 CLI。普通命令不经过 shell；"
+                "需要 Bash 管道、重定向或脚本语法时使用 [\"bash\", \"-lc\", \"...\"]。"
+                "Bash 是真实宿主机 shell，不是容器沙箱。调用 python 时会固定使用当前 "
+                "gugabobo 进程所在虚拟环境的解释器。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "argv": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "命令和参数，例如 [\"python\", \"-m\", \"pytest\"]。",
+                    },
+                    "cwd": {"type": "string", "description": "相对工作区的工作目录。"},
+                    "timeout_seconds": {"type": "integer", "description": "1 到 300 秒。"},
+                },
+                "required": ["argv"],
+            },
+            handler=_tool_run_local,
+            min_skill="owner_action",
+        ),
+        Tool(
+            name="local_skills",
+            description=(
+                "列出、读取或从公开 GitHub HTTPS 仓库下载本地 skill。"
+                "下载只保存文件，不自动信任或执行其中的指令和脚本。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["list", "read", "install"]},
+                    "name": {"type": "string", "description": "本地 skill 名称。"},
+                    "repository_url": {
+                        "type": "string",
+                        "description": "install 时使用的完整 GitHub HTTPS 仓库地址。",
+                    },
+                },
+                "required": ["action"],
+            },
+            handler=_tool_local_skills,
+            min_skill="owner_action",
+        ),
+    ]
+
+
+def local_delegation_tool() -> Tool:
+    return Tool(
+        name="delegate_local_agent",
+        description=(
+            "把需要操作本地文件、CLI、当前虚拟环境 Python、Bash 或本地 skill 的任务"
+            "委派给专用本地操作 subagent。主 Agent 不直接执行这些操作。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "完整、明确的本地操作任务和预期结果。",
+                }
+            },
+            "required": ["task"],
+        },
+        handler=_tool_delegate_local_agent,
+        min_skill="owner_action",
+    )
 
 
 def build_mcp_tools(

@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from gugabobo.api.server import app
 from gugabobo.config import get_settings
 from gugabobo.memory.store import MemoryStore
+from gugabobo.infra.llm import AgentResult
 
 
 def configure_test_env(tmp_path, monkeypatch):
@@ -73,6 +74,67 @@ def test_chat_endpoint_records_message(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert "已收到" in response.json()["reply"]
     assert status_response.json()["messages"] == 2
+    get_settings.cache_clear()
+
+
+class FakeTabHereClient:
+    configured = True
+    model = "fake-model"
+
+    def __init__(self):
+        self.calls = []
+
+    def run_messages(self, messages, temperature=0.7, max_tokens=None):
+        self.calls.append((messages, temperature, max_tokens))
+        return AgentResult(output="补全内容", model=self.model)
+
+
+def test_tabhere_responses_endpoint_is_openai_compatible(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("GUGABOBO_TABHERE_ENABLED", "true")
+    monkeypatch.setenv("GUGABOBO_TABHERE_API_KEY", "sk-tabhere-test")
+    get_settings.cache_clear()
+    fake = FakeTabHereClient()
+    monkeypatch.setattr("gugabobo.api.server.build_agent_runtime", lambda: fake)
+    client = TestClient(app)
+
+    unauthorized = client.post(
+        "/v1/responses",
+        json={"model": "gugabobo", "input": "ping", "max_output_tokens": 1},
+    )
+    response = client.post(
+        "/v1/responses",
+        headers={"Authorization": "Bearer sk-tabhere-test"},
+        json={"model": "gugabobo", "input": "ping", "max_output_tokens": 1},
+    )
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 200
+    assert response.json()["output_text"] == "补全内容"
+    assert response.json()["output"][0]["content"][0]["text"] == "补全内容"
+    assert fake.calls[0][0] == [{"role": "user", "content": "ping"}]
+    assert fake.calls[0][2] == 1
+    get_settings.cache_clear()
+
+
+def test_tabhere_chat_completions_endpoint(tmp_path, monkeypatch):
+    configure_test_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("GUGABOBO_TABHERE_ENABLED", "true")
+    monkeypatch.setenv("GUGABOBO_TABHERE_API_KEY", "sk-tabhere-test")
+    get_settings.cache_clear()
+    fake = FakeTabHereClient()
+    monkeypatch.setattr("gugabobo.api.server.build_agent_runtime", lambda: fake)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer sk-tabhere-test"},
+        json={"model": "gugabobo", "messages": [{"role": "user", "content": "ping"}]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "补全内容"
+    assert fake.calls[0][0] == [{"role": "user", "content": "ping"}]
     get_settings.cache_clear()
 
 
