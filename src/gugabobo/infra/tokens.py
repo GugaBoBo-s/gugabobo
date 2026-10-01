@@ -6,6 +6,7 @@ def _is_cjk(char: str) -> bool:
     return (
         0x4E00 <= code <= 0x9FFF
         or 0x3400 <= code <= 0x4DBF
+        or 0x20000 <= code <= 0x2FA1F
         or 0x3040 <= code <= 0x30FF
         or 0xAC00 <= code <= 0xD7A3
         or 0xFF00 <= code <= 0xFFEF
